@@ -75,10 +75,18 @@ cause auth errors in the running session" — best done "before starting a new s
 CCSwitcher's README lists every feature in detail and names none that switches automatically at a
 limit: not stated ([README](https://github.com/XueshiQiao/CCSwitcher)).
 
-**claude.ai objects stay with their owner.** None of the four switchers' own READMEs say their tool
-does this. [cswap-pin](https://github.com/codeslake/cswap-pin), a companion to claude-swap, adds it
-explicitly: it keeps "Claude Code's Remote Control and Artifacts on one account while inference keeps
-following cswap's account swap" — the same idea as chottag's `remote` account, built in.
+**Pinning Remote Control, connectors and artifacts to one account.** claude-swap, clauth, caam and
+CCSwitcher each switch by swapping Claude Code's whole login (see "How it switches" in the table
+above, from each tool's own README), so every claude.ai request, Remote Control sessions, connectors
+and artifacts included, moves to the new account with it: none of the four pins them. None of their
+READMEs claims otherwise, and a search of each tool's source (2026-09-29) found no code that routes
+Remote Control, connector or artifact requests to a different account than inference. clauth's
+gateway is a managed API-key gateway, not a per-request account router.
+[cswap-pin](https://github.com/codeslake/cswap-pin), an add-on to claude-swap, adds a pin
+explicitly: it keeps "Claude Code's Remote Control and Artifacts on one account while inference
+keeps following cswap's account swap" — the same idea as chottag's `remote` account, which chottag
+has built in. claude-swap itself does not ship it: [PR #210](https://github.com/realiti4/claude-swap/pull/210),
+which would add it as an optional extra, is still open (checked 2026-09-29).
 
 ## Proxies and gateways
 
@@ -124,6 +132,7 @@ relay that shares access to accounts across people.
 
 - claude-swap: [realiti4/claude-swap](https://github.com/realiti4/claude-swap) (accessed 2026-09-29)
 - cswap-pin: [codeslake/cswap-pin](https://github.com/codeslake/cswap-pin) (accessed 2026-09-29)
+- claude-swap PR #210, open: [realiti4/claude-swap#210](https://github.com/realiti4/claude-swap/pull/210) (accessed 2026-09-29)
 - swapdex: [youdie006/swapdex](https://github.com/youdie006/swapdex) (accessed 2026-09-28)
 - clauth: [uwuclxdy/clauth](https://github.com/uwuclxdy/clauth) (accessed 2026-09-29)
 - claude-account: [hamzarehmandeveloper/claude-account](https://github.com/hamzarehmandeveloper/claude-account) (accessed 2026-09-28)

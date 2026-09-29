@@ -7,6 +7,9 @@ Keep several Claude accounts logged in on one machine, and switch the one Claude
 
 c-hottag is an independent project: not affiliated with or endorsed by Anthropic.
 
+**The name**, said "See-Hot-Tag": in WWE tag-team wrestling, the *hot tag* is when a worn-out wrestler tags in a fresh
+partner. chottag does that for Claude Code: when one account is spent, a fresh one tags in and the session keeps going.
+
 ```text
 $ chottag status
 serving: A   remote: B
@@ -21,11 +24,9 @@ serving: B
 
 ## What it does
 
-- **claude.ai objects stay with their owner, built in.** Switching which account serves
-  inference, by hand or auto-switch, never moves who owns a claude.ai object: Remote Control
-  sessions, connectors and artifacts keep working mid-switch, because each request for an
-  existing one goes to its owner; a new one goes to whichever account is `remote`. Routines
-  are the exception: they always follow remote.
+- **Switching never breaks Remote Control, connectors or artifacts.** Most switchers swap your
+  whole login, so those claude.ai features break or vanish after a switch. chottag pins them to
+  one account (`chottag remote <name>`) and switches only the account that pays for your prompts.
 - **Several logins side by side.** Each account has its own Claude Code
   config dir (a *slot*). Your own `~/.claude` login is never changed.
 - **Switch mid-session.** `chottag tag B` moves every chottag session to B
@@ -83,15 +84,15 @@ chottag auto off
 
 By GitHub stars (as of 2026-09-29), chottag next to the best-known Claude Code account switchers:
 
-| Tool | Mid-session switch, no restart | claude.ai objects stay with owner | Auto-switch at a limit | Never writes Home's login |
+| Tool | Pins Remote Control, connectors, artifacts to one account | Mid-session switch, no restart | Auto-switch at a limit | Never writes Home's login |
 |---|---|---|---|---|
-| **chottag** | yes | yes, built in | yes, on by default | yes |
-| [claude-swap](https://github.com/realiti4/claude-swap) | Linux/Windows: yes; macOS: ~30s or a restart | not stated ([cswap-pin](https://github.com/codeslake/cswap-pin) adds it) | yes | no |
-| [clauth](https://github.com/uwuclxdy/clauth) | not stated | not stated | yes | no |
-| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | no, switch before a new session | not stated | yes, reactive | no |
-| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | yes | not stated | not stated | no |
+| **chottag** | **yes, built in** | yes | yes, on by default | yes |
+| [claude-swap](https://github.com/realiti4/claude-swap) | no; the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it | Linux/Windows: yes; macOS: ~30s or a restart | yes | no |
+| [clauth](https://github.com/uwuclxdy/clauth) | no | not stated | yes | no |
+| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | no | no, switch before a new session | yes, reactive | no |
+| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | no | yes | not stated | no |
 
-[CC Switch](https://github.com/farion1231/cc-switch) is the best-known "switch" tool for Claude Code, but it switches API providers and gateways, not your own subscription accounts. Full sourcing, more tools and migration guides: [docs/comparison.md](docs/comparison.md).
+The four others switch by swapping Claude Code's whole login, so every claude.ai feature moves with it. [CC Switch](https://github.com/farion1231/cc-switch) is the best-known "switch" tool for Claude Code, but it switches API providers and gateways, not your own subscription accounts. Full sourcing, more tools and migration guides: [docs/comparison.md](docs/comparison.md).
 
 ## For Claude Code
 

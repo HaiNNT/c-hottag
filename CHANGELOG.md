@@ -7,6 +7,21 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.4.6] - 2026-09-29
+
+### Changed
+
+- The README says where the name comes from (the WWE hot tag) and how to say it: "See-Hot-Tag".
+  See [release notes](docs/release-notes/v0.4.6.md).
+
+## [0.4.5] - 2026-09-29
+
+### Changed
+
+- README: the first feature names the pain the pin solves (switching never
+  breaks Remote Control, connectors or artifacts), and the comparison
+  table leads with that pin. See [release notes](docs/release-notes/v0.4.5.md).
+
 ## [0.4.4] - 2026-09-29
 
 ### Changed
@@ -139,6 +154,8 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.4.6]: docs/release-notes/v0.4.6.md
+[0.4.5]: docs/release-notes/v0.4.5.md
 [0.4.4]: docs/release-notes/v0.4.4.md
 [0.4.3]: docs/release-notes/v0.4.3.md
 [0.4.2]: docs/release-notes/v0.4.2.md

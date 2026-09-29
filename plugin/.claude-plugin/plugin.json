@@ -1,7 +1,7 @@
 {
   "name": "chottag",
   "description": "Drive chottag (c-hottag) from Claude Code: switch the serving account, set the remote account, log accounts in, check limits and the install.",
-  "version": "0.4.4",
+  "version": "0.4.6",
   "author": {
     "name": "HaiNNT"
   },
