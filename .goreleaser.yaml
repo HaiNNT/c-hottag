@@ -1,0 +1,70 @@
+# GoReleaser v2 config for chottag (M3 spec §4). test/release pins the
+# lines it depends on. A release goes to the repo the tag was pushed to;
+# the Homebrew tap is written but not uploaded (R63).
+version: 2
+
+project_name: chottag
+
+builds:
+  - id: chottag
+    main: ./cmd/chottag
+    binary: chottag
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/HaiNNT/c-hottag/internal/cli.Version={{.Version}}
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    name_template: "chottag_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+
+release:
+  # draft: true (Ruling 33, final review M3): goreleaser only creates the
+  # release; release.yml's own "publish the release" step un-drafts it,
+  # after the attest step on the public repo, so a failed attestation
+  # leaves a draft — never a published, unverifiable "latest" — instead of
+  # a window where a just-published release has no attestation yet.
+  draft: true
+  # replace_existing_draft: true (final re-review NEW-2): a failed attest
+  # leaves the tag's draft in place (by design, above), and GitHub's by-tag
+  # lookup doesn't return drafts — so re-running the job after a fix would
+  # otherwise create a SECOND draft with the same tag and fresh assets,
+  # leaving two candidates for the "publish the release" step's `gh release
+  # edit` to pick between, and a risk of publishing the wrong one (stale
+  # tarballs whose digests don't match the new attestation). This deletes
+  # the earlier draft with a matching tag before creating its own, so a
+  # re-run always replaces cleanly instead of accumulating drafts.
+  replace_existing_draft: true
+
+# Written for a future tap repo (N1); not uploaded until one exists (R63).
+brews:
+  - name: chottag
+    repository:
+      owner: HaiNNT
+      name: homebrew-tap
+    directory: Formula
+    homepage: https://github.com/HaiNNT/c-hottag
+    description: Switch the Claude account Claude Code uses, per request, without logging out
+    license: Apache-2.0
+    skip_upload: true
+    install: |
+      bin.install "chottag"
+    caveats: |
+      Run `chottag setup` once, then open a new shell.
+    test: |
+      system "#{bin}/chottag", "version"

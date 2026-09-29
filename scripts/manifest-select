@@ -1,0 +1,91 @@
+#!/bin/sh
+# manifest-select: print the paths read on stdin (one per line) that
+# MANIFEST selects, in input order. Everything else is left out: deny by
+# default.
+#
+#   usage: scripts/manifest-select MANIFEST < paths
+#
+# MANIFEST holds one entry per line; blank lines and lines starting with #
+# are ignored.
+#   dir/     selects every path under dir/
+#   file     selects exactly that path
+#   !dir/    never selects a path under dir/ (a ! entry beats any other)
+#   !file    never selects that path, or anything under file/ (a bare
+#            !name denies both a file called name and a directory called
+#            name, the same as !name/ would)
+# A leading "./" on an entry or an input path is ignored.
+#
+# Feed this script `git ls-files -z` output, with each NUL turned into a
+# newline. -z is what matters: it is the only git ls-files mode that does
+# not C-quote a path holding a `"`, a backslash or a tab (`-c
+# core.quotePath=false` alone still quotes those three). A quoted line
+# reaching this script anyway is a usage error here (exit 2), not
+# silently dropped -- but by then stdout may already hold earlier,
+# correctly selected paths, so a caller must check the exit status, not
+# just read stdout to EOF.
+#
+# Exit status: 0, including when nothing matched; 1 when MANIFEST is
+# missing, unreadable or selects nothing; 2 on a usage error, including an
+# unparsed (C-quoted) input path.
+set -eu
+
+if [ $# -ne 1 ]; then
+	printf 'usage: scripts/manifest-select MANIFEST < paths\n' >&2
+	exit 2
+fi
+if [ ! -f "$1" ] || [ ! -r "$1" ]; then
+	printf 'manifest-select: no manifest at %s\n' "$1" >&2
+	exit 1
+fi
+
+MANIFEST_SELECT_MANIFEST=$1 awk '
+function strip(s) {
+	sub(/\r$/, "", s)
+	sub(/^[ \t]+/, "", s)
+	sub(/[ \t]+$/, "", s)
+	return s
+}
+function unslash(s) {
+	while (substr(s, 1, 2) == "./") s = substr(s, 3)
+	return s
+}
+function hitAllow(p, e) {
+	if (substr(e, length(e), 1) == "/") return substr(p, 1, length(e)) == e
+	return p == e
+}
+function hitDeny(p, e) {
+	if (substr(e, length(e), 1) == "/") return substr(p, 1, length(e)) == e
+	return p == e || substr(p, 1, length(e) + 1) == e "/"
+}
+BEGIN {
+	manifest = ENVIRON["MANIFEST_SELECT_MANIFEST"]
+	n = 0
+	m = 0
+	while ((getline line < manifest) > 0) {
+		line = strip(line)
+		if (line == "" || substr(line, 1, 1) == "#") continue
+		if (substr(line, 1, 1) == "!") deny[++m] = unslash(substr(line, 2))
+		else allow[++n] = unslash(line)
+	}
+	close(manifest)
+	if (n == 0) {
+		print "manifest-select: " manifest " selects nothing" > "/dev/stderr"
+		bad = 1
+		exit 1
+	}
+}
+{
+	if (substr($0, 1, 1) == "\"") {
+		print "manifest-select: a C-quoted path was not parsed (stdin line " NR "); feed this script git ls-files -z output instead" > "/dev/stderr"
+		badinput = 1
+		exit
+	}
+	p = unslash($0)
+	for (i = 1; i <= m; i++) if (hitDeny(p, deny[i])) next
+	for (i = 1; i <= n; i++) if (hitAllow(p, allow[i])) { print p; next }
+}
+END {
+	if (badinput) exit 2
+	if (bad) exit 1
+}
+'

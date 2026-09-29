@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.chottag.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.chottag/bin/chottag</string>
+    <string>daemon</string>
+    <string>run</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <!-- Every failure before the daemon starts serving (flag and
+       listen/upstream-proxy validation, the home directory, the CA, the
+       trace log, the owners store, the status sink, and the bind itself)
+       is written to the real stderr as well as to daemon.log (spec 4.6,
+       F109), so a failed start shows up here rather than only inside the
+       rotating daemon.log, which launchd never reads. -->
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.chottag/daemon.stderr.log</string>
+</dict>
+</plist>

@@ -1,0 +1,330 @@
+#!/bin/sh
+# dev-env: a persistent, isolated dev sandbox for chottag (R91). It builds a
+# dev chottag under its own HOME, its own CHOTTAG_HOME and its own port, so a
+# Claude Code session working in this repo never touches the maintainer's
+# daily ("prod") install: ~/.chottag, port 47821, or the ~/.zshrc PATH block.
+# A dev slot needs its own browser login (scripts/dev-env run login NAME):
+# prod slots are never copied into the sandbox.
+#
+#   usage: scripts/dev-env <command> [args...]
+#
+# Commands:
+#   build            Build ./cmd/chottag into the sandbox, run its setup
+#                     (which only writes the sandbox HOME's own rc file),
+#                     and force the dev port into the sandbox's state.json.
+#                     Idempotent: safe to run again after a rebuild.
+#   env               Print `export` lines for CHOTTAG_HOME and PATH:
+#                       eval "$(scripts/dev-env env)"
+#                     Never exports HOME: git, gh and ssh keep working.
+#                     PATH also drops prod's own bin dir (~/.chottag/bin,
+#                     from the maintainer's ~/.zshrc block): otherwise the
+#                     dev binary's `claude` shim would resolve prod's
+#                     `claude` shim first and route dev sessions through
+#                     the prod daemon.
+#   shell             Start a subshell with that env (and CHOTTAG_DEV=1).
+#   run ARGS...       Run the sandbox chottag with ARGS (setup/uninstall
+#                     also get the sandbox HOME).
+#   status            Show the sandbox root, its CHOTTAG_HOME, its port,
+#                     the binary's version, and the dev daemon's state.
+#   destroy [--yes]   Stop the dev daemon and remove the whole sandbox root.
+#                     Asks [y/N] at a terminal; needs --yes otherwise.
+#
+# Layout, rooted at ${CHOTTAG_DEV_ROOT:-$HOME/chottag-dev} (must be
+# absolute; refuses $HOME itself or a root inside $HOME/.chottag or
+# $HOME/.claude):
+#   $root/bin/chottag       the freshly built dev binary
+#   $root/home              the sandbox HOME (its own .zshrc; never sourced)
+#   $root/home, .chottag    the dev CHOTTAG_HOME under it: slots, state.json
+#
+# The dev daemon listens on ${CHOTTAG_DEV_PORT:-47850}, which must be
+# numeric, between 1024 and 65535, and outside 47821-47841 (prod's port and
+# the range `chottag doctor --fix` moves a busy prod port into) -- never
+# 47821 itself.
+#
+# `build`'s real claude comes from ${CHOTTAG_REAL_CLAUDE:-}, or else the
+# first `claude` on PATH that does not resolve to a chottag shim.
+set -eu
+
+die() { echo "dev-env: $*" >&2; exit 1; }
+say() { echo "dev-env: $*"; }
+
+print_usage() { sed -n '2,/^set -eu$/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git work tree"
+cd "$repo_root"
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { print_usage; die "no command (see usage above)"; }
+shift
+
+case "$cmd" in
+-h | --help | help)
+	print_usage
+	exit 0
+	;;
+esac
+
+# ---- configuration: root, sandbox paths, port -----------------------------
+
+root=${CHOTTAG_DEV_ROOT:-$HOME/chottag-dev}
+case "$root" in
+/*) ;;
+*) die "CHOTTAG_DEV_ROOT must be an absolute path (got '$root')" ;;
+esac
+[ "$root" != "$HOME" ] || die "CHOTTAG_DEV_ROOT must not be \$HOME itself"
+for protected in "$HOME/.chottag" "$HOME/.claude"; do
+	case "$root" in
+	"$protected" | "$protected"/*)
+		die "CHOTTAG_DEV_ROOT must not be, or be inside, $protected"
+		;;
+	esac
+done
+
+sandbox_home="$root/home"
+dev_home="$sandbox_home/.chottag"
+bin_dir="$root/bin"
+chottag_bin="$bin_dir/chottag"
+
+dev_port=${CHOTTAG_DEV_PORT:-47850}
+case "$dev_port" in
+'' | *[!0-9]*) die "CHOTTAG_DEV_PORT must be numeric (got '$dev_port')" ;;
+esac
+if [ "$dev_port" -lt 1024 ] || [ "$dev_port" -gt 65535 ]; then
+	die "CHOTTAG_DEV_PORT must be between 1024 and 65535 (got '$dev_port')"
+fi
+if [ "$dev_port" -ge 47821 ] && [ "$dev_port" -le 47841 ]; then
+	die "CHOTTAG_DEV_PORT must be outside 47821-47841, prod's port and doctor's move range (got '$dev_port')"
+fi
+
+# ---- helpers ---------------------------------------------------------------
+
+# resolve_path: $1's target after following symlinks, best-effort when this
+# system has no realpath.
+resolve_path() {
+	p=$1
+	if command -v realpath >/dev/null 2>&1; then
+		rp=$(realpath "$p" 2>/dev/null) && { printf '%s\n' "$rp"; return 0; }
+	fi
+	i=0
+	while [ -L "$p" ] && [ "$i" -lt 40 ]; do
+		link=$(readlink "$p") || break
+		case "$link" in
+		/*) p=$link ;;
+		*) p=$(dirname "$p")/$link ;;
+		esac
+		i=$((i + 1))
+	done
+	printf '%s\n' "$p"
+}
+
+# dev_path: $dev_home/bin, then $PATH with every entry dropped whose
+# resolved path is $HOME/.chottag/bin (or anywhere under $HOME/.chottag),
+# or $dev_home/bin itself (avoiding a duplicate). Fix round 2, item 3: the
+# maintainer's ~/.zshrc puts prod's own bin dir on every shell's PATH, and
+# internal/shim/resolve.go's ResolveClaude walks PATH for the first
+# `claude` that isn't a chottag shim, skipping only ITS OWN bin dir -- so
+# inside a dev shell/env/run, prod's ~/.chottag/bin/claude would otherwise
+# still resolve first and exec the PROD shim, routing "dev" sessions
+# through the prod daemon.
+dev_path() {
+	chottag_home_real=$(resolve_path "$HOME/.chottag")
+	dev_bin_real=$(resolve_path "$dev_home/bin")
+	out="$dev_home/bin"
+	old_ifs=$IFS
+	IFS=:
+	set -f
+	set -- $PATH
+	set +f
+	IFS=$old_ifs
+	for dir in "$@"; do
+		[ -n "$dir" ] || continue
+		resolved=$(resolve_path "$dir")
+		case "$resolved" in
+		"$chottag_home_real" | "$chottag_home_real"/*) continue ;;
+		esac
+		[ "$resolved" != "$dev_bin_real" ] || continue
+		out="$out:$dir"
+	done
+	printf '%s\n' "$out"
+}
+
+# json_escape: $1, with backslash and double-quote escaped, for embedding
+# in a hand-written JSON string value.
+json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# find_real_claude: CHOTTAG_REAL_CLAUDE if set, else the first `claude` on
+# PATH that is neither a chottag shim (basename chottag, or under
+# $HOME/.chottag or this sandbox's own root) nor a terminal's wrapper that
+# re-resolves `claude` from PATH (cmux's per-surface shims and its bundled
+# wrapper): either would lead back into a chottag shim.
+find_real_claude() {
+	if [ -n "${CHOTTAG_REAL_CLAUDE:-}" ]; then
+		printf '%s\n' "$CHOTTAG_REAL_CLAUDE"
+		return 0
+	fi
+	old_ifs=$IFS
+	IFS=:
+	set -f
+	set -- $PATH
+	set +f
+	IFS=$old_ifs
+	for dir in "$@"; do
+		[ -n "$dir" ] || continue
+		cand="$dir/claude"
+		[ -x "$cand" ] || continue
+		resolved=$(resolve_path "$cand")
+		case "$resolved" in
+		*/chottag) continue ;;
+		esac
+		case "$resolved" in
+		"$HOME/.chottag"/* | "$root"/*) continue ;;
+		esac
+		case "$cand$resolved" in
+		*/cmux-cli-shims/* | */Contents/Resources/bin/claude*) continue ;;
+		esac
+		printf '%s\n' "$cand"
+		return 0
+	done
+	return 1
+}
+
+# daemon_running: true when the sandbox's own `doctor` (read-only) sees a
+# live daemon. Never starts one itself.
+daemon_running() {
+	[ -x "$chottag_bin" ] || return 1
+	out=$(CHOTTAG_HOME="$dev_home" "$chottag_bin" doctor --json 2>/dev/null) || return 1
+	printf '%s\n' "$out" | grep -A2 '"id": "daemon"' | grep -q 'running (pid'
+}
+
+# force_port: rewrite the dev port into the sandbox's state.json, if it
+# differs, with a portable sed-to-temp-then-mv (inside $root), verified by
+# grep afterwards. setup's adopt writes state.json only when it finds an
+# existing login to register (store.Update never writes on no change), so
+# a brand-new sandbox with nothing to adopt yet has no state.json at all:
+# write a minimal one (0 accounts, the dev port, and -- fix round 2, item
+# 3 -- $real_claude as realClaude, so the very first dev launch never
+# walks PATH at all) instead of rewriting. An existing state.json's own
+# realClaude (from a previous build, or a real login) is left alone.
+force_port() {
+	state="$dev_home/state.json"
+	if [ ! -f "$state" ]; then
+		tmp="$root/.state.json.tmp"
+		printf '{\n  "version": 1,\n  "accounts": [],\n  "port": %s,\n  "realClaude": "%s"\n}\n' \
+			"$dev_port" "$(json_escape "$real_claude")" >"$tmp"
+		chmod 0600 "$tmp"
+		mv "$tmp" "$state"
+		say "wrote $state (port $dev_port, realClaude $real_claude): setup found no existing login to adopt yet"
+		return 0
+	fi
+	current=$(sed -n 's/.*"port": \([0-9][0-9]*\).*/\1/p' "$state" | head -n 1)
+	[ -n "$current" ] || die "could not read \"port\" from $state"
+	if [ "$current" = "$dev_port" ]; then
+		return 0
+	fi
+	was_running=0
+	daemon_running && was_running=1
+	tmp="$root/.state.json.tmp"
+	sed "s/\"port\": $current/\"port\": $dev_port/" "$state" >"$tmp"
+	grep -q "\"port\": $dev_port" "$tmp" || {
+		rm -f "$tmp"
+		die "could not rewrite the port in $state"
+	}
+	mv "$tmp" "$state"
+	say "set the dev port to $dev_port (was $current)"
+	if [ "$was_running" -eq 1 ]; then
+		say "a dev daemon was already running on the old port: run 'scripts/dev-env run daemon restart' to pick up $dev_port"
+	fi
+}
+
+# ---- commands ---------------------------------------------------------------
+
+do_build() {
+	real_claude=$(find_real_claude) || die "no real 'claude' found on PATH (every candidate is a chottag shim, or none exists); set CHOTTAG_REAL_CLAUDE=/path/to/claude"
+	mkdir -p "$bin_dir" "$sandbox_home"
+	say "building $chottag_bin"
+	(cd "$repo_root" && go build -o "$chottag_bin" ./cmd/chottag)
+	say "running setup in the sandbox (HOME=$sandbox_home, CHOTTAG_HOME=$dev_home, claude=$real_claude)"
+	HOME="$sandbox_home" CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" "$chottag_bin" setup --claude "$real_claude" </dev/null
+	force_port
+	say "ready: CHOTTAG_HOME=$dev_home, port $dev_port"
+	say "next: eval \"\$(scripts/dev-env env)\" or scripts/dev-env shell, then scripts/dev-env run login NAME"
+}
+
+do_env() {
+	printf 'export CHOTTAG_HOME=%s\n' "$dev_home"
+	printf 'export PATH="%s"\n' "$(dev_path)"
+	printf '# dev-env (R91): CHOTTAG_HOME=%s, port %s -- prod (~/.chottag, 47821) stays untouched,\n' "$dev_home" "$dev_port"
+	printf '# and its bin dir is dropped from PATH so the dev shim never execs the prod one\n'
+}
+
+do_shell() {
+	[ -d "$dev_home/bin" ] || die "no dev sandbox yet at $dev_home; run: scripts/dev-env build"
+	say "starting a dev-env subshell: CHOTTAG_HOME=$dev_home, PATH gains $dev_home/bin (prod's bin dir dropped); type 'exit' or ctrl-d to leave"
+	CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" CHOTTAG_DEV=1 exec "${SHELL:-/bin/sh}"
+}
+
+do_run() {
+	[ $# -gt 0 ] || die "run needs a command, like: scripts/dev-env run status"
+	[ -x "$chottag_bin" ] || die "no dev binary at $chottag_bin yet; run: scripts/dev-env build"
+	case "$1" in
+	setup | uninstall)
+		HOME="$sandbox_home" CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" "$chottag_bin" "$@"
+		;;
+	*)
+		CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" "$chottag_bin" "$@"
+		;;
+	esac
+}
+
+do_status() {
+	say "root:         $root"
+	say "CHOTTAG_HOME: $dev_home"
+	say "port:         $dev_port"
+	if [ -x "$chottag_bin" ]; then
+		say "binary:       $chottag_bin ($("$chottag_bin" version 2>/dev/null || echo "version unknown"))"
+		CHOTTAG_HOME="$dev_home" "$chottag_bin" status
+	else
+		say "binary:       not built yet (scripts/dev-env build)"
+	fi
+}
+
+do_destroy() {
+	yes=0
+	for a in "$@"; do
+		case "$a" in
+		--yes) yes=1 ;;
+		*) die "destroy: unknown argument '$a' (see --help)" ;;
+		esac
+	done
+	case "$root" in
+	"$HOME" | "$HOME"/.chottag | "$HOME"/.chottag/* | "$HOME"/.claude*) die "refusing to destroy $root" ;;
+	/) die "refusing to destroy /" ;;
+	esac
+	[ -d "$dev_home" ] || die "$root does not look like a dev-env root (no home/.chottag under it)"
+	if [ "$yes" -eq 0 ]; then
+		[ -t 0 ] || die "destroy removes $root: pass --yes when not at a terminal"
+		printf 'dev-env: remove %s entirely? [y/N] ' "$root"
+		read -r answer
+		case "$answer" in
+		y | Y | yes) ;;
+		*) die "stopped" ;;
+		esac
+	fi
+	if [ -x "$chottag_bin" ]; then
+		CHOTTAG_HOME="$dev_home" "$chottag_bin" daemon stop --force >/dev/null 2>&1 || true
+	fi
+	rm -rf "$root"
+	say "removed $root"
+}
+
+case "$cmd" in
+build) do_build "$@" ;;
+env) do_env "$@" ;;
+shell) do_shell "$@" ;;
+run) do_run "$@" ;;
+status) do_status "$@" ;;
+destroy) do_destroy "$@" ;;
+*) die "unknown command '$cmd' (see: scripts/dev-env --help)" ;;
+esac

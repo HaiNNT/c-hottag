@@ -1,0 +1,42 @@
+# public-manifest.txt: the only paths scripts/export-public copies into the
+# public repo. Deny by default: a path no line selects stays private.
+#   dir/    selects that whole subtree
+#   file    selects exactly that file
+#   !path   keeps a path (or, ending in /, a subtree) out even when another
+#           line selects it
+# test/leakscan fails when a tracked file matches no line at all, so every
+# new file is a deliberate choice between public and private.
+
+.claude-plugin/
+.claude/hooks/guard-home.py
+.claude/settings.json
+.claude/skills/
+.github/
+.gitignore
+.goreleaser.yaml
+CHANGELOG.md
+CLAUDE.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+LICENSE
+NOTICE
+README.md
+ROADMAP.md
+SECURITY.md
+SUPPORT.md
+cmd/
+docs/
+go.mod
+install.sh
+internal/
+packaging/
+plugin/
+public-manifest.txt
+routes/
+scripts/
+test/
+
+# Private: never exported.
+!.claude/tracker.json
+!docs/internal/
+!scripts/release

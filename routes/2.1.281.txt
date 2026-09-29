@@ -1,0 +1,111 @@
+# chottag trace summary
+## Routes
+METHOD  HOST                                PATH                                                           CLASS      FORM      AUTH               STATUS   COUNT  SWAPPED  UPGRADE  FIRST-SEEN-AFTER
+GET     api.anthropic.com                   /api/claude_cli/bootstrap                                      serving    mitm      oauth-access       200      2      0        false    startup
+GET     api.anthropic.com                   /api/claude_code/notification/preferences                      serving    mitm      oauth-access       200      1      0        false    startup
+GET     api.anthropic.com                   /api/claude_code_grove                                         serving    mitm      oauth-access       200      2      0        false    startup
+GET     api.anthropic.com                   /api/claude_code_penguin_mode                                  serving    mitm      oauth-access       200      2      0        false    startup
+POST    api.anthropic.com                   /api/eval/{key}                                 serving    mitm      oauth-access       200      3      0        false    startup
+POST    api.anthropic.com                   /api/event_logging/v2/batch                                    serving    absolute  oauth-access       200      2      0        false    rc-server
+POST    api.anthropic.com                   /api/event_logging/v2/batch                                    serving    mitm      none,oauth-access  0,200    20     0        false    
+POST    api.anthropic.com                   /api/frame/deploy/direct                                       remote     mitm      oauth-access       200      2      0        false    artifact
+POST    api.anthropic.com                   /api/frame/deploy/prepare                                      remote     mitm      oauth-access       200      1      0        false    artifact
+GET     api.anthropic.com                   /api/frame/read/{id}                                           remote     mitm      oauth-access       200      1      0        false    artifact
+GET     api.anthropic.com                   /api/frame/sync                                                remote     mitm      none               101      1      0        true     artifact
+POST    api.anthropic.com                   /api/frame/track                                               remote     mitm      oauth-access       204      2      0        false    artifact
+GET     api.anthropic.com                   /api/frame/types                                               remote     mitm      oauth-access       200      2      0        false    connector
+GET     api.anthropic.com                   /api/frame/types/{id}/instances                                remote     mitm      oauth-access       200      1      0        false    connector
+GET     api.anthropic.com                   /api/frame/{id}                                                remote     mitm      oauth-access       200      2      0        false    artifact
+GET     api.anthropic.com                   /api/oauth/account/settings                                    serving    mitm      oauth-access       200      2      0        false    startup
+GET     api.anthropic.com                   /api/oauth/organizations/{id}/code/repos/{owner}/{repo}  serving    mitm      oauth-access       404      1      0        false    routines
+GET     api.anthropic.com                   /api/oauth/organizations/{id}/marketplaces                     serving    mitm      oauth-access       304      3      0        false    
+GET     api.anthropic.com                   /api/oauth/organizations/{id}/plugins/list-plugins             serving    mitm      oauth-access       200      3      0        false    
+GET     api.anthropic.com                   /api/oauth/organizations/{id}/skills/list-skills               serving    mitm      oauth-access       200      4      0        false    
+GET     api.anthropic.com                   /api/oauth/organizations/{id}/sync/github/auth                 serving    mitm      oauth-access       200      2      0        false    status
+GET     api.anthropic.com                   /api/oauth/usage                                               serving    mitm      oauth-access       200      1      0        false    usage
+POST    api.anthropic.com                   /api/oauth/validate                                            remote     absolute  oauth-access       200      1      0        false    rc-server
+GET     api.anthropic.com                   /api/organizations/{id}/model_selector/cc                      serving    mitm      oauth-access       200      1      0        false    startup
+GET     api.anthropic.com                   /mcp-registry/v0/servers                                       untouched  mitm      none               200      8      0        false    startup
+POST    api.anthropic.com                   /v1/code/sessions                                              remote     absolute  oauth-access       200      1      0        false    rc-server
+POST    api.anthropic.com                   /v1/code/sessions                                              remote     mitm      oauth-access       200      1      0        false    startup
+GET     api.anthropic.com                   /v1/code/sessions/{id}                                         remote     absolute  oauth-access       200      2      0        false    rc-server
+GET     api.anthropic.com                   /v1/code/sessions/{id}                                         remote     mitm      oauth-access       200      1      0        false    artifact
+PUT     api.anthropic.com                   /v1/code/sessions/{id}                                         remote     mitm      oauth-access       200      1      0        false    artifact
+POST    api.anthropic.com                   /v1/code/sessions/{id}/archive                                 remote     mitm      oauth-access       200      1      0        false    rc-repl
+POST    api.anthropic.com                   /v1/code/sessions/{id}/bridge                                  remote     mitm      oauth-access       200      1      0        false    startup
+POST    api.anthropic.com                   /v1/code/sessions/{id}/client/presence                         untouched  mitm      oauth-access       200      15     0        false    status
+GET     api.anthropic.com                   /v1/code/sessions/{id}/worker                                  untouched  mitm      bearer-other       200      3      0        false    startup
+PUT     api.anthropic.com                   /v1/code/sessions/{id}/worker                                  untouched  mitm      bearer-other       200      34     0        false    startup
+POST    api.anthropic.com                   /v1/code/sessions/{id}/worker/events                           untouched  mitm      bearer-other       200,409  40     0        false    startup
+POST    api.anthropic.com                   /v1/code/sessions/{id}/worker/events/delivery                  untouched  mitm      bearer-other       200,409  11     0        false    rc-repl
+GET     api.anthropic.com                   /v1/code/sessions/{id}/worker/events/stream                    untouched  mitm      bearer-other       200      2      0        false    startup
+POST    api.anthropic.com                   /v1/code/sessions/{id}/worker/heartbeat                        untouched  mitm      bearer-other       200      61     0        false    status
+GET     api.anthropic.com                   /v1/code/sessions/{id}/worker/internal-events                  untouched  mitm      bearer-other       200      2      0        false    rc-server
+POST    api.anthropic.com                   /v1/code/sessions/{id}/worker/register                         untouched  absolute  bearer-other       200      1      0        false    rc-server
+GET     api.anthropic.com                   /v1/code/triggers                                              remote     mitm      oauth-access       200      1      0        false    routines
+GET     api.anthropic.com                   /v1/environment_providers                                      remote     mitm      oauth-access       200      1      0        false    routines
+POST    api.anthropic.com                   /v1/environments/bridge                                        remote     absolute  oauth-access       200      1      0        false    rc-server
+POST    api.anthropic.com                   /v1/environments/bridge/{id}/offline                           serving    absolute  oauth-access       404      1      0        false    rc-server
+GET     api.anthropic.com                   /v1/environments/{id}/work/poll                                untouched  absolute  oauth-access       200      72     0        false    rc-server
+POST    api.anthropic.com                   /v1/environments/{id}/work/{id}/ack                            untouched  absolute  bearer-other       200      1      0        false    rc-server
+POST    api.anthropic.com                   /v1/environments/{id}/work/{id}/heartbeat                      untouched  absolute  bearer-other       200      3      0        false    rc-server
+POST    api.anthropic.com                   /v1/environments/{id}/work/{id}/stop                           untouched  absolute  oauth-access       200      1      0        false    rc-server
+GET     api.anthropic.com                   /v1/mcp_servers                                                remote     mitm      oauth-access       200      2      0        false    startup
+POST    api.anthropic.com                   /v1/messages                                                   serving    mitm      oauth-access       200      29     0        false    startup
+GET     api.anthropic.com                   /v1/ultrareview/quota                                          serving    mitm      oauth-access       200      1      0        false    startup
+GET     downloads.claude.ai                 /claude-code-releases/latest                                   untouched  mitm      none               200      2      0        false    startup
+GET     downloads.claude.ai                 /claude-code-releases/plugins/claude-plugins-official/latest   untouched  mitm      none               200      2      0        false    artifact
+POST    http-intake.logs.us5.datadoghq.com  /api/v2/logs                                                   untouched  absolute  none               0,202    2      0        false    rc-server
+POST    mcp-proxy.anthropic.com             /v1/mcp/{id}                                                   remote     mitm      oauth-access       200,202  7      0        false    startup
+## Tunnels
+HOST                                    FORM   COUNT  ERRORS
+api.github.com:443                      blind  1      
+api.githubcopilot.com:443               blind  2      
+github.com:443                          blind  14     
+http-intake.logs.us5.datadoghq.com:443  blind  24     
+scanner.semgrep.ai:443                  blind  10     
+semgrep.dev:443                         blind  4      
+telemetry.semgrep.dev:443               blind  32     dial tcp 34.211.26.103:443: operation was canceled | dial tcp 100.20.1.144:443: operation was canceled
+## ID links (response field -> later request path)
+GET api.anthropic.com /api/claude_cli/bootstrap   .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/organizations/{id}/model_selector/cc
+GET api.anthropic.com /v1/mcp_servers             .data[].id                        ->  POST mcp-proxy.anthropic.com /v1/mcp/{id}
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/code/sessions/{id}/bridge
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  GET api.anthropic.com /v1/code/sessions/{id}/worker
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  PUT api.anthropic.com /v1/code/sessions/{id}/worker
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/code/sessions/{id}/worker/events
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  GET api.anthropic.com /v1/code/sessions/{id}/worker/events/stream
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/code/sessions/{id}/client/presence
+GET api.anthropic.com /api/claude_cli/bootstrap   .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/oauth/organizations/{id}/sync/github/auth
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/code/sessions/{id}/worker/heartbeat
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  GET api.anthropic.com /v1/code/sessions/{id}
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  PUT api.anthropic.com /v1/code/sessions/{id}
+POST api.anthropic.com /api/frame/deploy/prepare  .slug                             ->  GET api.anthropic.com /api/frame/{id}
+POST api.anthropic.com /api/frame/deploy/prepare  .slug                             ->  GET api.anthropic.com /api/frame/read/{id}
+GET api.anthropic.com /api/claude_cli/bootstrap   .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/oauth/organizations/{id}/code/repos/{owner}/{repo}
+GET api.anthropic.com /api/frame/types            .types[].slug                     ->  GET api.anthropic.com /api/frame/types/{id}/instances
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/code/sessions/{id}/worker/events/delivery
+GET api.anthropic.com /api/claude_cli/bootstrap   .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/oauth/organizations/{id}/skills/list-skills
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/code/sessions/{id}/archive
+POST api.anthropic.com /v1/environments/bridge    .environment_id                   ->  GET api.anthropic.com /v1/environments/{id}/work/poll
+POST api.anthropic.com /v1/environments/bridge    .environment_id                   ->  POST api.anthropic.com /v1/environments/{id}/work/{id}/ack
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/environments/{id}/work/{id}/ack
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/code/sessions/{id}/worker/register
+POST api.anthropic.com /v1/environments/bridge    .environment_id                   ->  POST api.anthropic.com /v1/environments/{id}/work/{id}/heartbeat
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/environments/{id}/work/{id}/heartbeat
+GET api.anthropic.com /api/claude_cli/bootstrap   .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/oauth/organizations/{id}/plugins/list-plugins
+GET api.anthropic.com /api/claude_cli/bootstrap   .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/oauth/organizations/{id}/marketplaces
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  GET api.anthropic.com /v1/code/sessions/{id}/worker/internal-events
+POST api.anthropic.com /v1/environments/bridge    .environment_id                   ->  POST api.anthropic.com /v1/environments/{id}/work/{id}/stop
+POST api.anthropic.com /v1/code/sessions          .session.id                       ->  POST api.anthropic.com /v1/environments/{id}/work/{id}/stop
+POST api.anthropic.com /v1/environments/bridge    .environment_id                   ->  POST api.anthropic.com /v1/environments/bridge/{id}/offline
+## Unfinished streams (head record with no req: still open, or died with the daemon)
+unfinished streams: 0
+## Marks
+startup
+status
+usage
+artifact
+routines
+connector
+rc-repl
+rc-server

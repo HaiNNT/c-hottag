@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/HaiNNT/c-hottag/security/policy
+    about: Report it privately, as SECURITY.md describes, never in a public issue.
+  - name: Your Claude account, plan, billing or usage limits
+    url: https://support.claude.com
+    about: Anthropic support handles these. c-hottag can't see or change them.

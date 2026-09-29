@@ -1,0 +1,984 @@
+# Command reference
+
+Every `chottag` command, its flags and its `--json` output. `chottag help`
+prints the command list; `chottag <command> --help` prints one command's
+own lines (a command group like `daemon` or `trace` prints every one of its
+verbs). An account is named by its display name, its email, or any prefix
+of the name that matches exactly one account. Every path chottag reads or
+writes is under `~/.chottag`, or under `$CHOTTAG_HOME` when that is set.
+See [configuration](configuration.md) for the files under that tree, and
+[auto-switch](auto-switch.md) for `chottag auto`'s settings.
+
+## Global flags and help
+
+| Flag | Meaning |
+|---|---|
+| `--json` | print one JSON document on stdout instead of the human text; accepted by every command except the ones below |
+| `-h`, `--help` | print the command's usage and exit 0, without running it |
+
+`chottag help` (also bare `chottag`, `chottag -h` and `chottag --help`)
+prints the full command list.
+
+These commands refuse `--json`, because they stream or run forever: `daemon
+run`, `daemon logs`, `proxy run`, `trace run`, `trace env`, `trace mark`,
+`trace summarize`, and `help` itself. Each fails with exit 2 and the error
+code `json_unsupported` (`cli.go`'s `refuseJSON`).
+
+## JSON output
+
+Under `--json`, chottag writes exactly one JSON document to stdout and
+nothing else there; every other line goes to stderr. Branch on `ok`, then
+on `error.code` — never parse `error.message`, which is for humans and can
+change. `warnings` is always an array, present even when empty, of
+`{code, message}` objects: something worth knowing beyond the result. A
+failing command's `error` object carries `code`, `message` and `exit`
+(chottag's own process exit code), plus command-specific details, such as
+`error.skipped` for `no_candidate` or `error.checks` and `error.problems`
+for `doctor_problems`.
+
+A success document:
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [
+    {"code": "limited", "message": "B is limited until Sep 28 14:05"}
+  ]
+}
+```
+
+An error document:
+
+```json
+{
+  "version": 1,
+  "ok": false,
+  "warnings": [],
+  "error": {"code": "unknown_account", "message": "no account matches \"Z\"", "exit": 1}
+}
+```
+
+## Exit codes
+
+| Exit | Meaning |
+|---|---|
+| `0` | success |
+| `1` | the command failed |
+| `2` | a usage error: fix the command line |
+| `3` | nothing failed, but you must decide something (confirm, pick an account, fix a doctor problem) |
+
+## Install and update
+
+### `chottag setup`
+
+```sh
+chottag setup [--claude PATH] [--name DIR=NAME]...
+```
+
+Installs the shim: the `~/.chottag` tree, the local CA, the `bin/chottag`
+and `bin/claude` symlinks, and a PATH line in your shell's rc file. It then
+runs `chottag adopt` with the same arguments, so any slot that already
+holds a login is registered without a fresh `claude auth login`.
+
+| Flag | Meaning |
+|---|---|
+| `--claude PATH` | path to the real `claude` binary, passed through to `adopt` |
+| `--name DIR=NAME` | register the slot dir `DIR` under the account name `NAME` (repeatable), passed through to `adopt` |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "installed": "/Users/alice/.chottag",
+  "rcUpdated": true,
+  "rcPath": "/Users/alice/.zshrc",
+  "adopt": {
+    "adopted": [{"dir": "a", "name": "work"}],
+    "updated": [{"dir": "b", "name": "personal"}],
+    "skipped": [{"dir": "c", "reason": "no login"}]
+  }
+}
+```
+
+`adopt` is present, with empty arrays when there was nothing to adopt, and
+absent when the inner adopt failed for another reason — that shows up
+instead as an `adopt_failed` warning.
+
+### `chottag adopt`
+
+```sh
+chottag adopt [--claude PATH] [--name DIR=NAME]...
+```
+
+Registers the account slot directories that already hold a login, so slots
+created before chottag had a CLI are usable without logging in again.
+chottag cannot import another tool's login into a slot (macOS ties a login
+to its config directory path); this command only ever notices logins
+already sitting in a slot chottag manages.
+
+| Flag | Meaning |
+|---|---|
+| `--claude PATH` | path to the real `claude` binary, used to read each slot's login |
+| `--name DIR=NAME` | register the slot dir `DIR` under the account name `NAME` (repeatable) |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "adopted": [{"dir": "a", "name": "work"}],
+  "updated": [{"dir": "b", "name": "personal"}],
+  "skipped": [{"dir": "c", "reason": "no login"}]
+}
+```
+
+### `chottag update`
+
+```sh
+chottag update [--check] [--version V] [--repo OWNER/NAME] [--restart]
+```
+
+Installs the latest release from the repo chottag was installed from.
+`--check` only reports whether a newer release exists; it installs
+nothing.
+
+| Flag | Meaning |
+|---|---|
+| `--check` | report whether a newer release exists; install nothing |
+| `--version V` | install this release tag instead of the latest, e.g. to roll back |
+| `--repo OWNER/NAME` | use this repo instead of `install.json`'s or the default |
+| `--restart` | restart the daemon even if a claude session is running |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "repo": "HaiNNT/c-hottag",
+  "current": "v0.3.0",
+  "latest": "v0.4.0",
+  "updateAvailable": true,
+  "installed": true,
+  "pruned": ["v0.2.0"],
+  "daemon": "restarted",
+  "liveSessions": 0
+}
+```
+
+### `chottag uninstall`
+
+```sh
+chottag uninstall [--purge]
+```
+
+Removes the shim: the fenced PATH block in your shell's rc file, the
+`bin/chottag` and `bin/claude` symlinks, and `ca/bundle.pem`. It leaves the
+CA itself and every account's login in place, so a plain `uninstall` alone
+can never destroy a login.
+
+`--purge` additionally deletes the whole `$CHOTTAG_HOME` tree — every
+login included — but only after you type the word `purge` at a prompt;
+anything else aborts with no change. Because that prompt cannot be
+scripted, `--purge` refuses `--json`: it fails with
+`confirmation_required`, exit 3.
+
+| Flag | Meaning |
+|---|---|
+| `--purge` | also delete every account slot's login (irreversible; requires typed confirmation; refuses `--json`) |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "removed": ["bin/chottag", "bin/claude"],
+  "purged": false
+}
+```
+
+### `chottag version`
+
+```sh
+chottag version
+```
+
+Prints chottag's own version. It takes no flags.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "chottag": "v0.4.0"
+}
+```
+
+## Accounts
+
+### `chottag login`
+
+```sh
+chottag login NAME [--claude PATH]
+```
+
+Logs a slot in through the browser (`claude auth login`) and registers it
+under `NAME`. Running it again for an existing account re-logs in that
+same slot.
+
+| Flag | Meaning |
+|---|---|
+| `--claude PATH` | path to the real `claude` binary |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "account": "work",
+  "email": "alice@example.com",
+  "org": "Acme"
+}
+```
+
+### `chottag logout`
+
+```sh
+chottag logout NAME [--claude PATH] [--force] [--yes]
+```
+
+Revokes a slot's login and removes the account. `--force` is required when
+the account is currently serving or remote; it moves that role to another
+account first, then continues.
+
+| Flag | Meaning |
+|---|---|
+| `--claude PATH` | path to the real `claude` binary |
+| `--force` | log out even if the account is serving or remote (moves the role first) |
+| `--yes` | do not ask for confirmation |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "account": "work",
+  "removed": true,
+  "dir": "a",
+  "movedServing": "personal",
+  "movedRemote": "personal"
+}
+```
+
+### `chottag rename`
+
+```sh
+chottag rename OLD NEW
+```
+
+Renames an account (its display name only): the slot directory and its
+Keychain login stay exactly as they are. `rename` takes no flags; running
+it again with the same arguments resumes an interrupted rename.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "from": "work",
+  "to": "acme-work",
+  "roles": ["serving"],
+  "ownerEntries": 3,
+  "resumed": false,
+  "changed": true
+}
+```
+
+### `chottag plan`
+
+```sh
+chottag plan NAME TIER [--units N]
+```
+
+Sets `NAME`'s plan tier for auto-switch: `pro`, `max5x`, `max20x` or
+`team`. `--units` overrides the tier's own capacity units per 1%; without
+it the tier's default applies (pro 1, max5x 5, max20x 20, team 5), so
+re-running `plan` without `--units` also clears an earlier override.
+
+| Flag | Meaning |
+|---|---|
+| `--units N` | capacity units per 1%, 1-1000 (default: the tier's own) |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "account": "work",
+  "plan": "max5x",
+  "units": 5
+}
+```
+
+### `chottag rotate`
+
+```sh
+chottag rotate NAME [on|off]
+```
+
+Includes or excludes `NAME` from `chottag next` and auto-switch's
+rotation. With no verb it only prints the current setting. It takes no
+flags: a stray flag is exit 2, never treated as `NAME` or `on`/`off`.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "account": "work",
+  "rotate": true,
+  "inRotation": 2
+}
+```
+
+## Switching
+
+### `chottag tag`
+
+```sh
+chottag tag [NAME] [--force]
+```
+
+Sets the serving account: the one whose login the proxy hands to Claude
+Code. With no `NAME` it moves to the next account in rotation, the same
+choice `chottag next` makes. `--force` switches even past a limit, a
+switch point, or a needs-login state — but never past rotation (a
+rotated-out account is never picked).
+
+| Flag | Meaning |
+|---|---|
+| `--force` | switch even past a limit, a switch point or a needs-login state (never past rotation) |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "serving": "work",
+  "previous": "personal"
+}
+```
+
+### `chottag next`
+
+```sh
+chottag next [--force]
+```
+
+Moves the serving account to the next one in rotation.
+
+| Flag | Meaning |
+|---|---|
+| `--force` | switch even past a limit, a switch point or a needs-login state (never past rotation) |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "serving": "work",
+  "previous": "personal",
+  "skipped": [
+    {"name": "team", "reason": "limited", "until": "2026-09-28T14:05:00Z"}
+  ],
+  "fallback": false
+}
+```
+
+### `chottag remote`
+
+```sh
+chottag remote [NAME]
+```
+
+Sets, or with no `NAME` shows, the account that owns claude.ai objects
+(Remote Control sessions, environments, artifacts and connectors created
+from here on). Also `chottag rc` and `chottag remote-control`. It takes no
+flags.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "remote": "work",
+  "changed": true
+}
+```
+
+### `chottag own`
+
+```sh
+chottag own KIND ID [ACCOUNT]
+```
+
+Re-attributes one already-created claude.ai object to `ACCOUNT`, or with no
+`ACCOUNT` prints its current owner. `KIND` is one of `session`,
+`environment`, `artifact` or `connector`. It takes no flags.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "kind": "session",
+  "id": "s_123",
+  "account": "work",
+  "reassigned": true
+}
+```
+
+## Status and health
+
+### `chottag status`
+
+```sh
+chottag status
+```
+
+Prints each account's usage and limit state: which is serving, which is
+remote, each account's 5-hour and 7-day utilization, and whether the
+daemon is currently passing requests through on Home's login instead of
+the account you chose. Also `chottag ls`. It takes no flags.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "accounts": [
+    {
+      "name": "work",
+      "email": "alice@example.com",
+      "org": "Acme",
+      "usage": {
+        "fiveHourPct": 42.5,
+        "sevenDayPct": 10,
+        "fiveHourResetsAt": "2026-09-28T19:00:00Z",
+        "sevenDayResetsAt": "2026-10-03T00:00:00Z",
+        "updatedAt": "2026-09-28T14:00:00Z",
+        "source": "observed"
+      },
+      "limited": false,
+      "limitedUntil": "2026-09-28T19:00:00Z",
+      "window": "5h",
+      "reason": "",
+      "token": "ok",
+      "tokenAt": "2026-09-01T00:00:00Z",
+      "rotate": true,
+      "passthrough": "",
+      "plan": "max5x",
+      "stale": false
+    }
+  ],
+  "serving": "work",
+  "remote": "work",
+  "limits": {
+    "allLimited": false,
+    "nextReset": "2026-09-28T19:00:00Z",
+    "nextResetAccount": "work"
+  },
+  "daemon": {
+    "running": true,
+    "port": 47821,
+    "heartbeat": "2026-09-28T14:00:30Z",
+    "routeDrift": 0,
+    "zeroIdExtractions": 0,
+    "ownerWriteDrops": 0,
+    "notifyErrors": 0,
+    "version": "v0.4.0",
+    "versionMismatch": false,
+    "identity": "verified"
+  },
+  "trace": {
+    "lastTraced": {"claudeVersion": "2.1.282", "at": "2026-09-20T00:00:00Z"}
+  },
+  "auto": {
+    "mode": "balanced",
+    "decision": "holding work (5h 42%, resets in 5h)",
+    "lastSwitch": {
+      "from": "personal",
+      "to": "work",
+      "trigger": "threshold",
+      "window": "5h",
+      "pct": 90,
+      "at": "2026-09-28T09:00:00Z",
+      "retried": true
+    },
+    "userChosen": false,
+    "burnRate": 12.5
+  }
+}
+```
+
+`accounts[].dir` (the account's slot directory) is never shown: `status`
+clears it from every account before reporting.
+
+### `chottag doctor`
+
+```sh
+chottag doctor [--fix]
+```
+
+Checks the install and, under `--fix`, repairs what it can safely repair.
+Prints one line per check, then an indented `→ hint` line for a problem it
+did not fix. Exits `0` when nothing is a problem, `3` when one remains
+(`doctor_problems`, still under `--json`), and `1` for an internal error
+(an unreadable `state.json`, or a check that panicked).
+
+| Flag | Meaning |
+|---|---|
+| `--fix` | repair what doctor can repair safely |
+
+Its checks, in the order they run:
+
+| Check | What it checks | What fixes it |
+|---|---|---|
+| `setup` | chottag is set up in this home at all (gates every later check) | `chottag setup` |
+| `tree` | every directory the tree needs exists | `--fix` creates the missing ones |
+| `ca` | the local CA (`ca/ca.pem`, `ca/ca.key`) exists, loads and is safe | `--fix` creates a missing pair, or fixes an owned key's permissions, while no daemon runs |
+| `proxy-secret` | `ca/proxy.secret` exists, is 0600 and well formed | `--fix` regenerates a missing or unusable one, while no daemon runs |
+| `bin` | `bin/chottag` and `bin/claude` point at this binary | `--fix` relinks them, unless one already points at another working chottag |
+| `rc-block` | your shell's rc file has the chottag PATH block | `--fix` writes it |
+| `path` | this process's PATH already finds `claude` in `bin/` | open a new shell |
+| `roles` | the serving and remote roles name a registered account | `--fix` gives a dangling role to the first registered account |
+| `real-claude` | the cached real `claude` path is still what PATH resolves | `--fix` re-resolves and re-caches it |
+| `port` | the daemon's port answers, or is free | `--fix` moves state.json to a free port (only with no daemon and no live sessions) |
+| `daemon` | a daemon that holds `daemon.lock` also answers on its port | `chottag daemon restart` |
+| `daemon-version` | a running daemon's health version matches this chottag binary | `chottag daemon restart` |
+| `daemon-identity` | a running daemon proved it holds this install's proxy secret | `chottag daemon restart` |
+| `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
+| `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
+| `route-drift` | the running daemon resent a swapped request unchanged | `chottag trace on` |
+| `limits` | whether every account is currently limited | wait for a reset |
+| `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
+| `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "checks": [
+    {
+      "id": "version-drift",
+      "status": "ok",
+      "detail": "Claude Code 2.1.282 was traced on Sep 20 00:00",
+      "hint": "",
+      "installed": "2.1.282",
+      "lastTraced": {"claudeVersion": "2.1.282", "at": "2026-09-20T00:00:00Z"}
+    }
+  ],
+  "problems": 0
+}
+```
+
+With one or more problems left, `doctor` fails instead: `ok: false`, exit
+`3`, `error.code` is `doctor_problems`, and the same `checks` (every row,
+including the ok ones) and `problems` (the problem count) travel under
+`error`:
+
+```json
+{
+  "version": 1,
+  "ok": false,
+  "warnings": [],
+  "error": {
+    "code": "doctor_problems",
+    "message": "1 problem(s)",
+    "exit": 3,
+    "checks": [
+      {
+        "id": "bin",
+        "status": "problem",
+        "detail": "bin/chottag does not point at /Users/alice/.chottag/bin/chottag",
+        "hint": "chottag doctor --fix",
+        "installed": "",
+        "lastTraced": {"claudeVersion": "2.1.282", "at": "2026-09-20T00:00:00Z"}
+      }
+    ],
+    "problems": 1
+  }
+}
+```
+
+### `chottag notify`
+
+```sh
+chottag notify [on|off]
+```
+
+Shows or sets the desktop-notification switch (macOS; on by default). With
+no verb it only prints the current setting. It takes no flags.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "notify": true
+}
+```
+
+## Auto-switch
+
+```sh
+chottag auto [VERB]
+```
+
+Shows, or with a verb changes, auto-switch settings: `on` and `off` toggle
+it (on by default); `mode M` picks the planner mode; `set KEY VALUE` and
+`reset` override or clear one setting. See
+[auto-switch.md#switch-points](auto-switch.md#switch-points) and
+[auto-switch.md#settings](auto-switch.md#settings) for every key `set`
+accepts and what each mode does. `auto` takes no flags.
+
+### `chottag auto`
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "enabled": true,
+  "mode": "balanced",
+  "switchPoints": {
+    "5h.pro": 88,
+    "5h.max5x": 90,
+    "5h.team": 93,
+    "5h.max20x": 98,
+    "7d.pro": 93,
+    "7d.max5x": 98,
+    "7d.team": 98,
+    "7d.max20x": 99
+  },
+  "hold5h": "10m",
+  "hold7d": "1h",
+  "cooldown": "5m",
+  "overrides": ["5h.max5x", "hold5h", "hold7d", "cooldown"],
+  "accounts": [
+    {
+      "name": "work",
+      "plan": "max5x",
+      "tier": "max5x",
+      "units": 5,
+      "fiveHourPct": 42.5,
+      "fiveHourResetsAt": "2026-09-28T19:00:00Z",
+      "sevenDayPct": 10,
+      "sevenDayResetsAt": "2026-10-03T00:00:00Z",
+      "stale": false
+    }
+  ],
+  "decision": "holding work (5h 42%, resets in 5h)",
+  "lastSwitch": {
+    "from": "personal",
+    "to": "work",
+    "trigger": "threshold",
+    "window": "5h",
+    "pct": 90,
+    "at": "2026-09-28T09:00:00Z",
+    "retried": true
+  }
+}
+```
+
+## Daemon
+
+### `chottag daemon start`
+
+```sh
+chottag daemon start
+```
+
+Starts the daemon in the background unless it is already running. It takes
+no flags. (The shim already does this on demand, the first time `claude`
+runs.)
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "pid": 4242,
+  "port": 47821,
+  "started": true
+}
+```
+
+### `chottag daemon stop`
+
+```sh
+chottag daemon stop [--force]
+```
+
+Stops the daemon; the next `claude` launch starts it again. It refuses
+while a supervisor would relaunch it, or while a `claude` session is live,
+unless `--force`.
+
+| Flag | Meaning |
+|---|---|
+| `--force` | stop even under a supervisor or with live claude sessions |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "pid": 4242,
+  "stopped": true,
+  "alreadyExited": false,
+  "temporary": false
+}
+```
+
+### `chottag daemon restart`
+
+```sh
+chottag daemon restart [--force]
+```
+
+Stops the daemon, then starts it again. Unlike `stop`, a live session does
+not refuse it — it only sees a brief interruption.
+
+| Flag | Meaning |
+|---|---|
+| `--force` | restart even under a supervisor |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "oldPid": 4242,
+  "pid": 4300,
+  "port": 47821,
+  "relaunchedBy": "chottag",
+  "upstreamChanged": {"from": "", "to": "http://127.0.0.1:3128"},
+  "liveSessions": 1
+}
+```
+
+### `chottag daemon logs`
+
+```sh
+chottag daemon logs [-n N] [-f]
+```
+
+Prints the last `N` lines of `daemon.log`. `-f` keeps printing lines as
+they are written. does not support `--json`.
+
+| Flag | Meaning |
+|---|---|
+| `-n N` | number of lines to print |
+| `-f` | keep printing lines as they are written |
+
+### `chottag daemon run`
+
+```sh
+chottag daemon run [--claude PATH] [--log PATH] [--upstream-proxy URL]
+```
+
+Runs the daemon in the foreground: the routing proxy, credential refresh
+and auto-switch. The shim starts this on demand; running it yourself is
+for development or a supervisor unit. does not support `--json`.
+
+| Flag | Meaning |
+|---|---|
+| `--claude PATH` | path to the real `claude` binary |
+| `--log PATH` | request log path; empty disables request logging |
+| `--upstream-proxy URL` | route chottag's own upstream traffic through this proxy (e.g. `http://127.0.0.1:3128`) |
+
+## Tracing and developer tools
+
+### `chottag trace`
+
+```sh
+chottag trace
+chottag trace off
+```
+
+With no verb, shows whether the daemon's trace mode is on and when it
+expires. `trace off` stops it early. Neither takes a flag.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "tracing": true,
+  "until": "2026-09-28T15:00:00Z",
+  "lastTraced": {"claudeVersion": "2.1.282", "at": "2026-09-20T00:00:00Z"}
+}
+```
+
+### `chottag trace on`
+
+```sh
+chottag trace on [--for DUR]
+```
+
+Switches the daemon's trace mode on for `DUR` (a Go duration; default 1h,
+at most 24h).
+
+| Flag | Meaning |
+|---|---|
+| `--for DUR` | how long to trace (a Go duration, at most 24h; default 1h) |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "tracing": true,
+  "until": "2026-09-28T15:00:00Z",
+  "lastTraced": {"claudeVersion": "2.1.282", "at": "2026-09-20T00:00:00Z"}
+}
+```
+
+### `chottag trace mark`
+
+```sh
+chottag trace mark TEXT...
+```
+
+Adds a marker line to the trace log. does not support `--json`.
+
+| Flag | Meaning |
+|---|---|
+| `--log PATH` | trace log path |
+
+### `chottag trace summarize`
+
+```sh
+chottag trace summarize [--all]
+```
+
+Prints the route table recorded since the last `trace on` (`--all`: the
+whole log). does not support `--json`.
+
+| Flag | Meaning |
+|---|---|
+| `--log PATH` | trace log path |
+| `--all` | summarize the whole log, not only since the last trace on |
+
+### `chottag trace run`
+
+```sh
+chottag trace run [flags]
+```
+
+A developer tool: a separate, observe-only proxy that never carries real
+traffic. does not support `--json`.
+
+| Flag | Meaning |
+|---|---|
+| `--listen ADDR` | proxy address (loopback) |
+| `--log PATH` | trace log path |
+| `--shapes` | record JSON shapes (types only) of bodies |
+| `--limit-fingerprint` | record a redacted usage-limit classifier fingerprint (header names, an allowlist of rate-limit header values, `error.type`, and an extracted reset timestamp) for responses with status ≥ 400 — never the body |
+| `--intercept SUFFIXES` | comma-separated host suffixes to intercept |
+| `--keychain-service NAME` | override the macOS Keychain service name for `--swap` slots |
+| `--swap CLASS=DIR` | send `CLASS` (`serving`\|`remote`) requests with the login in account dir `DIR` (repeatable, experimental) |
+
+### `chottag trace env`
+
+```sh
+chottag trace env [--listen ADDR]
+```
+
+A developer tool: prints the shell export lines for a `trace run` session.
+does not support `--json`.
+
+| Flag | Meaning |
+|---|---|
+| `--listen ADDR` | proxy address |
+
+### `chottag proxy run`
+
+```sh
+chottag proxy run [flags]
+```
+
+Runs the routing proxy in the foreground, without the daemon around it.
+does not support `--json`.
+
+| Flag | Meaning |
+|---|---|
+| `--listen ADDR` | proxy address (loopback) |
+| `--log PATH` | request log |
+| `--claude PATH` | path to the real claude binary (used to refresh a slot login) |
+| `--upstream-proxy URL` | route chottag's own upstream traffic through this proxy (e.g. `http://127.0.0.1:3128`) |
+
+## Error codes
+
+| Code | Exit | What happened, and what to do |
+|---|---|---|
+| `usage` | 2 | the command line was wrong; fix it and retry |
+| `json_unsupported` | 2 | this command refuses `--json`; drop the flag |
+| `internal` | 1 | an unexpected internal failure (an unreadable state file, a failed write); see the message |
+| `unknown_account` | 1 | no account matches the name, email or prefix given |
+| `ambiguous_account` | 1 | the prefix given matches more than one account; use a longer one |
+| `no_candidate` | 3 | no account can take the serving role right now; `error.skipped` lists why each was passed over |
+| `not_found` | 1 | the object `chottag own` was asked about is not in `owners.json` |
+| `login_failed` | 1 | `claude auth login` did not complete |
+| `role_held` | 3 | the account holds the serving or remote role; retry with `--force` |
+| `out_of_tree` | 3 | a path given resolves outside `$CHOTTAG_HOME` |
+| `confirmation_required` | 3 | the action needs a typed confirmation that was not given |
+| `aborted` | 1 | the user declined a confirmation prompt |
+| `revoke_failed` | 1 | `claude auth logout` (the revoke) did not complete |
+| `credential_delete_failed` | 1 | the slot's stored credential could not be deleted |
+| `no_slots` | 1 | no account slot directories were found to adopt |
+| `no_accounts` | 1 | no account is registered yet |
+| `not_chottag_home` | 1 | `$CHOTTAG_HOME` (or `~/.chottag`) does not look like a chottag install |
+| `purge_failed` | 1 | `uninstall --purge` could not delete the tree |
+| `foreign_daemon` | 1 | a daemon on the expected port belongs to another install |
+| `unhealthy` | 1 | the daemon did not answer a health check |
+| `unreadable_record` | 1 | `daemon.lock`'s record could not be read |
+| `start_failed` | 1 | the daemon did not start |
+| `supervised` | 3 | a supervisor would relaunch the daemon; retry with `--force` |
+| `live_sessions` | 3 | a live claude session is using the daemon; retry with `--force` |
+| `signal_failed` | 1 | sending a signal to the daemon process failed |
+| `stop_timeout` | 1 | the daemon did not exit within the timeout |
+| `stop_failed` | 1 | the daemon could not be stopped |
+| `supervisor_no_relaunch` | 1 | a supervisor holds the daemon, but would not relaunch it after a stop |
+| `session_registry_unreadable` | 1 | the live-session registry could not be read |
+| `name_taken` | 2 | the account name given is already in use |
+| `doctor_problems` | 3 | `doctor` found one or more problems; `error.checks` and `error.problems` carry every row and the count |
+| `update_failed` | 1 | `chottag update` could not install the release |
+
+## Warning codes
+
+| Code | Meaning |
+|---|---|
+| `limited` | the account named is currently limited |
+| `out_of_rotation` | an account was skipped because it is excluded from rotation |
+| `no_rotation_left` | no account is left in rotation to switch to |
+| `owners_recovered` | `owners.json` was corrupt and has been moved aside |
+| `email_registered` | the email logged in belongs to an account already registered |
+| `revoke_failed` | the revoke step failed, but the command continued |
+| `name_no_slot` | a name in `--name` matches no slot directory |
+| `left_in_place` | something that could have been removed was left in place |
+| `session_registry_unreadable` | the live-session registry could not be read, but the command continued |
+| `live_sessions` | a live claude session exists; it will pick up the change on its next request |
+| `upstream_changed` | the daemon's upstream proxy setting changed on this restart |
+| `supervisor_relaunch` | a supervisor relaunched the daemon |
+| `new_daemon` | a new daemon instance started where an old one was expected |
+| `rc_not_written` | the shell rc file was not updated |
+| `adopt_failed` | the inner `adopt` step (run by `setup`) failed |
+| `update_deferred` | an available update was not installed |
+| `restart_failed` | the daemon did not restart after an update |
+| `prune_failed` | an old release could not be pruned |
+| `install_record` | the install record could not be read or written |
+| `attestation_skipped` | release attestation verification was skipped |
+| `pre_attestation` | the release predates attestation and was installed without verifying one |

@@ -1,0 +1,46 @@
+name: Route drift
+description: After a Claude Code update, a request goes out as the wrong account, or chottag reports route drift.
+labels: ["route-drift"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Claude Code changes the requests it sends from version to version, and chottag learns which account each one belongs to from a route table. When they stop matching, `chottag doctor` shows a `route-drift` row. To capture what changed, run `chottag trace on`, repeat what went wrong, then run `chottag trace summarize` and paste its output below. It prints route shapes with ids collapsed, never tokens, but read it before you paste.
+
+        A security problem never goes in an issue: see [SECURITY.md](https://github.com/HaiNNT/c-hottag/blob/main/SECURITY.md).
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Personal data
+      options:
+        - label: This issue contains no personal data or tokens.
+          required: true
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code version
+      description: The output of `claude --version`.
+    validations:
+      required: true
+  - type: input
+    id: chottag-version
+    attributes:
+      label: chottag version
+      description: The output of `chottag version`.
+    validations:
+      required: true
+  - type: textarea
+    id: what-broke
+    attributes:
+      label: What went wrong
+      description: What you did, which account the request used, and which one it should have used. Call your accounts A and B.
+    validations:
+      required: true
+  - type: textarea
+    id: routes
+    attributes:
+      label: Route summary
+      description: The output of `chottag trace summarize`.
+      render: text
+    validations:
+      required: true

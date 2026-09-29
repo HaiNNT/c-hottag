@@ -1,0 +1,16 @@
+{
+  "name": "c-hottag",
+  "owner": {
+    "name": "HaiNNT"
+  },
+  "metadata": {
+    "description": "c-hottag: switch the Claude account Claude Code uses, per request, without logging out."
+  },
+  "plugins": [
+    {
+      "name": "chottag",
+      "source": "./plugin",
+      "description": "Drive chottag from Claude Code: switch the serving account, set the remote account, log accounts in, check limits and the install."
+    }
+  ]
+}

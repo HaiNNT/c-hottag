@@ -1,0 +1,187 @@
+#!/bin/sh
+# detect: one-shot status line for the upstream-check skill (R94): the real
+# Claude Code on PATH and its version, the highest routes/*.txt table this
+# repo has committed, whether a table already exists for the installed
+# version, the prod chottag's own version-drift verdict (read-only, only if
+# a prod chottag is on PATH), and whether the dev sandbox (scripts/dev-env)
+# is built and has any logins. Never builds, logs in, or writes anything.
+#
+#   usage: .claude/skills/upstream-check/scripts/detect
+#
+# Prints one "key: value" line per fact; a fact this machine has nothing to
+# say about (no prod chottag on PATH) is left out entirely. Exit 0 always,
+# except on a usage error (exit 2).
+set -eu
+
+die() {
+	echo "detect: $*" >&2
+	exit 2
+}
+
+case "${1:-}" in
+-h | --help)
+	sed -n '2,/^set -eu$/p' "$0" | sed '$d; s/^# \{0,1\}//'
+	exit 0
+	;;
+esac
+[ $# -eq 0 ] || die "no arguments (see --help)"
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git work tree"
+cd "$repo_root"
+
+# ---- helpers, copied from scripts/dev-env (never sourced) -----------------
+
+resolve_path() {
+	p=$1
+	if command -v realpath >/dev/null 2>&1; then
+		rp=$(realpath "$p" 2>/dev/null) && {
+			printf '%s\n' "$rp"
+			return 0
+		}
+	fi
+	i=0
+	while [ -L "$p" ] && [ "$i" -lt 40 ]; do
+		link=$(readlink "$p") || break
+		case "$link" in
+		/*) p=$link ;;
+		*) p=$(dirname "$p")/$link ;;
+		esac
+		i=$((i + 1))
+	done
+	printf '%s\n' "$p"
+}
+
+# find_real_claude: CHOTTAG_REAL_CLAUDE if set, else the first `claude` on
+# PATH whose resolved target does not end in /chottag and is not under
+# $HOME/.chottag, $HOME/chottag-dev, or a cmux-cli-shims dir.
+find_real_claude() {
+	if [ -n "${CHOTTAG_REAL_CLAUDE:-}" ]; then
+		printf '%s\n' "$CHOTTAG_REAL_CLAUDE"
+		return 0
+	fi
+	old_ifs=$IFS
+	IFS=:
+	set -f
+	set -- $PATH
+	set +f
+	IFS=$old_ifs
+	for dir in "$@"; do
+		[ -n "$dir" ] || continue
+		cand="$dir/claude"
+		[ -x "$cand" ] || continue
+		resolved=$(resolve_path "$cand")
+		case "$resolved" in
+		*/chottag) continue ;;
+		esac
+		case "$resolved" in
+		"$HOME/.chottag"/* | "$HOME/chottag-dev"/* | */cmux-cli-shims/*) continue ;;
+		esac
+		printf '%s\n' "$cand"
+		return 0
+	done
+	return 1
+}
+
+# version_gt: true (exit 0) when dotted-numeric version $1 > $2, compared
+# field by field numerically, never lexically (so 2.1.9 < 2.1.10).
+version_gt() {
+	awk -v a="$1" -v b="$2" 'BEGIN{
+		na = split(a, af, ".");
+		nb = split(b, bf, ".");
+		n = na > nb ? na : nb;
+		for (i = 1; i <= n; i++) {
+			x = (i <= na) ? af[i]+0 : 0;
+			y = (i <= nb) ? bf[i]+0 : 0;
+			if (x != y) { print (x > y) ? 1 : 0; exit }
+		}
+		print 0
+	}' | grep -q '^1$'
+}
+
+# ---- real_claude, claude_version -------------------------------------------
+
+real_claude=""
+if rc=$(find_real_claude 2>/dev/null); then
+	real_claude=$rc
+fi
+printf 'real_claude: %s\n' "${real_claude:-none}"
+
+claude_version="unknown"
+if [ -n "$real_claude" ]; then
+	out=$("$real_claude" --version 2>/dev/null) || out=""
+	first=$(printf '%s\n' "$out" | head -n1 | awk '{print $1}')
+	[ -n "$first" ] && claude_version=$first
+fi
+printf 'claude_version: %s\n' "$claude_version"
+
+# ---- latest_routes, routes_for_installed -----------------------------------
+
+latest_routes=""
+for f in routes/*.txt; do
+	[ -e "$f" ] || continue
+	v=$(basename "$f" .txt)
+	if [ -z "$latest_routes" ] || version_gt "$v" "$latest_routes"; then
+		latest_routes=$v
+	fi
+done
+printf 'latest_routes: %s\n' "${latest_routes:-none}"
+
+routes_for_installed=no
+if [ "$claude_version" != "unknown" ] && [ -f "routes/$claude_version.txt" ]; then
+	routes_for_installed=yes
+fi
+printf 'routes_for_installed: %s\n' "$routes_for_installed"
+
+# ---- prod_version_drift (read-only, quietly skipped with no prod chottag) --
+
+prod_chottag=$(command -v chottag 2>/dev/null) || prod_chottag=""
+if [ -n "$prod_chottag" ]; then
+	pd_json=$("$prod_chottag" doctor --json 2>/dev/null) || pd_json=""
+	if [ -n "$pd_json" ]; then
+		pd_detail=$(python3 - "$pd_json" <<'PY'
+import json, sys
+try:
+    doc = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+for c in doc.get("checks", []):
+    if c.get("id") == "version-drift":
+        print(c.get("detail", ""))
+        break
+PY
+)
+		if [ -n "$pd_detail" ]; then
+			printf 'prod_version_drift: %s\n' "$pd_detail"
+		fi
+	fi
+fi
+
+# ---- dev_env: built? plus its account count --------------------------------
+
+dev_home=""
+if dev_env_out=$(scripts/dev-env env 2>/dev/null); then
+	dev_home=$(printf '%s\n' "$dev_env_out" | sed -n 's/^export CHOTTAG_HOME=//p')
+fi
+dev_bin=""
+if [ -n "$dev_home" ]; then
+	dev_root=$(dirname "$(dirname "$dev_home")")
+	dev_bin="$dev_root/bin/chottag"
+fi
+if [ -n "$dev_bin" ] && [ -x "$dev_bin" ]; then
+	accounts=unknown
+	if status_json=$(scripts/dev-env run status --json 2>/dev/null); then
+		accounts=$(python3 - "$status_json" <<'PY'
+import json, sys
+try:
+    doc = json.loads(sys.argv[1])
+except Exception:
+    print("unknown")
+    sys.exit(0)
+print(len(doc.get("accounts", [])))
+PY
+)
+	fi
+	printf 'dev_env: built, %s account(s)\n' "$accounts"
+else
+	printf 'dev_env: not built\n'
+fi

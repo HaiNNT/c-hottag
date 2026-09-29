@@ -1,0 +1,15 @@
+# Dependabot keeps the SHA-pinned actions in .github/workflows/ current,
+# in one grouped pull request a week. Only github-actions: the Go module has
+# no dependencies (standard library only).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"

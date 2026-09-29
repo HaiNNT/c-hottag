@@ -1,0 +1,17 @@
+[Unit]
+Description=chottag account-switching proxy
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.chottag/bin/chottag daemon run
+Restart=always
+RestartSec=2
+# The daemon writes only under ~/.chottag and listens on loopback only.
+ProtectSystem=strict
+ReadWritePaths=%h/.chottag
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

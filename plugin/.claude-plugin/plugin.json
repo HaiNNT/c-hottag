@@ -1,0 +1,11 @@
+{
+  "name": "chottag",
+  "description": "Drive chottag (c-hottag) from Claude Code: switch the serving account, set the remote account, log accounts in, check limits and the install.",
+  "version": "0.4.2",
+  "author": {
+    "name": "HaiNNT"
+  },
+  "homepage": "https://github.com/HaiNNT/c-hottag",
+  "repository": "https://github.com/HaiNNT/c-hottag",
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,32 @@
+# chottag trace summary
+## Routes
+METHOD  HOST                     PATH                                                CLASS      FORM  AUTH          STATUS     COUNT  SWAPPED  UPGRADE  FIRST-SEEN-AFTER
+GET     api.anthropic.com        /api/claude_cli/bootstrap                           serving    mitm  oauth-access  200        5      5        false    session-start
+GET     api.anthropic.com        /api/claude_code_grove                              serving    mitm  oauth-access  200        5      5        false    session-start
+GET     api.anthropic.com        /api/claude_code_penguin_mode                       serving    mitm  oauth-access  200        5      5        false    session-start
+POST    api.anthropic.com        /api/eval/{key}                      serving    mitm  oauth-access  200        5      5        false    session-start
+POST    api.anthropic.com        /api/event_logging/v2/batch                         serving    mitm  oauth-access  0,200      11     11       false    session-start
+GET     api.anthropic.com        /api/oauth/account/settings                         serving    mitm  oauth-access  200        5      5        false    session-start
+GET     api.anthropic.com        /api/oauth/organizations/{id}/marketplaces          untouched  mitm  oauth-access  200,304    5      0        false    session-start
+GET     api.anthropic.com        /api/oauth/organizations/{id}/plugins/list-plugins  serving    mitm  oauth-access  200        5      5        false    session-start
+GET     api.anthropic.com        /mcp-registry/v0/servers                            untouched  mitm  none          200        20     0        false    session-start
+GET     api.anthropic.com        /v1/mcp_servers                                     remote     mitm  oauth-access  200        6      6        false    session-start
+POST    api.anthropic.com        /v1/messages                                        serving    mitm  oauth-access  200        5      5        false    session-start
+POST    mcp-proxy.anthropic.com  /v1/mcp/{id}                                        remote     mitm  oauth-access  0,200,401  37     37       false    session-start
+## Tunnels
+HOST                                    FORM   COUNT  ERRORS
+http-intake.logs.us5.datadoghq.com:443  blind  6      
+## ID links (response field -> later request path)
+GET api.anthropic.com /api/claude_cli/bootstrap  .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/oauth/organizations/{id}/plugins/list-plugins
+GET api.anthropic.com /api/claude_cli/bootstrap  .oauth_account.organization_uuid  ->  GET api.anthropic.com /api/oauth/organizations/{id}/marketplaces
+GET api.anthropic.com /v1/mcp_servers            .data[].id                        ->  POST mcp-proxy.anthropic.com /v1/mcp/{id}
+## Unfinished streams (head record with no req: still open, or died with the daemon)
+unfinished streams: 0
+## Marks
+trace on
+session-start
+model-sonnet
+model-claude-sonnet-5-5
+model-opus
+model-haiku
+done

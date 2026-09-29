@@ -1,0 +1,176 @@
+#!/bin/sh
+# diff-routes: compare two chottag route tables (routes/*.txt, release
+# checklist item 1's routes4: METHOD HOST PATH CLASS from the "## Routes"
+# section), and classify every added or removed line (R94's upstream-check
+# skill).
+#
+#   usage: .claude/skills/upstream-check/scripts/diff-routes [OLD.txt] NEW.txt
+#
+# With one argument, OLD defaults to the highest routes/*.txt version below
+# NEW's own version (NEW's basename, up to its first non-version character,
+# is read as its version).
+#
+# Prints a table: STATUS KIND +/- METHOD HOST PATH CLASS
+#   OK     version-path   a downloads.claude.ai route, or a path with a
+#                          version number
+#   REVIEW class-changed   the same route in both, with a different CLASS
+#   REVIEW object-route     a new route naming a claude.ai object (session,
+#                          environment, frame, trigger or MCP server)
+#   OK     new-serving     a new route, class serving, not an object route
+#   INFO   removed         only in OLD (may be a route this session just
+#                          didn't exercise)
+#   REVIEW other            a new route this doesn't otherwise recognise
+#
+# Exit 1 if any printed line is REVIEW, 0 otherwise. A usage error is exit 2.
+set -eu
+
+die() {
+	echo "diff-routes: $*" >&2
+	exit 2
+}
+
+case "${1:-}" in
+-h | --help)
+	sed -n '2,/^set -eu$/p' "$0" | sed '$d; s/^# \{0,1\}//'
+	exit 0
+	;;
+esac
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git work tree"
+cd "$repo_root"
+
+old=""
+case $# in
+1) new=$1 ;;
+2)
+	old=$1
+	new=$2
+	;;
+*) die "usage: diff-routes [OLD.txt] NEW.txt" ;;
+esac
+[ -f "$new" ] || die "no such file: $new"
+
+# version_of: $1's basename, up to its first non-version character (e.g.
+# "routes/2.1.282.txt" -> "2.1.282"); the whole basename when it doesn't
+# start with a digit.
+version_of() {
+	b=$(basename "$1")
+	case "$b" in
+	[0-9]*) printf '%s\n' "$b" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/' ;;
+	*) printf '%s\n' "$b" ;;
+	esac
+}
+
+# version_gt: true (exit 0) when dotted-numeric version $1 > $2, compared
+# field by field numerically, never lexically.
+version_gt() {
+	awk -v a="$1" -v b="$2" 'BEGIN{
+		na = split(a, af, ".");
+		nb = split(b, bf, ".");
+		n = na > nb ? na : nb;
+		for (i = 1; i <= n; i++) {
+			x = (i <= na) ? af[i]+0 : 0;
+			y = (i <= nb) ? bf[i]+0 : 0;
+			if (x != y) { print (x > y) ? 1 : 0; exit }
+		}
+		print 0
+	}' | grep -q '^1$'
+}
+
+if [ -z "$old" ]; then
+	new_v=$(version_of "$new")
+	best=""
+	for f in routes/*.txt; do
+		[ -e "$f" ] || continue
+		v=$(version_of "$f")
+		[ "$v" != "$new_v" ] || continue
+		if version_gt "$new_v" "$v"; then
+			if [ -z "$best" ] || version_gt "$v" "$best"; then
+				best=$f
+			fi
+		fi
+	done
+	[ -n "$best" ] || die "no routes/*.txt below $new_v to default OLD from; pass OLD explicitly"
+	old=$best
+	echo "diff-routes: OLD defaults to $old" >&2
+fi
+[ -f "$old" ] || die "no such file: $old"
+
+# routes4: METHOD HOST PATH CLASS, sorted unique, from the "## Routes"
+# section (release-checklist item 1's own routes4).
+routes4() {
+	awk '/^## Routes/{f=1;next} /^## /{f=0} f && $1!="METHOD"{print $1, $2, $3, $4}' "$1" | sort -u
+}
+
+tmp=$(mktemp -d) || die "mktemp -d failed"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+routes4 "$old" >"$tmp/old4"
+routes4 "$new" >"$tmp/new4"
+cut -d' ' -f1-3 "$tmp/old4" | sort -u >"$tmp/old3"
+cut -d' ' -f1-3 "$tmp/new4" | sort -u >"$tmp/new3"
+comm -12 "$tmp/old3" "$tmp/new3" >"$tmp/common3"
+comm -23 "$tmp/old4" "$tmp/new4" >"$tmp/only_old4"
+comm -13 "$tmp/old4" "$tmp/new4" >"$tmp/only_new4"
+
+object_prefixes='/v1/code/sessions /v1/sessions /v1/environments /api/frame /v1/code/triggers /v1/mcp_servers'
+
+# is_version_path: $1 host, $2 path.
+is_version_path() {
+	[ "$1" = "downloads.claude.ai" ] && return 0
+	printf '%s\n' "$2" | grep -Eq '[0-9]+\.[0-9]+\.[0-9]+'
+}
+
+# is_object_route: $1 host, $2 path.
+is_object_route() {
+	[ "$1" = "mcp-proxy.anthropic.com" ] && return 0
+	for p in $object_prefixes; do
+		case "$2" in
+		"$p"*) return 0 ;;
+		esac
+	done
+	return 1
+}
+
+review=0
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' STATUS KIND '+/-' METHOD HOST PATH CLASS
+
+# class-changed: a route key (METHOD HOST PATH) present in both tables, with
+# a different CLASS. Reported once, from the common-key list, so the two
+# rows it produces in only_old4/only_new4 below are skipped instead.
+while IFS=' ' read -r method host path _; do
+	[ -n "${method:-}" ] || continue
+	oldclass=$(awk -v m="$method" -v h="$host" -v p="$path" '$1==m && $2==h && $3==p {print $4; exit}' "$tmp/old4")
+	newclass=$(awk -v m="$method" -v h="$host" -v p="$path" '$1==m && $2==h && $3==p {print $4; exit}' "$tmp/new4")
+	[ -n "$oldclass" ] && [ -n "$newclass" ] && [ "$oldclass" != "$newclass" ] || continue
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s->%s\n' REVIEW class-changed '~' "$method" "$host" "$path" "$oldclass" "$newclass"
+	review=1
+done <"$tmp/common3"
+
+# removed: an OLD-only route whose key is not a class-changed pair.
+while IFS=' ' read -r method host path class; do
+	[ -n "${method:-}" ] || continue
+	key=$(printf '%s %s %s' "$method" "$host" "$path")
+	grep -F -x -q "$key" "$tmp/common3" && continue
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' INFO removed - "$method" "$host" "$path" "$class"
+done <"$tmp/only_old4"
+
+# added: a NEW-only route whose key is not a class-changed pair.
+while IFS=' ' read -r method host path class; do
+	[ -n "${method:-}" ] || continue
+	key=$(printf '%s %s %s' "$method" "$host" "$path")
+	grep -F -x -q "$key" "$tmp/common3" && continue
+	if is_version_path "$host" "$path"; then
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' OK version-path + "$method" "$host" "$path" "$class"
+	elif is_object_route "$host" "$path"; then
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' REVIEW object-route + "$method" "$host" "$path" "$class"
+		review=1
+	elif [ "$class" = "serving" ]; then
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' OK new-serving + "$method" "$host" "$path" "$class"
+	else
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' REVIEW other + "$method" "$host" "$path" "$class"
+		review=1
+	fi
+done <"$tmp/only_new4"
+
+exit $review

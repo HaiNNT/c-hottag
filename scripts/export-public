@@ -1,0 +1,1204 @@
+#!/bin/sh
+# export-public: turn a release tag of this (private) repo into ONE commit
+# in a separate local clone of the public repo, and tag it (R83, spec §4).
+#
+#   usage: scripts/export-public [-p PATTERNS] TAG PUBLIC_CLONE
+#          scripts/export-public [-p PATTERNS] --check REV
+#          scripts/export-public [-p PATTERNS] --check-index
+#
+# --check REV runs steps 1-5 below on REV's tree (no clone, no gate) and
+# commits nothing anywhere: `--check HEAD` checks the LAST commit.
+# --check-index runs the same steps on the tree of the current index
+# (`git write-tree`, which only writes that tree object into this repo),
+# so a pre-commit or gate step can refuse the change being committed,
+# before it is committed (re-review R-M2).
+#
+# Run it from the private repo. It:
+#   1. reads TAG's own public-manifest.txt and TAG's full tree listing
+#      (`git ls-tree -r -z`: mode, type, blob id and path per entry),
+#      straight from git's object database -- never a checkout;
+#   2. keeps only the entries whose paths the manifest selects
+#      (scripts/manifest-select: deny by default), and checks that every
+#      selected path matched exactly one entry. A path holding a newline
+#      byte anywhere in TAG fails closed: the one-path-per-line lists
+#      below would split it, and a fragment such as "docs/" could then
+#      smuggle a whole unselected directory past the manifest;
+#   3. leak-scans the selected PATH NAMES (written, one per line, to a
+#      single regular file and scanned as content) and the commit
+#      message, with the owner's private patterns (default: this working
+#      copy's docs/internal/leak-patterns.txt) plus the generic ones. Only
+#      after this passes does any message name a selected path;
+#   4. refuses a tree it cannot export safely: two selected paths, or a
+#      path and a directory prefix, that differ only in (ASCII) letter
+#      case -- one file on a case-insensitive disk, such as the default
+#      macOS one; a ".", "..", ".git" or empty path component; a
+#      submodule (mode 160000: nothing to scan); any other mode than a
+#      file, an executable or a symlink; and a symlink whose target is
+#      absolute, empty, holds a newline, or leaves the tree through ".."
+#      (a ".." is only allowed before every name in the target, and no
+#      higher than the root);
+#   5. writes each selected blob, RAW (`git cat-file blob`), to a file
+#      named by its blob id -- never at its repo path, so no two paths
+#      can land on one file and no symlink can redirect a write -- and
+#      no .gitattributes rule (working-tree-encoding, eol, filter=,
+#      ident, export-subst) can change the bytes. A symlink's blob is its
+#      link text, written as a plain file. Those files are the content
+#      the leak scan reads, and the content the commit is built from. A
+#      file the scanner cannot read as text is refused: a compressed or
+#      archive stream (gzip, zip, bzip2, xz, zstd, 7z, by its leading
+#      bytes, whatever its name), and a UTF-16/32 BOM or a NUL byte
+#      unless the path's extension is on a small binary allowlist (.png,
+#      .gif, .jpg/.jpeg) AND the file passes that format's full walk
+#      (F231 G2; see BINARY_WALK). Each allowlisted file is also scanned
+#      with its NUL bytes dropped, which catches ASCII-range UTF-16/32
+#      text inside a valid image. Not detected (non-goals, as for
+#      leak-scan): text in an unusual 8-bit encoding such as EBCDIC,
+#      UTF-16/32 text outside ASCII inside a valid image, and text inside
+#      an allowlisted format's own compressed sections (PNG IDAT or zTXt,
+#      GIF LZW data, JPEG entropy-coded data);
+#   6. runs the gate from the exported CLAUDE.md (its "The gate" block,
+#      the lines CI runs), offline (GOPROXY=off, GOTOOLCHAIN=local), in a
+#      throwaway copy of the selected tree made only now, after every
+#      check above: directories first (each a fresh mkdir, so an alias
+#      the case check cannot see, e.g. a Unicode normalisation twin on
+#      APFS, fails instead of merging), then files, then symlinks last.
+#      That copy is a one-commit git repo (the selected blobs, their
+#      tree, and an unsigned commit with a fixed author and date), so a
+#      gate test that runs `git rev-parse HEAD`, `log`, `diff` or `show`
+#      works there. Nothing ever reaches the clone from that copy or its
+#      repo. The gate is the snapshot's own code, run synchronously as
+#      the owner, so it can change anything the owner can (F231 G1; see
+#      the comment before the gate for exactly what is and is not
+#      bounded). Tampering through $tmp is bounded by values pinned in
+#      this shell's memory before the gate; tampering in the clone's git
+#      dir and refs by pins re-checked after the gate, git fsck before
+#      any ref moves, and a re-read of the tag and HEAD after the final
+#      sync. A failing line fails;
+#   7. only then writes anything into PUBLIC_CLONE: each blob, with
+#      `hash-object --no-filters -w` from its id-named file (the id it
+#      returns must equal the tag's), then ONE commit "c-hottag TAG"
+#      (e.g. "c-hottag v0.5.0"), author and committer
+#      "c-hottag <c-hottag@users.noreply.github.com>", a UTC date, no
+#      trailers and no signature, built entirely through plumbing (a
+#      scratch index from `update-index -z --index-info`, write-tree,
+#      commit-tree), never `add`, so no filter or ignore rule can run.
+#      The clone must still have the git-dir metadata, branch, HEAD and
+#      refs pinned before the gate, without the tag, and pass `git fsck`. A
+#      final invariant -- the new tree's paths, modes AND blob ids equal
+#      TAG's own for exactly the selected paths -- must pass before the
+#      branch ref and then a lightweight tag move (each a
+#      compare-and-swap, its rollback flag set immediately before it
+#      runs, so a signal mid-call can never leave one moved without the
+#      other rolled back). Last, `reset --hard` syncs the clone's work
+#      tree with no attributes at all (--attr-source set to the empty
+#      tree, core.attributesFile and the system file off, core.autocrlf
+#      off), so no filter or smudge driver from the clone's or the
+#      owner's config runs and nothing is re-encoded: the work tree
+#      holds exactly the committed bytes. Any failure from step 7 on,
+#      including a HUP/INT/TERM signal, rolls the refs (and, if the work
+#      tree was already touched, the work tree too) back to exactly their
+#      pre-export state. A failure there can leave unreachable objects
+#      in the clone, but only ones that have already passed the scans
+#      and the gate; a refusal at any earlier step writes nothing to it.
+#
+# It never pushes, fetches, clones, or adds or changes a remote, and it
+# never uses the network (GIT_NO_LAZY_FETCH=1, so even a partial clone
+# cannot lazily fetch): the owner reviews the commit and pushes it.
+# PUBLIC_CLONE must be a dedicated clone: a clean work tree (no untracked
+# or ignored files either) on a branch (an unborn branch is fine), a
+# different repository from this one with the same object format
+# (sha1 or sha256), without TAG, without a stale
+# .git/index.lock, and without a $GIT_DIR/info/attributes (no option
+# can switch that file off for the final work-tree sync). Nothing is
+# committed unless every step passes. It needs git 2.40 or newer
+# (--attr-source).
+#
+# Exit status: 0 committed and tagged; 1 a failed check (nothing
+# committed, the clone exactly as it was); 2 a usage error.
+set -eu
+unset CDPATH
+GIT_NO_LAZY_FETCH=1
+export GIT_NO_LAZY_FETCH
+# Byte-wise sort, cmp, tr and awk, and ASCII-only case folding, whatever
+# the owner's locale: a path's bytes are never reinterpreted as text.
+LC_ALL=C
+export LC_ALL
+
+AUTHOR_NAME=c-hottag
+AUTHOR_EMAIL=c-hottag@users.noreply.github.com
+# R-N2: the gate repo's one commit has a fixed date (2000-01-01 UTC), so
+# nothing about the owner's clock or time zone reaches the gate either.
+GATE_DATE="946684800 +0000"
+
+say() { printf '%s\n' "$*"; }
+die() {
+	printf 'export-public: %s\n' "$*" >&2
+	exit 1
+}
+usage() {
+	printf 'export-public: %s\nusage: scripts/export-public [-p PATTERNS] TAG PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] --check REV\n       scripts/export-public [-p PATTERNS] --check-index\n' "$*" >&2
+	exit 2
+}
+
+# F231 G2: the full-format walk for each binary format on the allowlist,
+# over a file's bytes as `od -An -v -tu1` prints them (decimal, one field
+# per byte). Prints "ok", or a short reason that never quotes the file's
+# bytes. fmt is png, gif or jpeg:
+#   png  the 8-byte signature, then chunks: a 4-byte length (< 2^31), a
+#        4-byte type of ASCII letters, the data, and a CRC-32 over type
+#        and data that must match; IHDR first (13 bytes), at least one
+#        IDAT, IEND last (empty), and not one byte after it;
+#   gif  "GIF87a" or "GIF89a", the screen descriptor and its colour
+#        table, then blocks up to the trailer (0x3B): extensions and
+#        image descriptors (with their colour tables and an LZW code size
+#        of 2-8), each ending in its data sub-blocks; at least one image,
+#        and not one byte after the trailer;
+#   jpeg SOI, then marker segments (each length in range), each SOS
+#        followed by entropy-coded data (0xFF only as a stuffed 0xFF00, a
+#        restart marker, or the next marker), at least one SOS, and EOI
+#        as the very last two bytes.
+# POSIX awk has no bitwise operators, so XOR is a 256x256 table built
+# from a 16x16 one, and the CRC-32 is kept as four bytes.
+BINARY_WALK='
+function fail(why) { print why; bad = 1; exit }
+function need(i, k) { if (i + k > n) fail("it ends early") }
+function u16(i) { return b[i] * 256 + b[i + 1] }
+function u32(i) { return ((b[i] * 256 + b[i + 1]) * 256 + b[i + 2]) * 256 + b[i + 3] }
+function crcinit(   a, c, i, j, k, lsb, c0, c1, c2, c3) {
+	for (a = 0; a < 16; a++)
+		for (c = 0; c < 16; c++) {
+			k = 0
+			for (j = 1; j < 16; j *= 2)
+				if ((int(a / j) % 2) != (int(c / j) % 2)) k += j
+			xn[a * 16 + c] = k
+		}
+	for (a = 0; a < 256; a++)
+		for (c = 0; c < 256; c++)
+			x[a * 256 + c] = xn[int(a / 16) * 16 + int(c / 16)] * 16 + xn[(a % 16) * 16 + c % 16]
+	for (i = 0; i < 256; i++) {
+		c0 = i; c1 = 0; c2 = 0; c3 = 0
+		for (j = 0; j < 8; j++) {
+			lsb = c0 % 2
+			c0 = int(c0 / 2) + (c1 % 2) * 128
+			c1 = int(c1 / 2) + (c2 % 2) * 128
+			c2 = int(c2 / 2) + (c3 % 2) * 128
+			c3 = int(c3 / 2)
+			if (lsb) {
+				c0 = x[c0 * 256 + 32]; c1 = x[c1 * 256 + 131]
+				c2 = x[c2 * 256 + 184]; c3 = x[c3 * 256 + 237]
+			}
+		}
+		t0[i] = c0; t1[i] = c1; t2[i] = c2; t3[i] = c3
+	}
+}
+function crc(s, e,   i, k, c0, c1, c2, c3) {
+	c0 = 255; c1 = 255; c2 = 255; c3 = 255
+	for (i = s; i < e; i++) {
+		k = x[c0 * 256 + b[i]]
+		c0 = x[t0[k] * 256 + c1]
+		c1 = x[t1[k] * 256 + c2]
+		c2 = x[t2[k] * 256 + c3]
+		c3 = t3[k]
+	}
+	return (((255 - c3) * 256 + (255 - c2)) * 256 + (255 - c1)) * 256 + (255 - c0)
+}
+function subblocks(p,   z) {
+	for (;;) {
+		need(p, 1)
+		z = b[p++]
+		if (z == 0) return p
+		need(p, z)
+		p += z
+	}
+}
+function png(   p, k, c, len, type, first, ended, idat) {
+	need(0, 8)
+	if (b[0] != 137 || b[1] != 80 || b[2] != 78 || b[3] != 71 || b[4] != 13 || b[5] != 10 || b[6] != 26 || b[7] != 10) fail("no PNG signature")
+	crcinit()
+	p = 8; first = 1; ended = 0; idat = 0
+	while (p < n) {
+		if (ended) fail("bytes follow IEND")
+		need(p, 12)
+		len = u32(p)
+		if (len > 2147483647) fail("a chunk length is out of range")
+		for (k = 4; k < 8; k++) {
+			c = b[p + k]
+			if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) fail("a chunk type is not four letters")
+		}
+		type = sprintf("%c%c%c%c", b[p + 4], b[p + 5], b[p + 6], b[p + 7])
+		need(p, 12 + len)
+		if (crc(p + 4, p + 8 + len) != u32(p + 8 + len)) fail("a chunk CRC does not match")
+		if (first && (type != "IHDR" || len != 13)) fail("IHDR is not the first chunk")
+		if (!first && type == "IHDR") fail("IHDR appears twice")
+		if (type == "IDAT") idat = 1
+		if (type == "IEND") {
+			if (len != 0) fail("IEND is not empty")
+			ended = 1
+		}
+		first = 0
+		p += 12 + len
+	}
+	if (!ended) fail("no IEND chunk")
+	if (!idat) fail("no IDAT chunk")
+}
+function gif(   p, c, packed, images) {
+	need(0, 13)
+	if (b[0] != 71 || b[1] != 73 || b[2] != 70 || b[3] != 56 || (b[4] != 55 && b[4] != 57) || b[5] != 97) fail("no GIF87a or GIF89a header")
+	packed = b[10]
+	p = 13
+	if (packed >= 128) p += 3 * 2 ^ (packed % 8 + 1)
+	images = 0
+	for (;;) {
+		need(p, 1)
+		c = b[p++]
+		if (c == 59) {
+			if (p != n) fail("bytes follow the trailer")
+			break
+		}
+		if (c == 33) {
+			need(p, 1)
+			p = subblocks(p + 1)
+		} else if (c == 44) {
+			need(p, 9)
+			packed = b[p + 8]
+			p += 9
+			if (packed >= 128) p += 3 * 2 ^ (packed % 8 + 1)
+			need(p, 1)
+			c = b[p++]
+			if (c < 2 || c > 8) fail("an LZW code size is out of range")
+			p = subblocks(p)
+			images++
+		} else fail("an unknown block")
+	}
+	if (!images) fail("no image")
+}
+function jpeg(   p, m, len, sos) {
+	need(0, 2)
+	if (b[0] != 255 || b[1] != 216) fail("no SOI marker")
+	p = 2; sos = 0
+	for (;;) {
+		need(p, 2)
+		if (b[p] != 255) fail("a segment does not start with a marker")
+		while (b[p] == 255) { p++; need(p, 1) }
+		m = b[p++]
+		if (m == 217) {
+			if (p != n) fail("bytes follow EOI")
+			break
+		}
+		if (m == 0 || m == 1 || m == 216 || (m >= 208 && m <= 215)) fail("a marker out of place")
+		need(p, 2)
+		len = u16(p)
+		if (len < 2) fail("a segment length is out of range")
+		need(p, len)
+		p += len
+		if (m == 218) {
+			sos = 1
+			for (;;) {
+				need(p, 1)
+				if (b[p] != 255) { p++; continue }
+				need(p, 2)
+				if (b[p + 1] == 0 || (b[p + 1] >= 208 && b[p + 1] <= 215)) { p += 2; continue }
+				break
+			}
+		}
+	}
+	if (!sos) fail("no SOS segment")
+}
+{ for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
+END {
+	if (fmt == "png") png()
+	else if (fmt == "gif") gif()
+	else if (fmt == "jpeg") jpeg()
+	else fail("no walk for this format")
+	print "ok"
+}
+'
+
+main() {
+	here=$(cd "$(dirname -- "$0")" && pwd -P)
+	patterns=""
+	patterns_given=0
+	# M2: --check REV runs the same selection, refusal, path-name and blob
+	# scans (steps 1-5) as a real export, with no clone and no gate, so
+	# the private repo's own gate can refuse what export-public would
+	# later refuse, instead of only finding out at export/release time.
+	# R-M2: --check-index is the same check on the current index's tree,
+	# so it sees the change about to be committed, not the last commit.
+	# "op" (never "mode": parse() below already uses that name for a git
+	# file mode) is "export" or "check"; index=1 marks --check-index.
+	op=export
+	index=0
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-p)
+			[ $# -ge 2 ] || usage "-p needs a file"
+			patterns_given=1
+			patterns=$2
+			shift 2
+			;;
+		--check | --check-index)
+			[ "$op" = export ] || usage "give only one of --check and --check-index"
+			op=check
+			[ "$1" = --check ] || index=1
+			shift
+			;;
+		-*) usage "unknown option $1" ;;
+		*) break ;;
+		esac
+	done
+	if [ "$index" -eq 1 ]; then
+		[ $# -eq 0 ] || usage "--check-index takes no argument"
+		label="the index"
+	elif [ "$op" = check ]; then
+		[ $# -eq 1 ] || usage "want REV after --check"
+		rev=$1
+		label=$rev
+	else
+		[ $# -eq 2 ] || usage "want TAG and PUBLIC_CLONE"
+		tag=$1
+		clone=$2
+		label=$tag
+		# N6: reject a newline in the tag outright, before the format
+		# check below: `printf '%s\n' "$tag" | grep -Eq '^…$'` matches
+		# if ANY line of a multi-line tag matches, not just the whole
+		# string.
+		case $tag in
+		*'
+'*) usage "TAG may not contain a newline" ;;
+		esac
+		# M4: a restricted, anchored form (vX.Y.Z, optionally
+		# -PRERELEASE), so the tag text that reaches the commit message
+		# and the ref name is never more than these characters.
+		if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+			usage "TAG must look like vX.Y.Z or vX.Y.Z-pre.N, got '$tag'"
+		fi
+	fi
+	# M1: "-p ''" must be a usage error, not a silent fall-back to the
+	# default file (leak-scan itself treats -p '' as a usage error; this
+	# keeps the two scripts consistent).
+	if [ "$patterns_given" -eq 1 ] && [ -z "$patterns" ]; then
+		usage "-p needs a non-empty file path"
+	fi
+
+	root=$(git rev-parse --show-toplevel 2>/dev/null) || die "run it inside the private repo"
+	if [ "$index" -eq 1 ]; then
+		# The index's tree, by id: every step below reads it exactly as it
+		# reads a commit's (`REV:path`, ls-tree), from the object database.
+		revspec=$(git -C "$root" write-tree) ||
+			die "could not write the index's tree in $root (an unmerged path?); nothing was checked"
+	elif [ "$op" = check ]; then
+		revspec=$(git -C "$root" rev-parse -q --verify "$rev^{commit}") ||
+			die "no revision $rev in $root; nothing was checked"
+	else
+		git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null ||
+			die "no tag $tag in $root; nothing was exported"
+		revspec="refs/tags/$tag"
+	fi
+	[ "$patterns_given" -eq 1 ] || patterns=$root/docs/internal/leak-patterns.txt
+	[ -f "$patterns" ] && [ -r "$patterns" ] ||
+		die "no leak patterns file at $patterns; nothing was exported"
+
+	if [ "$op" = export ]; then
+		[ -d "$clone" ] || die "no directory $clone"
+		clone=$(cd "$clone" && pwd -P)
+		# Review round 3: the git dir is exactly $clone/.git, a real
+		# directory. A gitfile (`clone --separate-git-dir`, a worktree) or a
+		# symlink is one file away from pointing somewhere else.
+		gitdir=$clone/.git
+		[ -d "$gitdir" ] && [ ! -L "$gitdir" ] ||
+			die "$gitdir is not a plain directory (a gitfile or a symlink); use a dedicated plain clone; nothing was exported"
+		# M3: every clone-targeted git call goes through this helper, so no
+		# hook in the clone -- commit-msg, pre-commit, post-index-change,
+		# reference-transaction, post-checkout -- can ever run.
+		# Review round 1, I1: and core.fsmonitor=false, so no fsmonitor hook
+		# (from any config, the owner's global one included) runs either.
+		# Review round 2, N2: and GIT_NO_REPLACE_OBJECTS=1, so no
+		# refs/replace/ entry swaps an object under any clone call.
+		# Review round 3: and GIT_DIR and GIT_WORK_TREE pinned, so no change
+		# to how git would discover the repo (a repointed gitfile, a HEAD
+		# moved aside so discovery falls through to a parent repo) can
+		# redirect any call: wtgit, status, fsck, update-ref and reset all
+		# come through here.
+		cgit() { GIT_DIR=$gitdir GIT_WORK_TREE=$clone GIT_NO_REPLACE_OBJECTS=1 git -C "$clone" -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+		# discovered: the git dir plain discovery from $clone resolves to,
+		# without the pins -- what the owner's own git commands will use.
+		discovered() {
+			(
+				unset GIT_DIR GIT_WORK_TREE
+				git -C "$clone" -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse --absolute-git-dir 2>/dev/null
+			)
+		}
+		[ "$(discovered)" = "$gitdir" ] ||
+			die "repository discovery in $clone does not resolve to $gitdir; use a dedicated plain clone; nothing was exported"
+		[ "$(cgit rev-parse --is-inside-work-tree 2>/dev/null)" = true ] ||
+			die "$clone is not a git work tree"
+		[ "$(cgit rev-parse --show-toplevel)" = "$clone" ] ||
+			die "$clone is not the top of its work tree"
+		mine=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" && pwd -P)
+		theirs=$(cd "$clone" && cd "$(cgit rev-parse --git-common-dir)" && pwd -P)
+		[ "$mine" != "$theirs" ] || die "$clone is this repository; give a separate clone of the public repo"
+		branchref=$(cgit symbolic-ref -q HEAD) || die "$clone is not on a branch"
+		! cgit rev-parse -q --verify "refs/tags/$tag" >/dev/null ||
+			die "$clone already has tag $tag; nothing was exported"
+		# I3: a stale lock left by a killed or crashed git process would make
+		# every index-touching step below fail partway through; catch it up
+		# front, before anything is built, with one clear message.
+		lock="$gitdir/index.lock"
+		[ ! -e "$lock" ] || die "$clone has a stale $lock; remove it before exporting; nothing was exported"
+		# Review round 2, N1: $GIT_DIR/commondir is honoured even in a main
+		# work tree, and redirects config, info/, objects/ and refs/
+		# elsewhere. The clone must be a plain one: no commondir, and its
+		# common dir is its git dir.
+		[ ! -e "$gitdir/commondir" ] && [ ! -L "$gitdir/commondir" ] ||
+			die "$clone has $gitdir/commondir (a linked worktree, or config, info/, objects/ and refs/ redirected elsewhere); use a dedicated plain clone; nothing was exported"
+		commondir=$(cgit rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || commondir=""
+		[ "$commondir" = "$gitdir" ] ||
+			die "$clone's common directory is not its own ($gitdir); use a dedicated plain clone; nothing was exported"
+		# clone_meta prints one line per git-dir file that changes what git
+		# reads or runs in the clone: present with its content's hash, or
+		# absent. It never runs git in the clone (a changed commondir or
+		# config would steer that call itself); the hash comes from git in
+		# the private repo. The list: commondir (redirects config, info/,
+		# objects/, refs/), config and config.worktree (drivers, hooks,
+		# includes), info/attributes (filters for the work-tree sync),
+		# info/grafts and shallow (rewrite history, and so what a push
+		# sends), objects/info/alternates (objects from elsewhere).
+		clone_meta() {
+			for m in commondir config config.worktree info/attributes info/grafts shallow objects/info/alternates; do
+				if [ -e "$gitdir/$m" ] || [ -L "$gitdir/$m" ]; then
+					h=$(git -C "$root" hash-object --no-filters --stdin <"$gitdir/$m") || return 1
+					printf '%s present %s\n' "$m" "$h"
+				else
+					printf '%s absent\n' "$m"
+				fi
+			done
+		}
+
+		# X5 / ruling 8: the final `reset --hard` (and a rollback's, and the
+		# cleanliness checks' `status`) must run no filter or smudge driver
+		# from the clone's or the owner's config (git-lfs's would even reach
+		# the network), and must not re-encode or convert line endings. So
+		# each runs with NO attributes at all, and nothing can name a driver,
+		# an encoding or an eol rule: --attr-source points at the empty tree
+		# (instead of the new tree's .gitattributes files),
+		# core.attributesFile at /dev/null, GIT_ATTR_NOSYSTEM drops the system
+		# file, and core.autocrlf=false stops the one conversion that needs
+		# no attribute. $GIT_DIR/info/attributes has no such switch, so a
+		# clone with one is refused here instead. Chosen over neutralising
+		# drivers by name (`-c filter.<x>.smudge=`), which cannot stop
+		# working-tree-encoding or eol, and over isolating the config
+		# (GIT_CONFIG_GLOBAL and friends), which cannot drop the clone's own
+		# .git/config.
+		[ ! -s "$gitdir/info/attributes" ] ||
+			die "$clone has $gitdir/info/attributes, which would apply to the final work-tree sync and cannot be switched off; use a dedicated clone without one; nothing was exported"
+		fmt=$(cgit rev-parse --show-object-format 2>/dev/null) || fmt=""
+		case $fmt in
+		sha1) emptytree=4b825dc642cb6eb9a060e54bf8d69288fbee4904 ;;
+		sha256) emptytree=6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321 ;;
+		*) die "could not tell $clone's object format; nothing was exported" ;;
+		esac
+		# The commit is built from the tag's own blob ids, so both repos must
+		# name objects the same way.
+		[ "$(git -C "$root" rev-parse --show-object-format 2>/dev/null)" = "$fmt" ] ||
+			die "$clone uses $fmt object ids and this repository does not; nothing was exported"
+		wtgit() {
+			GIT_ATTR_NOSYSTEM=1 cgit --attr-source="$emptytree" -c core.attributesFile=/dev/null -c core.autocrlf=false "$@"
+		}
+		wtgit check-attr -a -- probe >/dev/null 2>&1 ||
+			die "this git cannot switch attributes off for the work-tree sync (--attr-source needs git 2.40 or newer); nothing was exported"
+		# `status` goes through wtgit too: it re-hashes a racily-clean file
+		# through the clean filter, which is just as much a driver from the
+		# clone's config.
+		# Review round 3: a failing status is a failure, never "clean".
+		clean_or_die() {
+			st=$(wtgit status --porcelain --untracked-files=all --ignored) ||
+				die "git status failed in $clone; nothing was exported"
+			[ -z "$st" ] || die "$1"
+		}
+		# Ignored files count too: step 7 replaces the work tree, so anything
+		# not in git would be lost.
+		clean_or_die "$clone has uncommitted, untracked or ignored files; use a dedicated, clean clone; nothing was exported"
+	fi
+
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/export-public.XXXXXX") || die "could not make a temporary directory"
+	# I3/I5/N1: step 7 builds the commit and moves the tag entirely
+	# through plumbing, never PUBLIC_CLONE's real index or work tree,
+	# until the ref moves themselves. old/new track how far that got;
+	# committed_ref and tagged are each set to 1 IMMEDIATELY BEFORE the
+	# git call that might set them true, not after: a signal arriving
+	# while that call is running is handled by the shell only once the
+	# call returns, so by then the flag must already say "maybe done" for
+	# cleanup to know to check. Both rollbacks are plain compare-and-swaps,
+	# so setting a flag before an operation that then fails, or never
+	# ran, is always a safe no-op. touched is the same idea for the final
+	# `reset --hard`: cleanup only re-runs reset/clean if that call might
+	# have started (N5). success is set only after everything, including
+	# that reset, is done.
+	old=""
+	new=""
+	committed_ref=0
+	tagged=0
+	touched=0
+	success=0
+	# R3: warn only when a ref is neither where this export left it ($new)
+	# nor where it started ($old, or absent) -- not on every CAS "miss",
+	# which also fires harmlessly when the guarded call itself never
+	# actually moved the ref (it failed, or a signal pre-empted it).
+	restore_refs() {
+		if [ "$tagged" -eq 1 ]; then
+			cur=$(cgit rev-parse -q --verify "refs/tags/$tag" 2>/dev/null) || cur=""
+			if [ "$cur" = "$new" ]; then
+				cgit update-ref -d "refs/tags/$tag" "$new" 2>/dev/null ||
+					printf 'export-public: could not roll back tag %s in %s (it no longer points at %s); check it by hand\n' "$tag" "$clone" "$new" >&2
+			elif [ -n "$cur" ]; then
+				printf 'export-public: tag %s in %s does not point at the export commit; check it by hand\n' "$tag" "$clone" >&2
+			fi
+			tagged=0
+		fi
+		if [ "$committed_ref" -eq 1 ]; then
+			cur=$(cgit rev-parse -q --verify "$branchref" 2>/dev/null) || cur=""
+			if [ "$cur" = "$new" ]; then
+				if [ -n "$old" ]; then
+					cgit update-ref "$branchref" "$old" "$new" 2>/dev/null ||
+						printf 'export-public: could not roll back %s in %s (it no longer points at %s); check it by hand\n' "$branchref" "$clone" "$new" >&2
+				else
+					cgit update-ref -d "$branchref" "$new" 2>/dev/null ||
+						printf 'export-public: could not roll back %s in %s (it no longer points at %s); check it by hand\n' "$branchref" "$clone" "$new" >&2
+				fi
+			elif [ "$cur" != "$old" ]; then
+				printf 'export-public: %s in %s is neither %s nor its pre-export value; check it by hand\n' "$branchref" "$clone" "$new" >&2
+			fi
+			committed_ref=0
+		fi
+	}
+	cleanup() {
+		if [ "$success" -ne 1 ] && { [ "$committed_ref" -eq 1 ] || [ "$tagged" -eq 1 ] || [ "$touched" -eq 1 ]; }; then
+			restore_refs
+			if [ "$touched" -eq 1 ]; then
+				wtgit reset -q --hard >/dev/null 2>&1 || :
+				cgit clean -q -fdx >/dev/null 2>&1 || :
+				touched=0
+			fi
+		fi
+		# G1: the gate's run leaves the scanned files read-only.
+		chmod -R u+w "$tmp" 2>/dev/null || :
+		rm -rf "$tmp"
+	}
+	trap cleanup EXIT
+	# I5: HUP/INT/TERM must fail closed (exit 1) after rolling back,
+	# never fall through to the next step and never exit 128+n.
+	trap 'cleanup; exit 1' HUP INT TERM
+	mkdir "$tmp/meta" "$tmp/blobs" "$tmp/gate" "$tmp/views"
+	tab=$(printf '\t')
+
+	# parse REC: splits one `ls-tree -r` record, "MODE TYPE OID<TAB>PATH",
+	# into mode, type, oid and path (the path may itself hold a tab).
+	parse() {
+		mode=${1%% *}
+		rest=${1#* }
+		type=${rest%% *}
+		rest=${rest#* }
+		oid=${rest%%"$tab"*}
+		path=${rest#*"$tab"}
+	}
+
+	# X4/R1(6): refuse content the scanner cannot read as text. Called
+	# only after the path-name scan passed, so naming the path is safe;
+	# never names the content.
+	guard_content() {
+		gpath=$1
+		gfile=$2
+		hex=$(head -c 10 -- "$gfile" | od -An -tx1 | tr -d ' \t\n') ||
+			die "could not read $gpath; nothing was exported"
+		case $hex in
+		1f8b* | 504b0304* | 504b0506* | 504b0708* | 425a683[1-9]314159265359* | fd377a585a00* | 28b52ffd* | 377abcaf271c*)
+			die "$gpath is a compressed or archive file (by its leading bytes), which the leak scanner cannot see inside; publish what it holds instead; nothing was exported"
+			;;
+		esac
+		bom=0
+		case $hex in
+		feff* | fffe* | 0000feff*) bom=1 ;;
+		esac
+		tr -d '\0' <"$gfile" >"$tmp/guardcheck" || die "could not read $gpath; nothing was exported"
+		if cmp -s "$tmp/guardcheck" "$gfile"; then gnul=0; else gnul=1; fi
+		rm -f "$tmp/guardcheck"
+		[ "$bom" -eq 1 ] || [ "$gnul" -eq 1 ] || return 0
+		# F231 G2: the extension picks a format, and the file must pass
+		# that format's FULL walk (BINARY_WALK), not just its leading
+		# bytes: a PNG signature followed by a UTF-16 body used to pass.
+		# A file that fails is refused, never scanned as text: it holds a
+		# NUL or a BOM, so the text scan cannot read it, and reading it
+		# anyway is the hole this closes. ICO, PDF, WOFF and WOFF2 are no
+		# longer on the list: a full walk of PDF (objects, xref, filters)
+		# or WOFF2 (Brotli) is out of reach of sh and awk, WOFF's tables
+		# are zlib streams, and the tree holds none of the four.
+		glower=$(printf '%s' "$gpath" | tr '[:upper:]' '[:lower:]')
+		case ${glower##*.} in
+		png) gfmt=png ;;
+		gif) gfmt=gif ;;
+		jpg | jpeg) gfmt=jpeg ;;
+		*) die "$gpath holds a byte the leak scanner cannot read (a UTF-16/32 BOM or a NUL byte), and is not a binary file on the allowlist (.png .gif .jpg .jpeg, each checked by a full walk of its format); nothing was exported" ;;
+		esac
+		# Review round 1, M5: the walk costs an awk cell per byte (1 MB
+		# takes seconds), so a verified binary is capped at 5 MiB.
+		gsize=$(wc -c <"$gfile" | tr -d ' ') || die "could not read $gpath; nothing was exported"
+		[ "$gsize" -le 5242880 ] ||
+			die "$gpath is $gsize bytes, over the 5 MiB (5242880-byte) limit for a verified binary; shrink it or host it elsewhere; nothing was exported"
+		od -An -v -tu1 -- "$gfile" >"$tmp/guardbytes" || die "could not read $gpath; nothing was exported"
+		verdict=$(awk -v fmt="$gfmt" "$BINARY_WALK" "$tmp/guardbytes") || die "could not check $gpath's format; nothing was exported"
+		rm -f "$tmp/guardbytes"
+		[ "$verdict" = ok ] ||
+			die "$gpath holds a byte the leak scanner cannot read (a UTF-16/32 BOM or a NUL byte), and is not a valid $gfmt file ($verdict), so it is not the binary its name says; nothing was exported"
+		# A valid image can still carry UTF-16/32 text where nothing is
+		# compressed (a PNG text or private chunk, a JPEG comment, a GIF
+		# comment extension). Its NUL-stripped view, scanned in step 5,
+		# turns ASCII-range UTF-16/32 text back into plain text.
+		gview=$tmp/views/${gfile##*/}
+		if [ ! -e "$gview" ]; then
+			tr -d '\0' <"$gfile" >"$gview" || die "could not read $gpath; nothing was exported"
+			printf '%s\n' "${gfile##*/}" >>"$tmp/views.list" || die "could not list $gpath's text view; nothing was exported"
+		fi
+	}
+
+	# check_link PATH FILE: a symlink (FILE holds its link text) must stay
+	# inside the tree: relative, non-empty, one line, every ".." before
+	# any name (a ".." after a name could step back out through another
+	# in-tree symlink), and never climbing above the root.
+	check_link() {
+		lpath=$1
+		lfile=$2
+		[ -s "$lfile" ] || die "symlink $lpath has an empty target; nothing was exported"
+		tr -d '\n\0' <"$lfile" >"$tmp/linkcheck" || die "could not read symlink $lpath; nothing was exported"
+		cmp -s "$tmp/linkcheck" "$lfile" || die "symlink $lpath has a newline or NUL byte in its target; nothing was exported"
+		ltext=$(cat "$lfile") || die "could not read symlink $lpath; nothing was exported"
+		case $ltext in
+		/*) die "symlink $lpath has an absolute target, outside the tree; nothing was exported" ;;
+		esac
+		ldepth=$(printf '%s' "$lpath" | tr -cd / | wc -c | tr -d ' ')
+		named=0
+		escapes=0
+		oldifs=$IFS
+		IFS=/
+		set -f
+		for c in $ltext; do
+			case $c in
+			'' | .) ;;
+			..)
+				ldepth=$((ldepth - 1))
+				if [ "$named" -eq 1 ] || [ "$ldepth" -lt 0 ]; then escapes=1; fi
+				;;
+			*) named=1 ;;
+			esac
+		done
+		IFS=$oldifs
+		set +f
+		[ "$escapes" -eq 0 ] || die "symlink $lpath has a target that leaves the tree through ..; nothing was exported"
+	}
+
+	# 1. The tag's own public-manifest.txt, straight from its raw blob,
+	# and the tag's whole tree listing. -z: git's non-z ls-tree C-quotes
+	# an unusual byte in a path. sh has no pipefail, so every step writes
+	# a file and has its own exit status checked.
+	git -C "$root" cat-file -e "$revspec:public-manifest.txt" 2>/dev/null ||
+		die "$label has no public-manifest.txt; nothing was exported"
+	git -C "$root" cat-file blob "$revspec:public-manifest.txt" >"$tmp/manifest" ||
+		die "could not read $label's public-manifest.txt; nothing was exported"
+	git -C "$root" ls-tree -r -z --full-tree "$revspec" >"$tmp/tree.z" ||
+		die "git ls-tree $label failed"
+	# C1: a path holding a literal newline byte survives -z as one
+	# record, but turns into two lines once NUL becomes newline below --
+	# comparing the NUL count against the post-tr line count catches
+	# that before any selection happens.
+	nuls=$(tr -dc '\0' <"$tmp/tree.z" | wc -c | tr -d ' ')
+	tr '\0' '\n' <"$tmp/tree.z" >"$tmp/tree" || die "could not read $label's tree"
+	linecount=$(wc -l <"$tmp/tree" | tr -d ' ')
+	[ "$nuls" = "$linecount" ] ||
+		die "$label has a tracked path with an embedded newline byte; refusing (nothing was exported)"
+
+	# 2. Deny by default: only the entries whose paths the tag's own
+	# manifest selects.
+	cut -f2- "$tmp/tree" >"$tmp/all" || die "could not read $label's tree"
+	"$here/manifest-select" "$tmp/manifest" <"$tmp/all" >"$tmp/list" ||
+		die "public-manifest.txt could not be applied; nothing was exported"
+	[ -s "$tmp/list" ] || die "public-manifest.txt selects no file of $label; nothing was exported"
+	awk 'NR == FNR { want[$0] = 1; next }
+	{ if (substr($0, index($0, "\t") + 1) in want) print }' "$tmp/list" "$tmp/tree" >"$tmp/sel" ||
+		die "could not select $label's entries; nothing was exported"
+	# X6: every selected path must be exactly one of the tag's entries --
+	# never silently dropped.
+	cut -f2- "$tmp/sel" >"$tmp/meta/paths.txt" || die "could not list the selected paths"
+	sort "$tmp/meta/paths.txt" >"$tmp/sel.sorted" || die "could not sort the selected paths"
+	sort "$tmp/list" >"$tmp/list.sorted" || die "could not sort the selected paths"
+	cmp -s "$tmp/sel.sorted" "$tmp/list.sorted" ||
+		die "the manifest's selection does not match $label's tree entries one for one; nothing was exported"
+
+	# 3. Leak-scan the selected path NAMES, as the content of one file
+	# (never as paths on disk), plus the commit message when exporting --
+	# M4: the tag's own text reaches the message and the ref name. From
+	# here on every selected path is known clean, so a message may name
+	# one. --check has no commit, so it scans the path names alone.
+	if [ "$op" = export ]; then
+		printf 'c-hottag %s\n' "$tag" >"$tmp/meta/msg"
+		if ! printf 'paths.txt\nmsg\n' | "$here/leak-scan" -p "$patterns" -C "$tmp/meta" >"$tmp/hits"; then
+			cat "$tmp/hits" >&2
+			die "a selected path name or the commit message failed the leak scan (hits above give the line of paths.txt, the selected-path list, or of msg; never the text); nothing was committed"
+		fi
+	else
+		if ! printf 'paths.txt\n' | "$here/leak-scan" -p "$patterns" -C "$tmp/meta" >"$tmp/hits"; then
+			cat "$tmp/hits" >&2
+			die "a selected path name failed the leak scan (hits above give the line of paths.txt, the selected-path list; never the text); nothing was checked"
+		fi
+	fi
+
+	# 4. X1 and the controller ruling: refuse what cannot be exported
+	# safely. Every path and every directory prefix, compared after ASCII
+	# case folding: two distinct names with one folded form are one file
+	# or directory on a case-insensitive disk.
+	awk '
+	{
+		n = split($0, c, "/")
+		pre = ""
+		for (i = 1; i <= n; i++) {
+			if (c[i] == "" || c[i] == "." || c[i] == ".." || tolower(c[i]) == ".git") {
+				print "component\t" $0
+				bad = 1
+				exit
+			}
+			pre = (i == 1) ? c[i] : pre "/" c[i]
+			if (!(pre in seen)) {
+				seen[pre] = 1
+				k = tolower(pre)
+				if (k in folded) {
+					print "case\t" k
+					bad = 1
+					exit
+				}
+				folded[k] = 1
+			}
+		}
+	}
+	END { if (!bad) print "ok" }' "$tmp/meta/paths.txt" >"$tmp/pathcheck" ||
+		die "could not check the selected paths; nothing was exported"
+	pc=$(cat "$tmp/pathcheck")
+	case $pc in
+	ok) ;;
+	case"$tab"*) die "two selected paths (or a path and a directory) differ only in letter case, so they are one file on a case-insensitive disk: ${pc#*"$tab"}; nothing was exported" ;;
+	component"$tab"*) die "${pc#*"$tab"} has an empty, '.', '..' or '.git' component; nothing was exported" ;;
+	*) die "could not check the selected paths; nothing was exported" ;;
+	esac
+	while IFS= read -r rec; do
+		parse "$rec"
+		case $mode in
+		100644 | 100755 | 120000)
+			[ "$type" = blob ] || die "$path is a $type, not a blob; nothing was exported"
+			case $oid in
+			'' | *[!0-9a-f]*) die "$path has a malformed object id; nothing was exported" ;;
+			esac
+			;;
+		160000) die "$path is a submodule (mode 160000): its content lives in another repository, where the leak scan cannot see it; nothing was exported" ;;
+		*) die "$path has an unsupported git mode $mode; nothing was exported" ;;
+		esac
+	done <"$tmp/sel"
+
+	# 5. R1/X1: every selected blob, raw, in a file named by its id --
+	# never at its repo path. These files are what the scan reads and
+	# what the commit is built from.
+	awk '{ print $3 }' "$tmp/sel" >"$tmp/oids.all" || die "could not list the selected blobs"
+	sort -u "$tmp/oids.all" >"$tmp/oids" || die "could not list the selected blobs"
+	while IFS= read -r oid; do
+		git -C "$root" cat-file blob "$oid" >"$tmp/blobs/$oid" ||
+			die "could not read blob $oid of $label; nothing was exported"
+	done <"$tmp/oids"
+	while IFS= read -r rec; do
+		parse "$rec"
+		guard_content "$path" "$tmp/blobs/$oid"
+		[ "$mode" != 120000 ] || check_link "$path" "$tmp/blobs/$oid"
+	done <"$tmp/sel"
+	# The owner's terms plus the generic patterns over those files. A hit
+	# is labelled by blob id; each is translated back to its path(s),
+	# which step 3 already found clean.
+	# map_hits HITS: prints leak-scan's hits with each blob id (a file's
+	# name in $tmp/blobs or $tmp/views) replaced by its path(s).
+	map_hits() {
+		awk -v sel="$tmp/sel" '
+		BEGIN {
+			while ((getline rec < sel) > 0) {
+				t = index(rec, "\t")
+				split(substr(rec, 1, t - 1), f, " ")
+				p = substr(rec, t + 1)
+				paths[f[3]] = (f[3] in paths) ? paths[f[3]] "\n" p : p
+			}
+		}
+		{
+			c = index($0, ":")
+			k = substr($0, 1, c - 1)
+			if (c > 0 && (k in paths)) {
+				n = split(paths[k], ps, "\n")
+				for (i = 1; i <= n; i++) print ps[i] substr($0, c)
+			} else print
+		}' "$1" >&2
+	}
+	if [ "$op" = export ]; then outcome="nothing was committed"; else outcome="nothing was checked"; fi
+	if ! "$here/leak-scan" -p "$patterns" -C "$tmp/blobs" <"$tmp/oids" >"$tmp/hits"; then
+		map_hits "$tmp/hits"
+		die "the leak scan failed (hits above name file and line, never the text); $outcome"
+	fi
+	# G2: each allowlisted binary again, NUL bytes dropped.
+	if [ -s "$tmp/views.list" ] && ! "$here/leak-scan" -p "$patterns" -C "$tmp/views" <"$tmp/views.list" >"$tmp/hits"; then
+		map_hits "$tmp/hits"
+		die "the leak scan failed on an image's bytes with their NUL bytes dropped, i.e. on UTF-16/32 text inside it (hits above name file and line, never the text); $outcome"
+	fi
+
+	if [ "$op" = check ]; then
+		success=1
+		trap - HUP INT TERM
+		say "check $label: $(wc -l <"$tmp/sel" | tr -d ' ') files selected, clean."
+		return 0
+	fi
+
+	# 6. The gate, as CLAUDE.md writes it, in a throwaway copy of the
+	# selected tree made only now: every check above has passed, so no
+	# two paths fold together and no symlink leaves the tree. Directories
+	# first, each a fresh mkdir (an alias the ASCII check cannot see, such
+	# as a Unicode normalisation twin, then fails instead of merging);
+	# then files, each onto a name that must not exist yet; symlinks
+	# last, so no write before them can pass through one.
+	awk '{ n = split($0, c, "/"); pre = ""
+		for (i = 1; i < n; i++) { pre = (i == 1) ? c[i] : pre "/" c[i]; print pre } }' \
+		"$tmp/meta/paths.txt" >"$tmp/dirs.all" || die "could not list the selected directories"
+	sort -u "$tmp/dirs.all" >"$tmp/dirs" || die "could not list the selected directories"
+	while IFS= read -r d; do
+		mkdir -- "$tmp/gate/$d" 2>/dev/null ||
+			die "$d: two selected paths name the same file or directory on this disk (letter case or Unicode normalisation); nothing was exported"
+	done <"$tmp/dirs"
+	for pass in files links; do
+		while IFS= read -r rec; do
+			parse "$rec"
+			case $pass:$mode in
+			files:100644 | files:100755 | links:120000) ;;
+			*) continue ;;
+			esac
+			dst=$tmp/gate/$path
+			if [ -e "$dst" ] || [ -L "$dst" ]; then
+				die "$path: two selected paths name the same file or directory on this disk (letter case or Unicode normalisation); nothing was exported"
+			fi
+			case $mode in
+			120000)
+				ln -s -- "$(cat "$tmp/blobs/$oid")" "$dst" ||
+					die "could not make symlink $path for the gate; nothing was exported"
+				;;
+			*)
+				cp -- "$tmp/blobs/$oid" "$dst" || die "could not copy $path for the gate; nothing was exported"
+				if [ "$mode" = 100755 ]; then chmod 0755 "$dst"; else chmod 0644 "$dst"; fi
+				;;
+			esac
+		done <"$tmp/sel"
+	done
+	# I1(b), R-N2: give the gate copy a real one-commit git repo, built
+	# with plumbing only from the same selected records (never `git add`,
+	# so no filter, ignore rule or attribute runs), with no hooks and no
+	# attributes: each blob written from its id-named file (`hash-object
+	# --no-filters -w`, and the id must be the tag's), the index, its
+	# tree, and one unsigned commit with a fixed author and date on
+	# main. So a test that shells out to git -- tracked(),
+	# TestEveryManifestEntryMatchesATrackedPath, the consistency
+	# package's ignoredFiles(), or one calling `rev-parse HEAD`, `log`,
+	# `diff` or `show` -- runs during the export exactly as it will on
+	# the public repo's own CI checkout, instead of skipping (outside a
+	# git work tree) or failing (with no commit). Nothing reaches the
+	# clone from this repo; it is thrown away with the rest of $tmp.
+	ggit() {
+		GIT_ATTR_NOSYSTEM=1 git -C "$tmp/gate" -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null "$@"
+	}
+	ggit init -q --template= -b main --object-format="$fmt" >/dev/null || die "could not make the gate's git work tree; nothing was committed"
+	while IFS= read -r oid; do
+		got=$(ggit hash-object --no-filters -w -- "$tmp/blobs/$oid") ||
+			die "could not write blob $oid into the gate's git repo; nothing was committed"
+		[ "$got" = "$oid" ] ||
+			die "the exported tree does not byte-for-byte match $tag's own selected files (blob $oid changed after the scan, before the gate); nothing was committed"
+	done <"$tmp/oids"
+	tr '\n' '\0' <"$tmp/sel" >"$tmp/gate.z" || die "could not build the gate's git index; nothing was committed"
+	ggit update-index -z --index-info <"$tmp/gate.z" ||
+		die "could not build the gate's git index; nothing was committed"
+	gatetree=$(ggit write-tree) || die "could not build the gate's git tree; nothing was committed"
+	gatecommit=$(GIT_AUTHOR_NAME=$AUTHOR_NAME GIT_AUTHOR_EMAIL=$AUTHOR_EMAIL GIT_AUTHOR_DATE="$GATE_DATE" \
+		GIT_COMMITTER_NAME=$AUTHOR_NAME GIT_COMMITTER_EMAIL=$AUTHOR_EMAIL GIT_COMMITTER_DATE="$GATE_DATE" \
+		ggit -c commit.gpgSign=false commit-tree "$gatetree" -m "c-hottag $tag") ||
+		die "could not commit the gate's git tree; nothing was committed"
+	ggit update-ref refs/heads/main "$gatecommit" "" ||
+		die "could not point the gate's main at its commit; nothing was committed"
+	[ "$(ggit rev-parse --is-inside-work-tree)" = true ] ||
+		die "the gate's git work tree did not come up; nothing was committed"
+	[ -f "$tmp/gate/CLAUDE.md" ] || die "the export has no CLAUDE.md, so no gate to run; nothing was committed"
+	awk '
+	{ sub(/\r$/, "") }
+	!found && /^- The gate/ { found = 1; next }
+	found == 1 && /^[ \t]*```/ { found = 2; next }
+	found == 2 && /^[ \t]*```[ \t]*$/ { exit }
+	found == 2 { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); if ($0 != "") print }
+	' "$tmp/gate/CLAUDE.md" >"$tmp/gatecmds"
+	[ -s "$tmp/gatecmds" ] || die "CLAUDE.md has no gate block; nothing was committed"
+
+	# F231 G1 and review round 1: the gate runs the snapshot's own code
+	# synchronously, as the owner. It can change anything the owner can:
+	# $tmp (its working directory is inside it), the clone, ~/.gitconfig,
+	# the tools on PATH (a replaced git would lie to every check below),
+	# this script's own file. What the checks here bound, exactly:
+	#   - Tampering through $tmp, by values pinned IN THIS SHELL'S MEMORY
+	#     before the gate, where no child process can reach them: the
+	#     gate's command list, a digest of the selected records ($tmp/sel:
+	#     mode, blob id and path per file) and the tree id the gate repo
+	#     built from them ($gatetree, which commits to every path, mode and
+	#     blob id, and so, through the blob ids, to every scanned byte).
+	#     After the gate the records must match their digest, every
+	#     scanned file must still hash to its blob id, no file may be added
+	#     to the scanned files, and the tree built in the clone must BE
+	#     $gatetree. Post-gate scratch files go in a fresh directory. The
+	#     read-only $tmp while the gate runs only stops honest mistakes:
+	#     code running as the owner can chmod it back.
+	#   - Tampering in the clone's git dir and refs, by pinning before the
+	#     gate, and requiring unchanged after it: a digest of every git-dir
+	#     file that changes what git reads or runs there (clone_meta:
+	#     commondir, config, config.worktree, info/attributes, info/grafts,
+	#     shallow, objects/info/alternates -- each present with its hash,
+	#     or absent), checked first and without running git in the clone;
+	#     then its branch, its HEAD ($old, which update-ref's
+	#     compare-and-swap also holds to the ref move itself), the tag's
+	#     absence, and its full for-each-ref output (so no new tag or
+	#     refs/replace/ entry). Every clone call runs with no hooks,
+	#     core.fsmonitor=false and GIT_NO_REPLACE_OBJECTS=1. `git fsck`
+	#     over the whole clone runs before any ref moves, so an object
+	#     planted at a scanned blob's or the export commit's id (git never
+	#     re-hashes on read, and `hash-object -w` only freshens an existing
+	#     object) is refused. After the final reset --hard, the tag and
+	#     HEAD must both still be the export commit.
+	#     Which git dir the calls use is pinned too: the clone's git dir
+	#     must be CLONE/.git, a plain directory; every clone call runs with
+	#     GIT_DIR and GIT_WORK_TREE set to it; and plain discovery from
+	#     the clone must still resolve to it after the gate.
+	#     What the clone pin does NOT cover: other files under .git (hooks
+	#     are off, and nothing else there names code git would run in the
+	#     calls here), pack bitmaps, and the object store's contents beyond
+	#     what fsck re-hashes.
+	# Not bounded here, and not boundable from inside this script: the
+	# gate runs with the owner's full rights, so it can change anything
+	# else the owner can -- ~/.gitconfig, a tool on PATH, this script (the
+	# last line is `main "$@"; exit`, so appended code never runs, but the
+	# gate can do the same thing some other way), or a process it leaves
+	# behind. Only process isolation closes that class: running the gate
+	# sandboxed (another uid, bwrap, a VM or a container), which is
+	# optional and not implemented. Until then the real boundary is R85
+	# (owner-reviewed patches only) plus the owner's review of the export
+	# commit and the clone (docs/internal/public-export.md) before pushing.
+	old=$(cgit rev-parse -q --verify HEAD 2>/dev/null) || old=""
+	metabefore=$(clone_meta) || die "could not fingerprint $clone's git metadata; nothing was committed"
+	refsbefore=$(cgit for-each-ref) || die "could not list $clone's refs; nothing was committed"
+	gatelist=$(cat "$tmp/gatecmds") || die "could not read the gate block; nothing was committed"
+	seldigest=$(cgit hash-object --no-filters --stdin <"$tmp/sel") ||
+		die "could not fingerprint the selected files; nothing was committed"
+	for f in "$tmp"/*; do
+		[ "$f" = "$tmp/gate" ] || chmod -R a-w "$f" ||
+			die "could not make $f read-only for the gate; nothing was committed"
+	done
+	chmod a-w "$tmp" || die "could not make $tmp read-only for the gate; nothing was committed"
+	# One command per line, from memory: rewriting $tmp/gatecmds mid-gate
+	# can neither skip nor replace a line. The for list is expanded once.
+	oldifs=$IFS
+	IFS='
+'
+	set -f
+	for cmd in $gatelist; do
+		IFS=$oldifs
+		set +f
+		say "gate: $cmd"
+		(cd "$tmp/gate" && GOFLAGS='' GOPROXY=off GOTOOLCHAIN=local sh -c "$cmd" </dev/null) ||
+			die "the gate failed on the exported tree at: $cmd; nothing was committed"
+	done
+	IFS=$oldifs
+	set +f
+
+	# Review rounds 1 and 2: the clone, after the gate, against what was
+	# pinned before it. Its git-dir metadata first, before ANY git call in
+	# the clone: a changed commondir or config steers every such call.
+	metaafter=$(clone_meta) || die "could not read $clone's git metadata after the gate; nothing was committed"
+	if [ "$metaafter" != "$metabefore" ]; then
+		what=metadata
+		IFS='
+'
+		set -f
+		for line in $metabefore; do
+			case "
+$metaafter
+" in
+			*"
+$line
+"*) ;;
+			*)
+				what=${line%% *}
+				break
+				;;
+			esac
+		done
+		IFS=$oldifs
+		set +f
+		die "$gitdir/$what changed during the gate (it changes what git reads or runs in $clone); nothing was committed"
+	fi
+	# Review round 3: and plain discovery still finds $gitdir (the pins
+	# keep the export's own calls there; this keeps the owner's too).
+	[ "$(discovered)" = "$gitdir" ] ||
+		die "repository discovery in $clone no longer resolves to $gitdir after the gate (it changed during the gate); nothing was committed"
+	cur=$(cgit symbolic-ref -q HEAD) || cur=""
+	[ "$cur" = "$branchref" ] ||
+		die "$clone is no longer on $branchref after the gate; nothing was committed"
+	cur=$(cgit rev-parse -q --verify HEAD 2>/dev/null) || cur=""
+	[ "$cur" = "$old" ] ||
+		die "$clone's HEAD moved during the gate (something committed or reset there); nothing was committed"
+	! cgit rev-parse -q --verify "refs/tags/$tag" >/dev/null ||
+		die "tag $tag appeared in $clone during the gate; nothing was committed"
+	refsafter=$(cgit for-each-ref) || die "could not list $clone's refs after the gate; nothing was committed"
+	[ "$refsafter" = "$refsbefore" ] ||
+		die "$clone's refs changed during the gate (for-each-ref: a ref added, moved or removed, a refs/replace/ entry included); nothing was committed"
+
+	# G1, after the gate: re-verify against what was pinned above. From
+	# here on only $post's copy of the records is read.
+	chmod u+w "$tmp" || die "could not reopen $tmp after the gate; nothing was committed"
+	post=$tmp/post
+	mkdir "$post" || die "$post appeared during the gate; nothing was committed"
+	cp "$tmp/sel" "$post/sel" || die "could not read the selected files' list after the gate; nothing was committed"
+	got=$(cgit hash-object --no-filters --stdin <"$post/sel") ||
+		die "could not fingerprint the selected files after the gate; nothing was committed"
+	[ "$got" = "$seldigest" ] ||
+		die "the list of selected files (paths, modes, blob ids) changed during the gate; nothing was committed"
+	while IFS= read -r rec; do
+		parse "$rec"
+		got=$(cgit hash-object --no-filters -- "$tmp/blobs/$oid" 2>/dev/null) || got=""
+		[ "$got" = "$oid" ] ||
+			die "$path changed during the gate (its scanned copy is no longer blob $oid, or is gone); nothing was committed"
+	done <"$post/sel"
+	awk '{ print $3 }' "$post/sel" >"$post/oids.all" || die "could not list the selected blobs; nothing was committed"
+	sort -u "$post/oids.all" >"$post/oids" || die "could not list the selected blobs; nothing was committed"
+	ls -A "$tmp/blobs" >"$post/present" || die "could not list the scanned files after the gate; nothing was committed"
+	if ! cmp -s "$post/oids" "$post/present"; then
+		comm -13 "$post/oids" "$post/present" >"$post/added" || die "could not compare the scanned files; nothing was committed"
+		extra=$(head -n 1 "$post/added")
+		die "a file was added to the scanned files during the gate (blobs/$extra); nothing was committed"
+	fi
+	printf 'c-hottag %s\n' "$tag" >"$post/msg" || die "could not write the commit message; nothing was committed"
+
+	# 7. X2: only now does anything reach the clone. Each blob, checked
+	# above, is written and its id checked again.
+	while IFS= read -r oid; do
+		got=$(cgit hash-object --no-filters -w -- "$tmp/blobs/$oid") ||
+			die "could not stage blob $oid in $clone; nothing was committed"
+		[ "$got" = "$oid" ] ||
+			die "the exported tree does not byte-for-byte match $tag's own selected files (blob $oid); nothing was committed"
+	done <"$post/oids"
+
+	# The tree, from the selected records themselves (mode, id, path),
+	# NUL-terminated so no path is ever C-unquoted, in a scratch index --
+	# never `add`, so no filter, ignore rule or attribute can run.
+	tr '\n' '\0' <"$post/sel" >"$post/sel.z" || die "could not stage the export; nothing was committed"
+	GIT_INDEX_FILE="$post/index" cgit update-index -z --index-info <"$post/sel.z" ||
+		die "could not stage the export in $clone; nothing was committed"
+	newtree=$(GIT_INDEX_FILE="$post/index" cgit write-tree) ||
+		die "could not build the export's tree; nothing was committed"
+	# G1: two ids from memory, never from a file the gate could reach.
+	[ "$newtree" = "$gatetree" ] ||
+		die "the export's tree is not the tree that was scanned and gated; nothing was committed"
+
+	# R1(4): the staged tree's paths, modes AND blob ids must be
+	# byte-identical to $tag's own tree for exactly the selected paths.
+	# Each step is written to a file and checked on its own (I1).
+	cgit ls-tree -r -z --full-tree "$newtree" >"$post/actual.z" ||
+		die "could not read the export's tree; nothing was committed"
+	tr '\0' '\n' <"$post/actual.z" >"$post/actual" || die "could not read the export's tree; nothing was committed"
+	sort "$post/actual" >"$post/actual.sorted" || die "could not sort the export's tree; nothing was committed"
+	sort "$post/sel" >"$post/expected.sorted" || die "could not sort $tag's own tree; nothing was committed"
+	cmp -s "$post/expected.sorted" "$post/actual.sorted" ||
+		die "the exported tree does not byte-for-byte match $tag's own selected files; nothing was committed"
+	if [ -n "$old" ]; then
+		oldtree=$(cgit rev-parse "$old^{tree}") || die "could not read $clone's current tree; nothing was committed"
+		[ "$oldtree" != "$newtree" ] || die "$clone already matches $tag; nothing was committed"
+	fi
+
+	# M4: a fixed UTC date, so the owner's local time zone never reaches
+	# the public commit.
+	stamp="$(date -u +%s) +0000"
+	# I4: -c commit.gpgSign=false overrides the owner's global signing
+	# config; commit-tree itself never signs unless told to with -S,
+	# which is never passed.
+	if [ -n "$old" ]; then
+		new=$(GIT_AUTHOR_NAME=$AUTHOR_NAME GIT_AUTHOR_EMAIL=$AUTHOR_EMAIL GIT_AUTHOR_DATE="$stamp" \
+			GIT_COMMITTER_NAME=$AUTHOR_NAME GIT_COMMITTER_EMAIL=$AUTHOR_EMAIL GIT_COMMITTER_DATE="$stamp" \
+			cgit -c commit.gpgSign=false commit-tree "$newtree" -p "$old" -F "$post/msg") ||
+			die "git commit-tree failed in $clone; nothing was committed"
+	else
+		new=$(GIT_AUTHOR_NAME=$AUTHOR_NAME GIT_AUTHOR_EMAIL=$AUTHOR_EMAIL GIT_AUTHOR_DATE="$stamp" \
+			GIT_COMMITTER_NAME=$AUTHOR_NAME GIT_COMMITTER_EMAIL=$AUTHOR_EMAIL GIT_COMMITTER_DATE="$stamp" \
+			cgit -c commit.gpgSign=false commit-tree "$newtree" -F "$post/msg") ||
+			die "git commit-tree failed in $clone; nothing was committed"
+	fi
+
+	# N5: the gate can take minutes; re-verify the clone is still exactly
+	# as clean as the very first check found it, right before touching
+	# anything real in it. A miss here would otherwise mean the rollback
+	# could silently `reset --hard`/`clean -fdx` away something unrelated
+	# to this export that appeared in the meantime.
+	clean_or_die "$clone changed since it was checked (now uncommitted, untracked or ignored files are present); nothing was exported"
+
+	# Review round 1, I1: git never re-hashes an object on read, and
+	# `hash-object -w` only freshens one that already exists, so an object
+	# planted in the clone at a scanned blob's (or the export commit's
+	# predictable) id would be committed and checked out as it is. fsck
+	# re-hashes every object (loose, packed, and through alternates) and
+	# refuses a hash-path mismatch. Not --strict (review round 2): that
+	# adds style checks, not re-hashing, and could refuse an old object.
+	cgit fsck --no-dangling --no-progress >"$post/fsck" 2>&1 || {
+		cat "$post/fsck" >&2
+		die "git fsck found a corrupt or planted object in $clone (above); nothing was committed"
+	}
+
+	# M2: refs/tags/$tag and $branchref (already fully qualified by
+	# symbolic-ref) throughout, never a bare, DWIM-resolved name.
+	# N1: the flag is set BEFORE the call it guards, not after: a signal
+	# is only handled once this git call returns, by which point it may
+	# already have moved the ref, so cleanup must already be able to see
+	# that. The CAS rollback in restore_refs is a safe no-op if the call
+	# below actually failed or never ran.
+	committed_ref=1
+	# $old was pinned before the gate, so this compare-and-swap also
+	# refuses a branch the gate (or anything since) moved.
+	cgit update-ref "$branchref" "$new" "$old" || die "could not update $branchref in $clone; nothing was committed"
+
+	# The tag is created with update-ref, not `git tag`: a lightweight
+	# ref, never subject to tag.gpgSign, tag.forceSignAnnotated or an
+	# editor (I4). The empty third argument asserts the tag does not
+	# already exist (it was checked above, but this keeps the create
+	# atomic against anything racing it).
+	tagged=1
+	cgit update-ref "refs/tags/$tag" "$new" "" || die "could not create tag $tag in $clone; nothing was committed"
+
+	# X5: wtgit, so the work tree gets exactly the committed bytes.
+	touched=1
+	wtgit reset -q --hard || die "could not update $clone's work tree; nothing was committed"
+	# Review round 2: the work-tree sync is the one step that can run
+	# anything (a driver) after both ref moves, so re-read both.
+	cur=$(cgit rev-parse -q --verify "refs/tags/$tag" 2>/dev/null) || cur=""
+	[ "$cur" = "$new" ] ||
+		die "tag $tag in $clone is not the export commit after the work-tree sync; nothing was committed"
+	cur=$(cgit rev-parse -q --verify HEAD 2>/dev/null) || cur=""
+	[ "$cur" = "$new" ] ||
+		die "HEAD in $clone is not the export commit after the work-tree sync; nothing was committed"
+
+	success=1
+	# R4: a signal from here on must not report a completed export as a
+	# failure (the commit and tag already exist; exit 1 would contradict
+	# "nothing was committed").
+	trap - HUP INT TERM
+	say "exported $(wc -l <"$post/sel" | tr -d ' ') files of $tag into $clone as $(cgit rev-parse --short HEAD), tagged $tag."
+	say "Nothing was pushed. Review the commit and the tag, then push both to the public repo yourself."
+}
+
+# Review round 1, M1: one line, so sh never reads (and runs) code that
+# was appended to this file while main ran.
+main "$@"; exit

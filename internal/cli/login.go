@@ -1,0 +1,288 @@
+package cli
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/HaiNNT/c-hottag/internal/creds"
+	"github.com/HaiNNT/c-hottag/internal/exit"
+	"github.com/HaiNNT/c-hottag/internal/fsutil"
+	"github.com/HaiNNT/c-hottag/internal/refresh"
+	"github.com/HaiNNT/c-hottag/internal/store"
+)
+
+// claudeAuthExec runs `claude auth <sub>` against one slot. It is a package
+// variable because this is the ONLY exec in the tree that inherits real
+// stdio — refresh.execRun and slotEmail both nil it deliberately — and a
+// test that reached the real one would hand the test runner's terminal to a
+// browser login prompt and block. internal/cli's TestMain installs a
+// panicking default so a test that forgets to stub it fails loudly.
+var claudeAuthExec = runClaudeAuth
+
+// SetAuthExecForTest swaps claudeAuthExec for fn and returns a func that
+// restores whatever was installed at the moment of the call (production's
+// own runClaudeAuth, or, inside a test binary that has already swapped it,
+// whatever a previous swap or a TestMain default left behind) — mirroring
+// internal/shim's SetSeamsForTest exactly, and for the identical reason: a
+// nil-means-production special case would give every test an API path back
+// to the real, stdio-inheriting exec once the FIRST stub's cleanup ran,
+// silently disarming TestMain's panicking default for the rest of the test
+// binary. There must be no such path from inside a test binary, so there is
+// none here.
+//
+// It lives in a non-test file so other packages' tests can reach it: a
+// _test.go file compiles only into its own package's test binary (F103).
+func SetAuthExecForTest(fn func(bin, slotDir, sub string, stdin io.Reader, stdout, stderr io.Writer) error) (restore func()) {
+	orig := claudeAuthExec
+	claudeAuthExec = fn
+	return func() { claudeAuthExec = orig }
+}
+
+func runClaudeAuth(bin, slotDir, sub string, stdin io.Reader, stdout, stderr io.Writer) error {
+	// bin is the --claude flag: an operator-supplied, trusted binary path
+	// (never request- or network-derived), the same trust boundary as
+	// refresh.Claude, slotEmail and creds.ExecRunner.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.Command(bin, "auth", sub)
+	cmd.Env = refresh.ChildEnv(slotDir)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	return cmd.Run()
+}
+
+// sameSlotDir reports whether a and b name the same account slot
+// directory: by file identity (os.SameFile) when both exist — catching a
+// case-insensitive filesystem's accounts/B and accounts/b, which are
+// literally one inode (NEW-2) — and, when either is missing, by a cleaned,
+// case-INSENSITIVE compare instead of a plain string match (re-review
+// Minor): identity can only be proven when both paths can be stat'd, and a
+// missing dir must not read as "safe, definitely different" — a
+// case-sensitive filesystem paying for a slightly more conservative
+// missing-path fallback than it strictly needs (login just picks the next
+// free name) is a fine trade for never under-detecting the collision on a
+// case-insensitive one.
+//
+// Deliberately its OWN helper, not a change to sameFile's own fallback
+// (daemon.go): that helper's other callers — the log-rotation guard and
+// provisionBinSymlinks (setup.go) — have nothing to do with account slot
+// dirs, and folding THEIR missing-path fallback to case-insensitive too
+// would change their semantics for no reason this fix needs. Mirrors
+// store.sameDir's own missing-path fallback (store cannot import cli, so
+// that one is its own small copy too).
+func sameSlotDir(a, b string) (bool, error) {
+	aa, err := filepath.Abs(a)
+	if err != nil {
+		return false, err
+	}
+	bb, err := filepath.Abs(b)
+	if err != nil {
+		return false, err
+	}
+	if aa == bb {
+		return true, nil
+	}
+	ai, aerr := os.Stat(aa)
+	bi, berr := os.Stat(bb)
+	if aerr != nil || berr != nil {
+		return strings.EqualFold(aa, bb), nil
+	}
+	return os.SameFile(ai, bi), nil
+}
+
+// dirRegistered reports whether dir already belongs to a registered
+// account (C1/F173), by file identity (NEW-2) rather than a string
+// compare: on a case-insensitive filesystem (macOS's default APFS,
+// Windows), accounts/B and accounts/b are literally one inode, and a
+// string compare alone would miss that a login for the new name "b" is
+// about to take over an already-registered "B"'s (or a renamed "Bee"'s)
+// own slot.
+func dirRegistered(st store.State, dir string) bool {
+	for _, a := range st.Accounts {
+		if same, err := sameSlotDir(a.Dir, dir); err == nil && same {
+			return true
+		}
+	}
+	return false
+}
+
+// nextFreeSlotDir returns the first accounts/<name>-N (N from 2) that is
+// neither a registered account's Dir nor already present on disk (C1/F173).
+func nextFreeSlotDir(s store.Store, st store.State, name string) (string, error) {
+	for n := 2; ; n++ {
+		candidate, err := s.SlotDir(fmt.Sprintf("%s-%d", name, n))
+		if err != nil {
+			return "", err
+		}
+		if dirRegistered(st, candidate) {
+			continue
+		}
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		return candidate, nil
+	}
+}
+
+// loginResult is `login --json`'s fields (spec §5.3).
+type loginResult struct {
+	Account string `json:"account"`
+	Email   string `json:"email"`
+	Org     string `json:"org,omitempty"`
+}
+
+// runLogin logs a slot in and registers it (spec §5).
+//
+// The slot's flock is held for the whole flow (§4.7): the daemon's own
+// credential reader honours it and already names `chottag login` as the
+// expected other holder.
+//
+// In JSON mode the `claude auth login` child gets stderr as its stdout
+// (reporter.ChildStdout), so nothing it prints can land in front of the one
+// document (spec §5.3); its browser prompts reach the terminal either way.
+func runLogin(args []string, stdin io.Reader, r *reporter) int {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	fs.SetOutput(r.Stderr())
+	claudeBin := fs.String("claude", "claude", "path to the real claude binary")
+	// parseInterspersed (F2): `login NAME --claude PATH` must work exactly
+	// like `login --claude PATH NAME` — a bare fs.Parse(args) stops at the
+	// first non-flag token and would silently never see --claude in the
+	// first form.
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return r.FlagError(err)
+	}
+	if len(positional) != 1 {
+		return r.Usage("usage: chottag login <name> [--claude PATH]")
+	}
+	name := positional[0]
+	if err := store.ValidName(name); err != nil {
+		return r.Fail(exit.Usage, codeUsage, err.Error(), nil)
+	}
+
+	h, err := home()
+	if err != nil {
+		return r.FailErr(err)
+	}
+	s := store.Store{Dir: h}
+
+	st, err := s.Load()
+	if err != nil {
+		return r.FailErr(err)
+	}
+	// Exact match, never st.Find: Find resolves a unique name PREFIX, which
+	// would treat an unrelated "Alpha" as the registered "A" (F15).
+	dir, existing := "", false
+	for i := range st.Accounts {
+		if strings.EqualFold(st.Accounts[i].Name, name) {
+			dir, existing = st.Accounts[i].Dir, true
+			break
+		}
+	}
+	if !existing {
+		if dir, err = s.SlotDir(name); err != nil {
+			return r.FailErr(err)
+		}
+		// C1(c)/F173: name's natural slot dir can already belong to a
+		// DIFFERENT, registered account — e.g. `chottag rename B Bee`
+		// keeps Bee's Dir at accounts/B, since Dir never follows a rename.
+		// Logging in a fresh "B" there would run `claude auth login`
+		// inside Bee's own slot, overwriting Bee's login, and then fail to
+		// register (store.State.Add now refuses a second account on the
+		// same Dir). Move to the next free accounts/<name>-N instead — N
+		// from 2, free meaning neither registered nor already present on
+		// disk (an unregistered dir on disk, the shape `adopt` exists for,
+		// is left alone: that case falls through below exactly as before).
+		if dirRegistered(st, dir) {
+			if dir, err = nextFreeSlotDir(s, st, name); err != nil {
+				return r.FailErr(err)
+			}
+		}
+	}
+
+	created := false
+	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return r.FailErr(err)
+		}
+		created = true
+	}
+	// A login that fails must leave nothing behind: an empty slot dir would
+	// later look adoptable. isAliasedSlotDir (uninstall.go, Task 8) is
+	// included alongside IsSlotDir's path-string check so a slot reached
+	// through a path alias of <h>/accounts (a case-folded spelling, or a
+	// symlinked $CHOTTAG_HOME) is still recognised as one of ours and
+	// cleaned up (P9) — without it, cleanup would silently do nothing for a
+	// dir this very call just created.
+	cleanup := func() {
+		if created && (s.IsSlotDir(dir) || isAliasedSlotDir(h, dir)) {
+			os.RemoveAll(dir)
+		}
+	}
+
+	unlock, err := fsutil.Lock(creds.LockPath(dir))
+	if err != nil {
+		cleanup()
+		return r.FailErr(err)
+	}
+	defer unlock()
+
+	if err := claudeAuthExec(*claudeBin, dir, "login", stdin, r.ChildStdout(), r.Stderr()); err != nil {
+		cleanup()
+		return r.Fail(exit.Error, codeLoginFailed, fmt.Sprintf("login failed: %v", err), nil)
+	}
+
+	email, org, sub, loggedIn, err := slotEmail(*claudeBin, dir)
+	if err != nil {
+		cleanup()
+		return r.Fail(exit.Error, codeLoginFailed, err.Error(), nil)
+	}
+	if !loggedIn {
+		cleanup()
+		return r.Fail(exit.Error, codeLoginFailed, fmt.Sprintf("%s still reports no login after `claude auth login`", name), nil)
+	}
+
+	for i := range st.Accounts {
+		a := st.Accounts[i]
+		if email != "" && strings.EqualFold(a.Email, email) && !strings.EqualFold(a.Name, name) {
+			r.Warn(warnEmailRegistered, fmt.Sprintf("chottag: warning: %s is already registered as account %s", email, a.Name))
+		}
+	}
+
+	// canonicalName is the account's own stored casing, for the JSON result
+	// only (fix round 4, item 4): a re-login typed as "alice" against an
+	// already-registered "Alice" must report account: "Alice", not echo back
+	// whatever casing was typed. The text line keeps using `name` (the typed
+	// spelling) unchanged, exactly as before this fix.
+	canonicalName := name
+	if _, err := s.Update(func(st *store.State) error {
+		now := time.Now()
+		for i := range st.Accounts {
+			if strings.EqualFold(st.Accounts[i].Name, name) {
+				st.Accounts[i].Email, st.Accounts[i].Org = email, org
+				prefillPlan(&st.Accounts[i], sub)
+				st.Accounts[i].LoggedInAt = now
+				canonicalName = st.Accounts[i].Name
+				return nil
+			}
+		}
+		return st.Add(store.Account{Name: name, Email: email, Org: org, Plan: planFromSubscription(sub), Dir: dir, AddedAt: now, LoggedInAt: now})
+	}); err != nil {
+		// F5: the browser login and the slot it landed in are both real by
+		// this point — only the registration write failed — so a slot this
+		// call created must still come out exactly like every earlier
+		// failure path, or it survives to later look adoptable despite
+		// never having been registered.
+		cleanup()
+		return r.FailErr(err)
+	}
+
+	r.Text("logged in: %s (%s)\n", name, email)
+	return r.OK(loginResult{Account: canonicalName, Email: email, Org: org})
+}

@@ -1,0 +1,391 @@
+#!/bin/sh
+# leak-scan: fail when a file that is (or will be) public holds personal
+# data. Used by scripts/export-public (with the owner's private patterns)
+# and by CI (generic patterns only, over the manifest-selected paths).
+#
+#   usage: scripts/leak-scan [-p PATTERNS] [-C DIR] < paths
+#
+# Reads paths, one per line, relative to DIR (default: the current
+# directory), and scans each regular file's bytes and its own path. A
+# symlink is never followed: its link text (readlink) is scanned like a
+# file's content, and its path is scanned too. A missing path is skipped,
+# but the run fails closed (exit 2) if that leaves nothing scanned. An
+# input path may not be absolute, hold a TAB, or escape DIR with "..":
+# each exits 2 immediately, naming the stdin line number, never the path
+# itself. Feed this script `git ls-files -z` output (NUL turned into a
+# newline): -z is what avoids git's quoting of an unusual byte in a path;
+# `-c core.quotePath=false` alone is not enough (see manifest-select).
+#
+# Generic patterns, always on, matched case-insensitively:
+#   home-path       /Users/<name> or /home/<name>, plain or JSON-escaped
+#                   (\/Users\/<name>). Allowed fixture names: alice, bob,
+#                   u, x (e.g. /Users/alice/.chottag).
+#   email           an address outside example.com, example.org,
+#                   example.net, a *.example host, or
+#                   users.noreply.github.com; git@github.com is allowed.
+#   session-url     a claude.ai/code session link, or a bare
+#                   session_01<20+ chars> id.
+#   session-trailer a Claude-Session commit trailer.
+# Known non-goals (not detected): Windows-style paths (C:\Users\<name>),
+# %-encoding or a local-part-only address such as carol@localhost, text
+# in a non-ASCII-compatible encoding (UTF-16/32, EBCDIC), and text inside
+# a compressed stream (gzip, zip, a PDF stream). scripts/export-public
+# refuses UTF-16/32 and compressed files itself; EBCDIC-class text is
+# not detected anywhere.
+#
+# Performance: a single very long line that matches IS still detected,
+# just slowly -- GNU grep's -o is worst-case quadratic on one huge
+# matching line (BSD grep is not). Nothing here filters that case out in
+# advance, because doing so would cost the same -o call it is meant to
+# avoid.
+#
+# -p PATTERNS adds the owner's private patterns: one POSIX extended
+# regular expression (grep -E) per line, matched case-insensitively
+# against each file, each symlink's link text, and each path. Blank
+# lines, lines starting with # and leading/trailing whitespace or a
+# trailing CR are ignored; -p '' (empty) is a usage error. A pattern
+# holding a backslash-letter escape such as \d, \w, \s or \b is rejected
+# at load time (POSIX ERE has none of those, and dialects disagree on
+# what they mean; write [0-9], [A-Za-z0-9_] etc. instead).
+#
+# A hit prints FILE:LINE: CATEGORY on stdout, never the matched text, so
+# a CI log or a terminal never repeats what it found. Private patterns
+# are named by their number in PATTERNS ("private pattern 3"), never by
+# text; if a file's content is flagged by the pattern file as a whole but
+# no single pattern can be attributed to a line, the hit is reported as
+# "private pattern ?" rather than dropped. A hit in the path itself
+# (any category, private or generic) is never labelled with the path,
+# because the path is the matched text there; it prints
+# "stdin line N:0: CATEGORY (in the path)" instead. Once a path matches a
+# private pattern, every other hit for that path (its content too) is
+# also labelled "stdin line N", for the same reason.
+#
+# Exit status: 0 clean; 1 one or more hits; 2 a usage error, an invalid
+# input path, no paths on stdin, nothing actually scanned, a file or
+# symlink that cannot be read (regardless of what its permission bits
+# say), a PATTERNS file that is missing, unreadable, holds no pattern or
+# holds an invalid one, or an interrupting signal (fail closed: a signal
+# never yields exit 0).
+set -eu
+
+usage() {
+	printf 'usage: scripts/leak-scan [-p PATTERNS] [-C DIR] < paths\n' >&2
+	exit 2
+}
+fail() {
+	printf 'leak-scan: %s\n' "$*" >&2
+	exit 2
+}
+
+patterns=""
+root=.
+while [ $# -gt 0 ]; do
+	case $1 in
+	-p)
+		[ $# -ge 2 ] && [ -n "$2" ] || usage
+		patterns=$2
+		shift 2
+		;;
+	-C)
+		[ $# -ge 2 ] || usage
+		root=$2
+		shift 2
+		;;
+	*) usage ;;
+	esac
+done
+[ -d "$root" ] || fail "no such directory (-C)"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/leak-scan.XXXXXX") || fail "could not make a temporary directory"
+# I1: a signal mid-scan must fail closed (exit 2), never report a partial
+# "clean" result. EXIT alone cleans up a normal exit; HUP/INT/TERM must
+# also force a non-zero status.
+trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"; exit 2' HUP INT TERM
+: >"$tmp/hits"
+tab=$(printf '\t')
+
+home_re='(\\)?/(users|home)(\\)?/[A-Za-z0-9._-]+'
+home_allow_re=':.*/(alice|bob|u|x)$'
+email_re='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+email_allow_re=':(git@github\.com|.*[@.]example\.(com|org|net)|.*\.example|.*@users\.noreply\.github\.com)$'
+session_url_re='claude\.ai/code/session_|session_01[A-Za-z0-9]{20,}'
+session_trailer_re='claude-session[:]'
+
+if [ -n "$patterns" ]; then
+	[ -f "$patterns" ] && [ -r "$patterns" ] || fail "no leak patterns file at $patterns; nothing was scanned"
+	# I3: normalise each line (strip a trailing CR and leading/trailing
+	# whitespace) before dropping comments and blanks, so a stray space,
+	# a tab or a CRLF file never silently disables a pattern. [:blank:]
+	# is space-and-tab in both BSD and GNU sed; a literal "[ \t]" is not
+	# portable -- BSD sed reads \t inside a bracket expression as the two
+	# characters backslash and t, not a tab, which both fails to strip a
+	# real tab and wrongly strips a pattern's own leading/trailing "t" or
+	# "\" characters.
+	tr -d '\r' <"$patterns" | sed -e 's/^[[:blank:]]*//' -e 's/[[:blank:]]*$//' | grep -v -E '^(#|$)' >"$tmp/pats" || :
+	[ -s "$tmp/pats" ] || fail "$patterns holds no patterns; add the terms to look for"
+	rc=0
+	grep -E -f "$tmp/pats" /dev/null >/dev/null 2>&1 || rc=$?
+	[ "$rc" -le 1 ] || fail "$patterns holds an invalid extended regular expression"
+	# M6: POSIX ERE has no \d \w \s \b; reject a backslash-letter escape at
+	# load time, naming only the pattern's NUMBER, never its text.
+	pn=0
+	while IFS= read -r pat; do
+		pn=$((pn + 1))
+		case $pat in
+		*\\[A-Za-z]*) fail "$patterns: pattern $pn uses an unsupported backslash escape (POSIX ERE only; no \\d \\w \\s \\b)" ;;
+		esac
+	done <"$tmp/pats"
+fi
+
+# report CATEGORY LABEL: turns grep's LINE:... lines on stdin into hits.
+report() {
+	while IFS=: read -r line _; do
+		printf '%s:%s: %s\n' "$2" "$line" "$1" >>"$tmp/hits"
+	done
+}
+
+# run_category LABEL FILE CATEGORY REGEX ALLOW_REGEX: I2, every grep that
+# reads file content checks its own exit status. 0 means matches were
+# found (processed below); 1 means none; anything else -- an I/O error, a
+# file type grep refuses, a permission race between the readability check
+# and the read itself -- fails closed (exit 2) rather than being read as
+# "no match". ALLOW_REGEX may be empty (no allowlist for that category).
+run_category() {
+	label=$1
+	f=$2
+	cat=$3
+	re=$4
+	allow=$5
+	if grep -a -n -o -i -E -- "$re" "$f" >"$tmp/cathit" 2>"$tmp/caterr"; then
+		st=0
+	else
+		st=$?
+	fi
+	if [ "$st" -eq 1 ]; then
+		return 0
+	fi
+	[ "$st" -eq 0 ] || fail "cannot read $label; nothing was scanned"
+	if [ -n "$allow" ]; then
+		grep -v -i -E "$allow" "$tmp/cathit" | report "$cat" "$label" || :
+	else
+		report "$cat" "$label" <"$tmp/cathit"
+	fi
+}
+
+# scan_generic_file LABEL FILE: the four generic categories against a
+# real file's content (or a symlink's link text, materialised to a file
+# by the caller), at its own line numbers.
+scan_generic_file() {
+	label=$1
+	f=$2
+	run_category "$label" "$f" home-path "$home_re" "$home_allow_re"
+	run_category "$label" "$f" email "$email_re" "$email_allow_re"
+	run_category "$label" "$f" session-url "$session_url_re" ""
+	run_category "$label" "$f" session-trailer "$session_trailer_re" ""
+}
+
+# scan_generic_path LINENO RELPATH: M4, the four generic categories
+# against the path itself. NEW-2: the path is always the matched text
+# here, so the hit is never labelled with it, with or without -p; it
+# prints "stdin line N:0: CATEGORY (in the path)" instead, unconditionally.
+# Sets path_hit=1 if RELPATH matched any category (after its allowlist),
+# else path_hit=0, so the caller can mask every OTHER hit about this
+# path too (NEW-2 residual: a generic path match, not just a private
+# one, means the path itself must not be used as a label anywhere else).
+scan_generic_path() {
+	lineno=$1
+	relpath=$2
+	pathlabel="stdin line $lineno"
+	path_hit=0
+	if printf '%s\n' "$relpath" | grep -a -q -i -E -- "$home_re" 2>/dev/null; then
+		val=$(printf '%s\n' "$relpath" | grep -a -o -i -E -- "$home_re" | grep -v -i -E "$home_allow_re" | head -n1) || val=""
+		if [ -n "$val" ]; then
+			printf '%s:0: home-path (in the path)\n' "$pathlabel" >>"$tmp/hits"
+			path_hit=1
+		fi
+	fi
+	if printf '%s\n' "$relpath" | grep -a -q -i -E -- "$email_re" 2>/dev/null; then
+		val=$(printf '%s\n' "$relpath" | grep -a -o -i -E -- "$email_re" | grep -v -i -E "$email_allow_re" | head -n1) || val=""
+		if [ -n "$val" ]; then
+			printf '%s:0: email (in the path)\n' "$pathlabel" >>"$tmp/hits"
+			path_hit=1
+		fi
+	fi
+	if printf '%s\n' "$relpath" | grep -a -q -i -E -- "$session_url_re" 2>/dev/null; then
+		printf '%s:0: session-url (in the path)\n' "$pathlabel" >>"$tmp/hits"
+		path_hit=1
+	fi
+	if printf '%s\n' "$relpath" | grep -a -q -i -E -- "$session_trailer_re" 2>/dev/null; then
+		printf '%s:0: session-trailer (in the path)\n' "$pathlabel" >>"$tmp/hits"
+		path_hit=1
+	fi
+}
+
+# scan_private_content LABEL FILE: M7, one grep -f pass finds whether the
+# file has any private-pattern hit at all; only a file that hits pays for
+# a per-pattern loop to name the number(s).
+#
+# NEW-1: the per-pattern loop re-greps the FILE itself, once per pattern,
+# never a shell variable holding a line of its content. macOS's /bin/sh
+# is bash 3.2, which truncates a shell variable (via `read` or command
+# substitution) at a NUL byte; a private term after a NUL in a line the
+# batch pass correctly flagged would then silently fail to match on
+# re-test, and the hit would be lost -- exactly the binary-file case this
+# script exists to catch. Re-running the file through grep instead of a
+# variable sidesteps the NUL-truncation question entirely.
+scan_private_content() {
+	label=$1
+	f=$2
+	if grep -a -n -i -E -f "$tmp/pats" -- "$f" >"$tmp/phit" 2>"$tmp/experr"; then
+		st=0
+	else
+		st=$?
+	fi
+	[ "$st" -le 1 ] || fail "cannot scan $label; nothing was scanned"
+	[ -s "$tmp/phit" ] || return 0
+	pi=0
+	any=0
+	while IFS= read -r pat; do
+		pi=$((pi + 1))
+		if grep -a -n -i -E -e "$pat" -- "$f" >"$tmp/pnhit" 2>/dev/null; then
+			any=1
+			while IFS=: read -r ln _; do
+				printf '%s:%s: private pattern %s\n' "$label" "$ln" "$pi" >>"$tmp/hits"
+			done <"$tmp/pnhit"
+		fi
+	done <"$tmp/pats"
+	if [ "$any" -eq 0 ]; then
+		# The batch pass (-f, every pattern at once) found a hit, but no
+		# single pattern (-e, one at a time) reproduced it. This should
+		# not happen; never treat it as clean.
+		printf '%s:?: private pattern ?\n' "$label" >>"$tmp/hits"
+	fi
+}
+
+# Materialise stdin into "$tmp/paths" (lineno TAB rel), one record per
+# input line, so a private-path pass can run once over the whole list
+# (M7) and a hit can be labelled by its stdin line number (M3, NEW-2).
+# M1: the last line is kept even without a trailing newline. I4: an
+# absolute path, one that escapes DIR with "..", or one holding a TAB
+# (NEW-3: it would corrupt this file's own TAB-delimited format) is a
+# usage error, never silently skipped; the message names the stdin line,
+# never the path (NEW-2).
+: >"$tmp/paths"
+lineno=0
+total=0
+while IFS= read -r raw || [ -n "$raw" ]; do
+	lineno=$((lineno + 1))
+	rel=${raw#./}
+	[ -n "$rel" ] || continue
+	total=$((total + 1))
+	case $rel in
+	*"$tab"*) fail "refusing a path with an embedded tab (stdin line $lineno)" ;;
+	esac
+	case $rel in
+	/*) fail "refusing an absolute path (stdin line $lineno)" ;;
+	esac
+	case "/$rel/" in
+	*/../* | */..) fail "refusing a path that escapes -C (stdin line $lineno)" ;;
+	esac
+	printf '%s\t%s\n' "$lineno" "$rel" >>"$tmp/paths"
+done
+[ "$total" -gt 0 ] || fail "no paths on stdin; nothing was scanned"
+
+# One pass over the whole path list for the private-pattern check (M7),
+# instead of one grep per path per pattern. A path that matches masks
+# itself (and every other hit reported for it) behind its stdin line
+# number (M3), because printing the path would repeat the private term.
+# Paths cannot hold a NUL (the OS itself guarantees this), so re-testing
+# a path pulled into a shell variable does not have NEW-1's problem.
+#
+# R2-1: -a is required on both greps here, not only on the ones that
+# read a file's content. Under GNU grep in a UTF-8 locale, a path
+# holding a byte sequence that is not valid UTF-8 makes grep treat
+# "$tmp/relonly" (or the single line piped to the per-pattern re-test)
+# as binary; without -a, a real match is then reported only as
+# "binary file matches" on stderr, stdout gets nothing, and the path is
+# never masked.
+: >"$tmp/masked"
+if [ -n "$patterns" ]; then
+	cut -f2 "$tmp/paths" >"$tmp/relonly"
+	: >"$tmp/relhits"
+	grep -a -n -i -E -f "$tmp/pats" "$tmp/relonly" >"$tmp/relhits" 2>/dev/null || :
+	if [ -s "$tmp/relhits" ]; then
+		while IFS= read -r rec; do
+			idx=${rec%%:*}
+			relval=${rec#*:}
+			ln=$(sed -n "${idx}p" "$tmp/paths" | cut -f1)
+			pi=0
+			any=0
+			while IFS= read -r pat; do
+				pi=$((pi + 1))
+				if printf '%s\n' "$relval" | grep -a -q -i -E -e "$pat" 2>/dev/null; then
+					any=1
+					printf 'stdin line %s:0: private pattern %s (in the path)\n' "$ln" "$pi" >>"$tmp/hits"
+				fi
+			done <"$tmp/pats"
+			if [ "$any" -eq 0 ]; then
+				# Mirrors scan_private_content's "?" fallback: the batch
+				# pass found a hit on this path, but no single pattern
+				# re-test reproduced it. Never treat that as clean.
+				printf 'stdin line %s:0: private pattern ? (in the path)\n' "$ln" >>"$tmp/hits"
+			fi
+			printf '%s\n' "$ln" >>"$tmp/masked"
+		done <"$tmp/relhits"
+	fi
+fi
+
+scanned=0
+skipped=0
+while IFS="$tab" read -r lineno rel; do
+	# NEW-2: decide the label before any content is read, from the path
+	# check alone (a generic OR a private match). Every other report
+	# line about this path -- a content hit, a symlink's link-text hit,
+	# or a "cannot read"/"cannot scan"/"cannot read link" message -- uses
+	# this same label, because the path itself is the matched text once
+	# either check hits, and must never be printed again after that.
+	scan_generic_path "$lineno" "$rel"
+	label=$rel
+	if [ "$path_hit" -eq 1 ]; then
+		label="stdin line $lineno"
+	elif [ -n "$patterns" ] && [ -s "$tmp/masked" ] && grep -qxF "$lineno" "$tmp/masked"; then
+		label="stdin line $lineno"
+	fi
+	f=$root/$rel
+	if [ -L "$f" ]; then
+		scanned=$((scanned + 1))
+		# NEW-7: a symlink whose link text cannot be read (a race, or an
+		# exotic filesystem) must fail closed, not silently scan nothing.
+		readlink -- "$f" >"$tmp/linktext" 2>/dev/null || fail "cannot read link $label"
+		[ -z "$patterns" ] || scan_private_content "$label" "$tmp/linktext"
+		scan_generic_file "$label" "$tmp/linktext"
+		continue
+	fi
+	if [ -d "$f" ]; then
+		skipped=$((skipped + 1))
+		continue
+	fi
+	if [ ! -e "$f" ]; then
+		skipped=$((skipped + 1))
+		continue
+	fi
+	[ -r "$f" ] || fail "cannot read $label; nothing was scanned"
+	scanned=$((scanned + 1))
+	# scan_private_content runs before scan_generic_file (R2-3): with -p,
+	# a file whose content genuinely cannot be read (a race, an unusual
+	# file type) must fail closed via scan_private_content's own check,
+	# not always via run_category's -- both checks are equally strict, so
+	# a caller sees the same exit 2 either way, but a reader of this
+	# script (and a test) can then tell the two checks apart.
+	[ -z "$patterns" ] || scan_private_content "$label" "$f"
+	scan_generic_file "$label" "$f"
+done <"$tmp/paths"
+[ "$scanned" -gt 0 ] || fail "no paths were scanned ($skipped of $total missing or skipped)"
+
+if [ -s "$tmp/hits" ]; then
+	cat "$tmp/hits"
+	printf 'leak-scan: %s hit(s) in %s path(s) scanned\n' "$(wc -l <"$tmp/hits" | tr -d ' ')" "$scanned" >&2
+	exit 1
+fi
+printf 'leak-scan: %s path(s) clean\n' "$scanned" >&2

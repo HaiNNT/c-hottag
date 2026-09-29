@@ -1,0 +1,80 @@
+# Pull requests are by invitation only (CONTRIBUTING.md). When a pull
+# request opens, or is reopened, this closes it with a comment unless
+# whoever is responsible has write access to the repository (the
+# maintainer, or someone invited as a collaborator) or is Dependabot.
+#
+# On open, "responsible" is the pull request's author. On reopen, it is
+# either whoever reopened it (github.event.sender) or the pull request's
+# original author: a collaborator reopening an uninvited pull request is
+# accepting it, so it stays open; so does an invited author's own pull
+# request, reopened by someone else without write access; an uninvited
+# author who reopens their own pull request without help gets it closed
+# again with the same comment.
+#
+# It runs on pull_request_target so that it can comment on and close a
+# pull request from a fork, and that event's token can write. So it never
+# checks out, builds or runs anything from the pull request: it only
+# calls the GitHub API through the runner's own gh, with this workflow's
+# token, and every value the author or sender controls reaches the shell
+# only through env:. test/release/workflows_test.go pins this with an
+# allowlist of the exact expressions and gh commands the workflow may
+# use, not a denylist of known-bad ones.
+#
+# An API error fails the job and leaves the pull request open.
+#
+# The runner image is pinned, like every workflow's: gh is preinstalled
+# on it.
+name: pr-policy
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  close-uninvited:
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: close unless invited
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          who="$AUTHOR"
+          if [ "$ACTION" = "reopened" ]; then
+            who="$SENDER"
+          fi
+          if ! perm=$(gh api "repos/$REPO/collaborators/$who/permission" --jq .permission); then
+            echo "::error::could not read the access of whoever is responsible; the pull request stays open"
+            exit 1
+          fi
+          case "$perm" in
+          # maintain is defensive: the API reports maintain as write.
+          admin | maintain | write)
+            echo "$who has $perm access: the pull request stays open"
+            exit 0
+            ;;
+          esac
+          if [ "$ACTION" = "reopened" ]; then
+            if ! perm=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission); then
+              echo "::error::could not read the author's access; the pull request stays open"
+              exit 1
+            fi
+            case "$perm" in
+            admin | maintain | write)
+              echo "$AUTHOR has $perm access: the pull request stays open"
+              exit 0
+              ;;
+            esac
+          fi
+          msg="Thank you for this pull request. c-hottag takes pull requests by invitation only, so it was closed automatically: see $GITHUB_SERVER_URL/$REPO/blob/HEAD/CONTRIBUTING.md. Issues are welcome, and so are forks. If the maintainer invites this change, they will reopen it."
+          gh pr close "$PR" --repo "$REPO" --comment "$msg"

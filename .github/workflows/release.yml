@@ -1,0 +1,87 @@
+# Release on a v* tag: GoReleaser builds darwin/linux x amd64/arm64 into a
+# draft release on the repo the tag was pushed to. The tap is not uploaded
+# (brews.skip_upload: there is no tap repo yet). On a public repo every
+# asset in dist/checksums.txt gets a build-provenance attestation; a
+# private repo is skipped, since GitHub only attests public repositories.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  # gate must equal CLAUDE.md's gate block, line for line (test/release
+  # checks it); goreleaser must never run against a release that fails it.
+  # Each job carries only the permission it needs: gate never writes to the
+  # repo, so only goreleaser (which creates the release) gets contents:
+  # write (fix round 2, N4).
+  gate:
+    permissions:
+      contents: read
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: gate
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./... -race -count=1 -shuffle=on
+          go test -tags chottag_fakeusage -race -count=1 -shuffle=on ./internal/cli/
+  goreleaser:
+    needs: gate
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      # The plugin's version is how Claude Code notices a plugin update, so a
+      # release must carry the version its tag names, with notes written for
+      # it (test/release pins both).
+      - name: plugin version matches tag
+        run: test "v$(jq -r .version plugin/.claude-plugin/plugin.json)" = "$GITHUB_REF_NAME"
+      - name: goreleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          args: release --clean --release-notes docs/release-notes/${{ github.ref_name }}.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Build provenance for every asset in checksums.txt. GitHub attests
+      # public repositories on every plan; the private dev repo is skipped,
+      # since it is never public, and chottag update / install.sh know it.
+      - name: attest release assets
+        if: ${{ github.event.repository.visibility == 'public' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ./dist/checksums.txt
+      # goreleaser above always creates the release as a draft (Ruling 33,
+      # final review M3): this is the one step that un-drafts it, and it
+      # runs on BOTH repos, always after the attest step above — skipped on
+      # private, gated on public — so a release only ever becomes visible
+      # (and, on the public repo, a target for `chottag update`/
+      # `install.sh`) once its attestation already exists. A failed attest
+      # step fails the job before this step runs, leaving the release a
+      # draft rather than a published "latest" nothing can verify.
+      - name: publish the release
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -1,0 +1,274 @@
+#!/bin/sh
+# trace: run one dev-sandbox chottag session per --models entry (plus a
+# session-start check), summarize the routes seen into routes/<version>.txt,
+# and check both that table and the dev trace log for a leaked secret (R94's
+# upstream-check skill). Needs a dev login already: if none exists, this
+# dies and says to run `scripts/dev-env run login NAME` (in a browser, a
+# personal account, never the company Team account) rather than starting
+# one itself. Only ever touches the dev sandbox (scripts/dev-env's own
+# $HOME/chottag-dev): never the real ~/.chottag or ~/.claude*.
+#
+#   usage: .claude/skills/upstream-check/scripts/trace [--models M1,M2,...] [--slot NAME] [--keep-daemon] [--force]
+#
+#   --models M1,M2,...  also run one step per model id: "Reply with exactly:
+#                        OK" with --model M
+#   --slot NAME          the dev account to run as (default: the dev
+#                        sandbox's serving account)
+#   --keep-daemon        leave the dev daemon running afterwards
+#   --force              overwrite an existing routes/<version>.txt instead
+#                        of writing routes/<version>.txt.new
+#
+# Exit 0 on success. A setup problem, a failed privacy check, or a step
+# that never answers dies (exit 1); a usage error is exit 2.
+set -eu
+
+die() {
+	echo "trace: $*" >&2
+	exit 1
+}
+say() { echo "trace: $*"; }
+
+case "${1:-}" in
+-h | --help)
+	sed -n '2,/^set -eu$/p' "$0" | sed '$d; s/^# \{0,1\}//'
+	exit 0
+	;;
+esac
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+	echo "trace: not inside a git work tree" >&2
+	exit 2
+}
+cd "$repo_root"
+skill_dir=$(cd "$(dirname "$0")" && pwd)
+
+models=""
+slot=""
+keep_daemon=0
+force=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--models)
+		[ $# -ge 2 ] || {
+			echo "trace: --models needs an argument" >&2
+			exit 2
+		}
+		models=$2
+		shift 2
+		;;
+	--models=*)
+		models=${1#--models=}
+		shift
+		;;
+	--slot)
+		[ $# -ge 2 ] || {
+			echo "trace: --slot needs an argument" >&2
+			exit 2
+		}
+		slot=$2
+		shift 2
+		;;
+	--slot=*)
+		slot=${1#--slot=}
+		shift
+		;;
+	--keep-daemon)
+		keep_daemon=1
+		shift
+		;;
+	--force)
+		force=1
+		shift
+		;;
+	*)
+		echo "trace: unknown argument '$1' (see --help)" >&2
+		exit 2
+		;;
+	esac
+done
+
+# ---- 1. detect the version; require the dev binary already built ----------
+
+dev_env_out=$(scripts/dev-env env 2>/dev/null) || die "scripts/dev-env env failed"
+dev_home=$(printf '%s\n' "$dev_env_out" | sed -n 's/^export CHOTTAG_HOME=//p')
+dev_path=$(printf '%s\n' "$dev_env_out" | sed -n 's/^export PATH="\(.*\)"$/\1/p')
+[ -n "$dev_home" ] && [ -n "$dev_path" ] || die "could not parse scripts/dev-env env output"
+dev_root=$(dirname "$(dirname "$dev_home")")
+dev_bin="$dev_root/bin/chottag"
+[ -x "$dev_bin" ] || die "no dev binary at $dev_bin yet; run: scripts/dev-env build"
+
+version=$("$skill_dir/detect" | sed -n 's/^claude_version: //p')
+[ -n "$version" ] && [ "$version" != "unknown" ] || die "scripts/detect could not find the installed Claude Code version"
+
+# ---- 2. pick the dev slot ---------------------------------------------------
+
+state="$dev_home/state.json"
+[ -f "$state" ] || die "no dev accounts yet; ask the owner to run scripts/dev-env run login NAME themselves, in a browser, with a personal account and never the company Team account"
+
+if [ -z "$slot" ]; then
+	slot=$(python3 - "$state" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    doc = json.load(f)
+print(doc.get("serving", ""))
+PY
+)
+	[ -n "$slot" ] || die "no dev accounts registered yet; ask the owner to run scripts/dev-env run login NAME themselves, in a browser, with a personal account and never the company Team account"
+fi
+
+slot_dir=$(python3 - "$state" "$slot" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    doc = json.load(f)
+name = sys.argv[2]
+for a in doc.get("accounts", []):
+    if a.get("name") == name:
+        print(a.get("dir", ""))
+        break
+PY
+)
+[ -n "$slot_dir" ] || die "no such dev account '$slot' in $state"
+
+# ---- 3. start the dev daemon and the trace window --------------------------
+
+scripts/dev-env run daemon start >&2 || true
+scripts/dev-env run trace on --for 30m >&2
+
+# ---- 4. scratch workdir -----------------------------------------------------
+
+work="$dev_root/upstream-check/work"
+mkdir -p "$work"
+: >"$work/summary.txt"
+
+# ---- 5. steps ----------------------------------------------------------------
+
+# run_step: $1 the step name, $2 (optional) a --model value. Marks the trace
+# log, runs the dev shim non-interactively under a 180s watchdog, and
+# appends one summary line (python3 reads the JSON; never prints it whole).
+run_step() {
+	step=$1
+	model=${2:-}
+	scripts/dev-env run trace mark "$step" >&2
+	out="$work/$step.json"
+	rm -f "$out"
+	set -- claude -p "Reply with exactly: OK" --output-format json --max-turns 1
+	if [ -n "$model" ]; then
+		set -- "$@" --model "$model"
+	fi
+	(
+		cd "$work" && env CHOTTAG_HOME="$dev_home" CLAUDE_CONFIG_DIR="$slot_dir" PATH="$dev_path" "$@" </dev/null >"$out" 2>"$work/$step.stderr"
+	) &
+	pid=$!
+	(
+		sleep 180
+		kill "$pid" 2>/dev/null
+	) &
+	watchdog=$!
+	code=0
+	wait "$pid" || code=$?
+	kill "$watchdog" 2>/dev/null || true
+	wait "$watchdog" 2>/dev/null || true
+	python3 - "$step" "$out" "$code" <<'PY' >>"$work/summary.txt"
+import json, sys
+step, path, code = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    with open(path) as f:
+        doc = json.load(f)
+except Exception:
+    doc = {}
+result = doc.get("result")
+is_error = doc.get("is_error")
+ok = (code == 0) and (not is_error) and isinstance(result, str) and "OK" in result
+models = ",".join(sorted((doc.get("modelUsage") or {}).keys()))
+print("%s: ok=%s result=%s models=%s error=%s" % (
+    step, ok, (result or "")[:20], models, is_error))
+PY
+}
+
+# The dev shim without CHOTTAG_HOME would use the prod home (~/.chottag),
+# start a daemon there and route these prompts through the prod accounts
+# (F240). run_step sets it; this makes sure the shim it runs is the dev one.
+shim=$(env PATH="$dev_path" sh -c 'command -v claude') || die "no claude on the dev PATH"
+case "$shim" in
+"$dev_home"/bin/claude) ;;
+*) die "the dev PATH resolves claude to $shim, not $dev_home/bin/claude: refusing, it would not go through the dev daemon" ;;
+esac
+
+run_step session-start
+
+if [ -n "$models" ]; then
+	old_ifs=$IFS
+	IFS=,
+	set -f
+	set -- $models
+	set +f
+	IFS=$old_ifs
+	for m in "$@"; do
+		[ -n "$m" ] || continue
+		run_step "model-$m" "$m"
+	done
+fi
+
+# ---- 6. stop the trace, write routes/<version>.txt -------------------------
+
+scripts/dev-env run trace mark done >&2
+
+# The steps must have gone through the dev daemon: its trace log gains a
+# request record, not only marks. Otherwise the table below would be empty
+# and every route would read as removed.
+python3 - "$dev_home/trace.jsonl" <<'PY' || die "no request reached the dev daemon's trace: the steps did not go through the dev proxy"
+import json, sys
+n = 0
+with open(sys.argv[1]) as f:
+    for line in f:
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(r, dict):
+            continue
+        if r.get("kind") == "mark" and r.get("mark") == "trace on":
+            n = 0  # count only this trace window
+        elif r.get("kind") == "req":
+            n += 1
+sys.exit(0 if n else 1)
+PY
+
+version_file="routes/$version.txt"
+tmp_routes="$version_file.tmp"
+scripts/dev-env run trace summarize >"$tmp_routes"
+[ -s "$tmp_routes" ] || die "trace summarize produced no output"
+# The summarizer keeps /api/eval's client key verbatim; the committed tables
+# spell it {key}, as part 2 collapsed it by hand in 2.1.282.
+sed 's#/api/eval/[A-Za-z0-9_-][A-Za-z0-9_-]*#/api/eval/{key}#' "$tmp_routes" >"$tmp_routes.c" && mv "$tmp_routes.c" "$tmp_routes"
+
+if [ -f "$version_file" ] && [ "$force" -ne 1 ]; then
+	say "note: $version_file already exists; writing $version_file.new instead (pass --force to overwrite)"
+	mv "$tmp_routes" "$version_file.new"
+	version_file="$version_file.new"
+else
+	mv "$tmp_routes" "$version_file"
+fi
+
+scripts/dev-env run trace off >&2
+
+# ---- 7. privacy check --------------------------------------------------------
+
+[ -f "$dev_home/trace.jsonl" ] || die "no dev trace log at $dev_home/trace.jsonl: the privacy check cannot run"
+priv_routes=$(grep -cE 'sk-ant-|Bearer ' "$version_file") || priv_routes=0
+priv_trace=$(grep -cE 'sk-ant-|Bearer ' "$dev_home/trace.jsonl") || priv_trace=0
+if [ "$priv_routes" != "0" ] || [ "$priv_trace" != "0" ]; then
+	die "privacy check failed: $priv_routes match(es) in $version_file, $priv_trace in $dev_home/trace.jsonl -- STOP, do not share these files"
+fi
+
+# ---- 8. stop the dev daemon, unless asked to keep it -----------------------
+
+if [ "$keep_daemon" -ne 1 ]; then
+	scripts/dev-env run daemon stop >&2 || say "dev daemon stop failed; leaving it running"
+fi
+
+# ---- 9. summary --------------------------------------------------------------
+
+say "Claude Code $version -> $version_file"
+[ -f "$work/summary.txt" ] && cat "$work/summary.txt"
+say "privacy: $priv_routes match(es) in $version_file, $priv_trace in trace.jsonl (want 0 for both)"

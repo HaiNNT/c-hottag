@@ -1,0 +1,7 @@
+bin/
+*.jsonl
+.worktrees/
+.superpowers/
+dist/
+__pycache__/
+CLAUDE.local.md

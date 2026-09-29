@@ -1,0 +1,12 @@
+c-hottag
+Copyright 2026 the c-hottag authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+c-hottag is an independent project: not affiliated with or endorsed by
+Anthropic PBC. "Claude" and "Claude Code" are trademarks of Anthropic PBC,
+used here only to name the software c-hottag works with.
+
+The route knowledge (which Claude Code requests belong to which account)
+builds on cswap-pin, which is licensed under the MIT License. No cswap-pin
+code is included.

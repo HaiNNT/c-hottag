@@ -1,0 +1,118 @@
+# CI. Every gate step must equal CLAUDE.md's gate block, line for line;
+# test/release fails otherwise.
+#
+# The tagged internal/cli suite runs twice in each gate: once as the gate's
+# last line, and once inside cmd/chottag's TestFakeusageTaggedSuitePasses,
+# which the plain `go test ./...` line runs. Both stay on purpose (part 5):
+# the test is what lets a bare `go test ./...` cover the tag, and the gate
+# line is CLAUDE.md's own rule, which also shows the tagged suite's failures
+# directly instead of inside another test's output.
+#
+# Runner images are pinned (F232): an image moves only when this file does.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      # test/bunsmoke fails instead of skipping when bun is missing.
+      CHOTTAG_REQUIRE_BUN: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+      - name: gate
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./... -race -count=1 -shuffle=on
+          go test -tags chottag_fakeusage -race -count=1 -shuffle=on ./internal/cli/
+
+  # Linux arm64 (P5-R8). GitHub's arm64 standard runners serve private
+  # repos too (since 2026-01-29), from the plan's free minutes, so on the
+  # private repo this leg is opt-in: set the repository variable
+  # CHOTTAG_CI_ARM64 to true. Otherwise the job is skipped at once and never
+  # waits for a runner or spends minutes. Once the repo is public it always
+  # runs. timeout-minutes does not count queue time: if a runner label ever
+  # goes unavailable to this repo, the job sits queued until GitHub itself
+  # drops it, not until 45 minutes pass.
+  test-arm64:
+    if: ${{ github.event.repository.visibility == 'public' || vars.CHOTTAG_CI_ARM64 == 'true' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      CHOTTAG_REQUIRE_BUN: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+      - name: gate
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./... -race -count=1 -shuffle=on
+          go test -tags chottag_fakeusage -race -count=1 -shuffle=on ./internal/cli/
+
+  # CI-only analysis (P5-R6): pinned tool versions, run with `go run
+  # tool@version`, so nothing enters go.mod. Not part of the gate or of
+  # release.yml: a new vulnerability report turns this job red without ever
+  # blocking a release build.
+  # A stdlib vuln turns `lint` red until go.mod's `go` line (setup-go installs
+  # exactly that version) is raised to a patched release.
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: staticcheck
+        run: |
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 -tags chottag_fakeusage ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  # P2-R6: the generic leak scan over exactly the paths the public export
+  # would copy (public-manifest.txt). No private patterns here: the gate's
+  # test/leakscan adds docs/internal/leak-patterns.txt where it exists.
+  leak-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: leak scan
+        shell: bash
+        run: git ls-files -z | tr '\0' '\n' | scripts/manifest-select public-manifest.txt | scripts/leak-scan

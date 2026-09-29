@@ -1,0 +1,150 @@
+# c-hottag (`chottag`)
+
+> **A Claude Code session installing this?** Follow [For Claude Code](#for-claude-code)
+> from start to finish: it runs `install.sh` *and* installs the plugin.
+
+Keep several Claude accounts logged in on one machine, and switch the one
+Claude Code uses, even mid-session, without logging out.
+
+c-hottag is an independent project: not affiliated with or endorsed by Anthropic.
+
+```text
+$ chottag status
+serving: A   remote: B
+
+  NAME   PLAN    ORG    5h    7d    STATE
+  A      max5x   Acme   96%   41%   ok
+  B      pro            12%   35%   ok
+auto: balanced · holding A (5h 96%, resets in 9m) · last B→A 09:12 (limit)
+$ chottag next
+serving: B
+```
+
+## What it does
+
+- **Several logins side by side.** Each account has its own Claude Code
+  config dir (a *slot*). Your own `~/.claude` login is never changed.
+- **Switch mid-session.** `chottag tag B` moves every chottag session to B
+  from its next request: no logout, no restart.
+- **claude.ai objects stay with their owner.** Remote-control sessions,
+  artifacts and connectors go to the account that owns them. Routines are
+  the exception: they always follow whichever account is remote.
+- **Auto-switch near a limit**, on by default, holding a warm prompt cache
+  when a reset is close, and resending a request that hit a limit.
+- **Usage at a glance.** `chottag status` shows each account's 5-hour and
+  7-day usage and limits.
+- **Local and scriptable.** A loopback proxy that needs a per-install
+  secret; account and status commands answer in `--json`.
+
+**Status:** macOS is the supported platform. Linux builds and passes CI, but
+has not been used for real. Installing uses a logged-in `gh` or a clone.
+
+## Install
+
+A Claude Code session: use [For Claude Code](#for-claude-code) instead, which also installs the
+plugin. You need macOS or Linux on amd64 or arm64, and either `gh` logged in or a clone and Go.
+
+```sh
+gh repo clone HaiNNT/c-hottag && cd c-hottag && ./install.sh
+# or, without a clone:
+gh api -H 'Accept: application/vnd.github.raw' repos/HaiNNT/c-hottag/contents/install.sh | sh
+```
+
+`install.sh` checks the release against its checksums (and, from v0.4.0, its
+build attestation), puts the binary under `~/.chottag/versions/` (or
+`$CHOTTAG_HOME`), and runs `chottag setup`, which adds one PATH block to your
+shell rc. Open a new shell afterwards. Other ways to install: [Getting started](docs/getting-started.md).
+Later versions: `chottag update` ([Updating](docs/updating.md)).
+
+## Quick start
+
+```sh
+chottag login A        # opens a browser: log in to the first account
+chottag login B        # and the second
+chottag tag A          # A serves inference
+chottag remote B       # new remote-control sessions, artifacts, routines belong to B
+chottag own artifact <artifact-id> B  # move one object that already exists to B
+claude                 # Claude Code, through chottag (the daemon starts by itself)
+chottag status         # usage and limits per account
+chottag next           # serving -> the next account that is not limited
+chottag doctor         # check the install; --fix repairs what it safely can
+```
+
+What *serving*, *remote* and a *slot* are: [How it works](docs/how-it-works.md).
+Every command, flag and exit code: [Command reference](docs/commands.md).
+
+## Auto-switch
+
+On by default: near a limit, the daemon switches the serving account for you. `balanced` (the
+default) switches at a per-plan point and holds on when a reset is close; `cache-optimize`
+stays on one account until it is limited. More: [Auto-switch](docs/auto-switch.md).
+
+```sh
+chottag auto                       # settings, each account's usage, the last decision
+chottag auto mode cache-optimize
+chottag plan B max20x              # Max accounts count as max5x until you say
+chottag auto off
+```
+
+## For Claude Code
+
+If you are a Claude Code session asked to "install c-hottag from
+github.com/HaiNNT/c-hottag", do exactly this, in order:
+
+1. **Clone:** `gh repo clone HaiNNT/c-hottag` (or
+   `git clone git@github.com:HaiNNT/c-hottag.git`) into a directory the
+   user agrees to, then `cd c-hottag`.
+2. **Install:** `./install.sh`. It never prompts. Exit 2 is a bad argument;
+   exit 1 a failed install, and its last line says why. Tell the user.
+3. **Plugin:** `claude plugin marketplace add ./` from the clone, then
+   `claude plugin install chottag@c-hottag`. That form breaks if the
+   clone moves; `/plugin marketplace add HaiNNT/c-hottag` (inside a
+   session) goes through GitHub instead.
+4. **New shell:** the PATH block applies only to new shells. Until then, run
+   `~/.chottag/bin/chottag` (or `$CHOTTAG_HOME/bin/chottag`).
+5. **Accounts:** for each account the user names, run
+   `chottag login <name> --json` through Bash with `timeout: 600000` (the
+   10-minute maximum). It opens a browser and blocks until the user finishes.
+6. **Verify:** `chottag status --json` has `"ok": true` and lists the accounts.
+
+Always pass `--json`, and branch on `ok` and `error.code`, never on the
+message. Never run `/login` or `/logout` in a session (they change Home's
+login), never edit `~/.claude`, `~/.claude.json` or anything in them, and
+never run `chottag uninstall --purge` for the user.
+
+## Documentation
+
+Start at [the docs index](docs/index.md), or go straight to [Getting started](docs/getting-started.md),
+[Troubleshooting](docs/troubleshooting.md), [FAQ](docs/faq.md),
+[Known limitations](docs/known-limitations.md), [Coming from another tool](docs/comparison.md) or
+[Uninstall](docs/uninstall.md). Security model and how to report a problem: [SECURITY.md](SECURITY.md).
+Issues are welcome; pull requests are by invitation only: [CONTRIBUTING.md](CONTRIBUTING.md). Help:
+[SUPPORT.md](SUPPORT.md). Plans: [ROADMAP.md](ROADMAP.md). Changes: [CHANGELOG.md](CHANGELOG.md).
+
+## Terms of use and risk
+
+Use c-hottag only with Claude accounts that are yours, and never to share or resell access.
+Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) (Commercial Terms for a
+Team or Enterprise seat), [Usage Policy](https://www.anthropic.com/legal/aup) and [Claude Code legal
+page](https://code.claude.com/docs/en/legal-and-compliance) govern your accounts. That page says
+plan limits assume "ordinary, individual usage", and that "developers may not collect, store, or
+intermediate Claude.ai credentials or session tokens" — chottag's proxy intermediates them: it swaps
+in each account's token as it forwards the request. Read the pages and decide for yourself: Anthropic may
+restrict or suspend accounts at its discretion. A Team or Enterprise seat is also bound by its
+organization's policy: use c-hottag with one only if that organization allows it. No warranty
+(Apache-2.0, sections 7 and 8): use c-hottag at your own risk. Auto-switch is on by default;
+`chottag auto off` turns it off.
+
+## Uninstall
+
+```sh
+chottag daemon stop && chottag uninstall   # removes the PATH block and bin links; keeps logins
+rm -rf ~/.chottag/versions                 # then, optionally, the installed binaries
+chottag daemon stop && chottag uninstall --purge   # or instead: delete ~/.chottag and every login
+```
+The plugin, a status line and a service unit: [Uninstall](docs/uninstall.md).
+
+## Credits
+
+The route knowledge (which Claude Code requests belong to which account)
+builds on cswap-pin (MIT). Licensed under Apache-2.0: `LICENSE` and `NOTICE`.
