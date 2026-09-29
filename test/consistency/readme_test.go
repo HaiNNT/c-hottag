@@ -50,3 +50,28 @@ func TestREADMEIsALandingPage(t *testing.T) {
 		}
 	}
 }
+
+// TestREADMEComparesNamedSwitchersWithSources (R102): the README's short
+// comparison names the best-known Claude Code account switchers, each by
+// its own GitHub URL, and sends the reader to docs/comparison.md for the
+// full, sourced list.
+func TestREADMEComparesNamedSwitchersWithSources(t *testing.T) {
+	readme := read(t, "README.md")
+	s, ok := doccheck.Find(readme, 2, "Compared with the best-known switchers")
+	if !ok {
+		t.Fatal("README.md has no ## Compared with the best-known switchers")
+	}
+	if !strings.Contains(s.Lead, "](docs/comparison.md)") {
+		t.Error("README.md's comparison does not link docs/comparison.md")
+	}
+	for name, url := range map[string]string{
+		"claude-swap": "https://github.com/realiti4/claude-swap",
+		"clauth":      "https://github.com/uwuclxdy/clauth",
+		"caam":        "https://github.com/Dicklesworthstone/coding_agent_account_manager",
+		"CCSwitcher":  "https://github.com/XueshiQiao/CCSwitcher",
+	} {
+		if !strings.Contains(s.Lead, "["+name+"]("+url+")") {
+			t.Errorf("README.md's comparison does not name %s with %s", name, url)
+		}
+	}
+}

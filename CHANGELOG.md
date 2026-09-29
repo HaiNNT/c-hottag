@@ -7,6 +7,13 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.4.4] - 2026-09-29
+
+### Changed
+
+- README: the README names the remote pin and compares chottag with the
+  best-known account switchers. See [release notes](docs/release-notes/v0.4.4.md).
+
 ## [0.4.3] - 2026-09-29
 
 ### Added
@@ -132,6 +139,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.4.4]: docs/release-notes/v0.4.4.md
 [0.4.3]: docs/release-notes/v0.4.3.md
 [0.4.2]: docs/release-notes/v0.4.2.md
 [0.4.1]: docs/release-notes/v0.4.1.md

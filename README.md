@@ -3,8 +3,7 @@
 > **A Claude Code session installing this?** Follow [For Claude Code](#for-claude-code)
 > from start to finish: it runs `install.sh` *and* installs the plugin.
 
-Keep several Claude accounts logged in on one machine, and switch the one
-Claude Code uses, even mid-session, without logging out.
+Keep several Claude accounts logged in on one machine, and switch the one Claude Code uses, even mid-session, without logging out — with claude.ai objects pinned to their owner across the switch.
 
 c-hottag is an independent project: not affiliated with or endorsed by Anthropic.
 
@@ -22,13 +21,15 @@ serving: B
 
 ## What it does
 
+- **claude.ai objects stay with their owner, built in.** Switching which account serves
+  inference, by hand or auto-switch, never moves who owns a claude.ai object: Remote Control
+  sessions, connectors and artifacts keep working mid-switch, because each request for an
+  existing one goes to its owner; a new one goes to whichever account is `remote`. Routines
+  are the exception: they always follow remote.
 - **Several logins side by side.** Each account has its own Claude Code
   config dir (a *slot*). Your own `~/.claude` login is never changed.
 - **Switch mid-session.** `chottag tag B` moves every chottag session to B
   from its next request: no logout, no restart.
-- **claude.ai objects stay with their owner.** Remote-control sessions,
-  artifacts and connectors go to the account that owns them. Routines are
-  the exception: they always follow whichever account is remote.
 - **Auto-switch near a limit**, on by default, holding a warm prompt cache
   when a reset is close, and resending a request that hit a limit.
 - **Usage at a glance.** `chottag status` shows each account's 5-hour and
@@ -36,13 +37,11 @@ serving: B
 - **Local and scriptable.** A loopback proxy that needs a per-install
   secret; account and status commands answer in `--json`.
 
-**Status:** macOS is the supported platform. Linux builds and passes CI, but
-has not been used for real. Installing uses a logged-in `gh` or a clone.
+**Status:** macOS is the supported platform. Linux builds and passes CI, but has not been used for real. Installing uses a logged-in `gh` or a clone.
 
 ## Install
 
-A Claude Code session: use [For Claude Code](#for-claude-code) instead, which also installs the
-plugin. You need macOS or Linux on amd64 or arm64, and either `gh` logged in or a clone and Go.
+A Claude Code session: use [For Claude Code](#for-claude-code) instead, which also installs the plugin. You need macOS or Linux on amd64 or arm64, and either `gh` logged in or a clone and Go.
 
 ```sh
 gh repo clone HaiNNT/c-hottag && cd c-hottag && ./install.sh
@@ -50,11 +49,7 @@ gh repo clone HaiNNT/c-hottag && cd c-hottag && ./install.sh
 gh api -H 'Accept: application/vnd.github.raw' repos/HaiNNT/c-hottag/contents/install.sh | sh
 ```
 
-`install.sh` checks the release against its checksums (and, from v0.4.0, its
-build attestation), puts the binary under `~/.chottag/versions/` (or
-`$CHOTTAG_HOME`), and runs `chottag setup`, which adds one PATH block to your
-shell rc. Open a new shell afterwards. Other ways to install: [Getting started](docs/getting-started.md).
-Later versions: `chottag update` ([Updating](docs/updating.md)).
+`install.sh` checks the release against its checksums (and, from v0.4.0, its build attestation), puts the binary under `~/.chottag/versions/` (or `$CHOTTAG_HOME`), and runs `chottag setup`, which adds one PATH block to your shell rc. Open a new shell afterwards. Other ways to install: [Getting started](docs/getting-started.md). Later versions: `chottag update` ([Updating](docs/updating.md)).
 
 ## Quick start
 
@@ -75,9 +70,7 @@ Every command, flag and exit code: [Command reference](docs/commands.md).
 
 ## Auto-switch
 
-On by default: near a limit, the daemon switches the serving account for you. `balanced` (the
-default) switches at a per-plan point and holds on when a reset is close; `cache-optimize`
-stays on one account until it is limited. More: [Auto-switch](docs/auto-switch.md).
+On by default: near a limit, the daemon switches the serving account for you. `balanced` (the default) switches at a per-plan point and holds on when a reset is close; `cache-optimize` stays on one account until it is limited. More: [Auto-switch](docs/auto-switch.md).
 
 ```sh
 chottag auto                       # settings, each account's usage, the last decision
@@ -85,6 +78,20 @@ chottag auto mode cache-optimize
 chottag plan B max20x              # Max accounts count as max5x until you say
 chottag auto off
 ```
+
+## Compared with the best-known switchers
+
+By GitHub stars (as of 2026-09-29), chottag next to the best-known Claude Code account switchers:
+
+| Tool | Mid-session switch, no restart | claude.ai objects stay with owner | Auto-switch at a limit | Never writes Home's login |
+|---|---|---|---|---|
+| **chottag** | yes | yes, built in | yes, on by default | yes |
+| [claude-swap](https://github.com/realiti4/claude-swap) | Linux/Windows: yes; macOS: ~30s or a restart | not stated ([cswap-pin](https://github.com/codeslake/cswap-pin) adds it) | yes | no |
+| [clauth](https://github.com/uwuclxdy/clauth) | not stated | not stated | yes | no |
+| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | no, switch before a new session | not stated | yes, reactive | no |
+| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | yes | not stated | not stated | no |
+
+[CC Switch](https://github.com/farion1231/cc-switch) is the best-known "switch" tool for Claude Code, but it switches API providers and gateways, not your own subscription accounts. Full sourcing, more tools and migration guides: [docs/comparison.md](docs/comparison.md).
 
 ## For Claude Code
 

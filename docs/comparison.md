@@ -1,6 +1,6 @@
 # c-hottag compared
 
-Last verified: 2026-09-28.
+Last verified: 2026-09-29.
 
 Other projects change quickly: releases ship, stars move, a README's wording
 changes. Every claim below is dated and cites the source it came from, so
@@ -60,6 +60,26 @@ credential, with a shim that starts a fresh Claude Code process per account. [cs
 claude-swap, adds the same idea as chottag's `remote` account: it keeps
 claude.ai objects on one account while a switch moves who serves inference.
 
+## Auto-switch and the pin
+
+The README's short table (as of 2026-09-29) rests on this.
+
+**Auto-switch at a usage limit.** claude-swap: `cswap auto` lets it "watch your usage and switch for
+you" before a threshold (default 90%) is hit ([README](https://github.com/realiti4/claude-swap)).
+clauth: a fallback chain "switches to the next member with headroom the moment the active one
+crosses its threshold" ([README](https://github.com/uwuclxdy/clauth)). caam: `caam run` "wraps your
+AI CLI execution and automatically handles rate limits", reactively, once a limit is hit
+([README](https://github.com/Dicklesworthstone/coding_agent_account_manager)); switching outside
+that wrapper is manual, and the README itself warns that switching while a CLI is running "may
+cause auth errors in the running session" — best done "before starting a new session, not during."
+CCSwitcher's README lists every feature in detail and names none that switches automatically at a
+limit: not stated ([README](https://github.com/XueshiQiao/CCSwitcher)).
+
+**claude.ai objects stay with their owner.** None of the four switchers' own READMEs say their tool
+does this. [cswap-pin](https://github.com/codeslake/cswap-pin), a companion to claude-swap, adds it
+explicitly: it keeps "Claude Code's Remote Control and Artifacts on one account while inference keeps
+following cswap's account swap" — the same idea as chottag's `remote` account, built in.
+
 ## Proxies and gateways
 
 These point Claude Code at a different API endpoint entirely — a model
@@ -102,15 +122,15 @@ relay that shares access to accounts across people.
 
 ## Sources
 
-- claude-swap: [realiti4/claude-swap](https://github.com/realiti4/claude-swap) (accessed 2026-09-28)
-- cswap-pin: [codeslake/cswap-pin](https://github.com/codeslake/cswap-pin) (accessed 2026-09-28)
+- claude-swap: [realiti4/claude-swap](https://github.com/realiti4/claude-swap) (accessed 2026-09-29)
+- cswap-pin: [codeslake/cswap-pin](https://github.com/codeslake/cswap-pin) (accessed 2026-09-29)
 - swapdex: [youdie006/swapdex](https://github.com/youdie006/swapdex) (accessed 2026-09-28)
-- clauth: [uwuclxdy/clauth](https://github.com/uwuclxdy/clauth) (accessed 2026-09-28)
+- clauth: [uwuclxdy/clauth](https://github.com/uwuclxdy/clauth) (accessed 2026-09-29)
 - claude-account: [hamzarehmandeveloper/claude-account](https://github.com/hamzarehmandeveloper/claude-account) (accessed 2026-09-28)
-- CCSwitcher: [XueshiQiao/CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) (accessed 2026-09-28)
+- CCSwitcher: [XueshiQiao/CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) (accessed 2026-09-29)
 - Claude Account Switcher: [Symbioose/claude-account-switcher](https://github.com/Symbioose/claude-account-switcher) (accessed 2026-09-28)
 - aisw: [burakdede/aisw](https://github.com/burakdede/aisw) (accessed 2026-09-28)
-- caam: [Dicklesworthstone/coding_agent_account_manager](https://github.com/Dicklesworthstone/coding_agent_account_manager) (accessed 2026-09-28)
+- caam: [Dicklesworthstone/coding_agent_account_manager](https://github.com/Dicklesworthstone/coding_agent_account_manager) (accessed 2026-09-29)
 - Claude Code Router: [musistudio/claude-code-router](https://github.com/musistudio/claude-code-router) (accessed 2026-09-28)
 - CC Switch: [farion1231/cc-switch](https://github.com/farion1231/cc-switch) (accessed 2026-09-28)
 - claude-code-proxy: [1rgs/claude-code-proxy](https://github.com/1rgs/claude-code-proxy) (accessed 2026-09-28)
