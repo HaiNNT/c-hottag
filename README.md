@@ -88,29 +88,21 @@ chottag auto off
 
 ## For Claude Code
 
-If you are a Claude Code session asked to "install c-hottag from
-github.com/HaiNNT/c-hottag", do exactly this, in order:
+A Claude Code session asked to install or manage chottag for a user
+follows [docs/for-claude-code.md](docs/for-claude-code.md) instead of
+this section: it installs without a clone, gets the user's go-ahead on
+the terms, adds the plugin (`claude plugin marketplace add
+HaiNNT/c-hottag`, or `/plugin marketplace add HaiNNT/c-hottag` inside a
+session, then `claude plugin install chottag@c-hottag`), logs accounts
+in, and covers managing chottag afterwards.
 
-1. **Clone:** `gh repo clone HaiNNT/c-hottag` (or
-   `git clone git@github.com:HaiNNT/c-hottag.git`) into a directory the
-   user agrees to, then `cd c-hottag`.
-2. **Install:** `./install.sh`. It never prompts. Exit 2 is a bad argument;
-   exit 1 a failed install, and its last line says why. Tell the user.
-3. **Plugin:** `claude plugin marketplace add ./` from the clone, then
-   `claude plugin install chottag@c-hottag`. That form breaks if the
-   clone moves; `/plugin marketplace add HaiNNT/c-hottag` (inside a
-   session) goes through GitHub instead.
-4. **New shell:** the PATH block applies only to new shells. Until then, run
-   `~/.chottag/bin/chottag` (or `$CHOTTAG_HOME/bin/chottag`).
-5. **Accounts:** for each account the user names, run
-   `chottag login <name> --json` through Bash with `timeout: 600000` (the
-   10-minute maximum). It opens a browser and blocks until the user finishes.
-6. **Verify:** `chottag status --json` has `"ok": true` and lists the accounts.
-
-Always pass `--json`, and branch on `ok` and `error.code`, never on the
-message. Never run `/login` or `/logout` in a session (they change Home's
-login), never edit `~/.claude`, `~/.claude.json` or anything in them, and
-never run `chottag uninstall --purge` for the user.
+Non-negotiable, every command: pass `--json` and branch on `ok` and
+`error.code`, never the message. `chottag login <name> --json` runs
+through Bash with `timeout: 600000` (the 10-minute maximum) and opens a
+browser. Never run `/login` or `/logout` in a session (they change
+Home's login, not a chottag account), never edit `~/.claude`,
+`~/.claude.json` or anything in them, and never run `chottag uninstall
+--purge` for the user.
 
 ## Documentation
 

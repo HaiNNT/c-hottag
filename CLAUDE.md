@@ -1,5 +1,10 @@
 # c-hottag (`chottag`)
 
+This file and `.claude/` are for developing chottag itself. If you were
+asked to install or manage chottag for a user, follow
+[docs/for-claude-code.md](docs/for-claude-code.md) instead, from outside
+this clone.
+
 A Go single-binary Claude Code account switcher: per-account
 `CLAUDE_CONFIG_DIR` slots, plus a local HTTPS intercepting proxy that picks
 each request's bearer. Module `github.com/HaiNNT/c-hottag`; the CLI is

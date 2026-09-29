@@ -83,8 +83,9 @@ Without arguments, work out what the user wants and use "Common tasks".
   they ask for permission.) If `CHOTTAG_HOME` was set at install time,
   `chottag setup` also recorded it in the same rc block as the PATH line, so a
   new shell resolves it without it needing to be set again by hand.
-- Not installed: follow the "For Claude Code" section of the README at
-  github.com/HaiNNT/c-hottag (clone, `./install.sh`, then this plugin).
+- Not installed: follow
+  https://github.com/HaiNNT/c-hottag/blob/main/docs/for-claude-code.md,
+  which installs without a clone and then adds this plugin.
 
 ## Common tasks
 

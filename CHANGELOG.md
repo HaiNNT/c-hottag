@@ -7,6 +7,17 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.4.3] - 2026-09-29
+
+### Added
+
+- [Install and manage chottag for a user](docs/for-claude-code.md): an
+  ordered, copy-pasteable page written for a Claude Code session installing
+  or managing chottag on someone's behalf, installing without a clone (a
+  clone's own `CLAUDE.md` and hook block installer runs), covering the
+  plugin, a private repo's git credentials, the terms go-ahead, and that
+  only a session started after the install is routed.
+
 ## [0.4.2] - 2026-09-29
 
 ### Added
@@ -121,6 +132,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.4.3]: docs/release-notes/v0.4.3.md
 [0.4.2]: docs/release-notes/v0.4.2.md
 [0.4.1]: docs/release-notes/v0.4.1.md
 [0.4.0]: docs/release-notes/v0.4.0.md

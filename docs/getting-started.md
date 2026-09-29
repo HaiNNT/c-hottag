@@ -1,5 +1,9 @@
 # Getting started
 
+An AI agent installing or managing chottag for a user follows
+[Install and manage chottag for a user](for-claude-code.md) instead of
+this page.
+
 ## What you need
 
 macOS (the supported platform) or Linux (builds and passes CI, but has not
