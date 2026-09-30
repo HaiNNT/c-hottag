@@ -283,6 +283,7 @@ func TestGuardHomeKeepsProdChottagOffLimits(t *testing.T) {
 		{"update --check --restart still installs", "chottag update --check --restart", true},
 
 		{"status", "chottag status", false},
+		{"statusline (read-only, R111)", "chottag statusline", false},
 		{"ls alias", "chottag ls", false},
 		{"doctor without --fix", "chottag doctor", false},
 		{"version", "chottag version", false},

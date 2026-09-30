@@ -7,6 +7,14 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.4.10] - 2026-09-30
+
+### Changed
+
+- Checked against Claude Code 2.1.285 (`routes/2.1.285.txt`); no routing change needed.
+- `scripts/dev-env` drops an inherited chottag proxy, so a dev sandbox never routes through another chottag.
+  See [release notes](docs/release-notes/v0.4.10.md).
+
 ## [0.4.9] - 2026-09-30
 
 ### Added
@@ -182,6 +190,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.4.10]: docs/release-notes/v0.4.10.md
 [0.4.9]: docs/release-notes/v0.4.9.md
 [0.4.8]: docs/release-notes/v0.4.8.md
 [0.4.7]: docs/release-notes/v0.4.7.md

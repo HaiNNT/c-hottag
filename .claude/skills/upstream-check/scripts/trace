@@ -28,6 +28,17 @@ die() {
 }
 say() { echo "trace: $*"; }
 
+# F251: run from inside a chottag session, this shell's HTTPS_PROXY is that
+# chottag's own proxy (with NODE_EXTRA_CA_CERTS pointing at its CA). A dev
+# daemon started with it would send its upstream traffic through prod
+# chottag and fail every request on prod's certificate. Drop the proxy
+# settings only when they name a chottag proxy; a real corporate proxy stays.
+case "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}${CHOTTAG_UPSTREAM_PROXY:-}" in
+*//chottag:*)
+	unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NODE_EXTRA_CA_CERTS CHOTTAG_UPSTREAM_PROXY
+	;;
+esac
+
 case "${1:-}" in
 -h | --help)
 	sed -n '2,/^set -eu$/p' "$0" | sed '$d; s/^# \{0,1\}//'

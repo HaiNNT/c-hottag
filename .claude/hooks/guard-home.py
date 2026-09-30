@@ -103,6 +103,7 @@ CHOTTAG_READONLY_FIRST_WORDS = {
     "--help",
     "status",
     "ls",
+    "statusline",
 }
 # CHOTTAG_READONLY_BARE: these, with no further word, are read-only.
 CHOTTAG_READONLY_BARE = {"remote", "auto", "notify", "trace"}
