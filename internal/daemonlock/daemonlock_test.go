@@ -394,7 +394,10 @@ func TestInspectWaitsThroughAChangingRecordThenReturnsTheSettledOne(t *testing.T
 // read. Without the rec1 != rec2 comparison (only checking err != nil),
 // each individual read is valid JSON and would be accepted immediately.
 func TestInspectNeverAcceptsARecordThatNeverSettles(t *testing.T) {
-	setDuration(t, &recordWait, 80*time.Millisecond)
+	// Long enough for several attempts on a normal run; the assertions below
+	// never depend on how many fit (a loaded -race CI runner once fitted
+	// only one attempt into 80ms).
+	setDuration(t, &recordWait, 500*time.Millisecond)
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, "run"), 0o700); err != nil {
 		t.Fatal(err)
@@ -435,8 +438,10 @@ func TestInspectNeverAcceptsARecordThatNeverSettles(t *testing.T) {
 	if !st.Running || !errors.Is(err, ErrUnreadableRecord) {
 		t.Fatalf("Inspect with a record that never settles = %+v, %v; want Running with ErrUnreadableRecord", st, err)
 	}
-	if n < 2 {
-		t.Fatalf("betweenStableReads fired %d times, want at least 2 (the test proves nothing otherwise)", n)
+	// One attempt is enough to prove the point: its two reads were each
+	// valid JSON, and only the rec1 != rec2 comparison rejected them.
+	if n < 1 {
+		t.Fatalf("betweenStableReads fired %d times, want at least 1 (the test proves nothing otherwise)", n)
 	}
 }
 

@@ -44,21 +44,23 @@ in `~/.chottag/versions/<version>/`, the source it came from is recorded in
 argument; exit 1 means the install itself failed. Install into another home
 with `CHOTTAG_HOME` set.
 
-### If the repository is private
+### From a private fork
 
-An invited user needs `gh auth login` with access to the private repo first.
-A private repo's raw URL needs your GitHub token; `gh api` supplies it:
+`HaiNNT/c-hottag` is public; this applies only to a private fork. Log `gh`
+in with access to it first (`gh auth login`); `gh api` supplies your token
+for the raw URL:
 
 ```sh
-gh api -H 'Accept: application/vnd.github.raw' repos/HaiNNT/c-hottag/contents/install.sh | sh -s -- --repo HaiNNT/c-hottag
+gh api -H 'Accept: application/vnd.github.raw' repos/OWNER/NAME/contents/install.sh | sh -s -- --repo OWNER/NAME
 ```
 
-`--repo HaiNNT/c-hottag` is already `install.sh`'s default; the flag above
-makes it explicit, and is what you change to install from another private
-repo. `chottag update` then follows that repo (it is recorded in
-`install.json`).
+`chottag update` then follows that repo (it is recorded in `install.json`).
+A private repo's releases carry no attestation, so they are checked by
+checksum only, with a note. Releases of `HaiNNT/c-hottag` before v0.4.7
+were built while it was private and have no attestation either; now that
+it is public, `install.sh` refuses them, so install v0.4.7 or later.
 
-The two commands in [The plugin](#the-plugin) work unchanged: Claude Code
+For a private fork, the two commands in [The plugin](#the-plugin) work unchanged: Claude Code
 clones the marketplace with your git credentials, so `git clone` of the
 repo must work in your terminal (`gh auth login` offers to set that up, or
 run `gh auth setup-git`). Background auto-update, if you turn it on, uses

@@ -7,6 +7,14 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.4.8] - 2026-09-30
+
+### Changed
+
+- docs/for-claude-code.md: install steps for the public repo, a check that chottag started, and a
+  short setup talk with the user (which accounts, which one is pinned) before logging in.
+  See [release notes](docs/release-notes/v0.4.8.md).
+
 ## [0.4.7] - 2026-09-30
 
 ### Changed
@@ -161,6 +169,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.4.8]: docs/release-notes/v0.4.8.md
 [0.4.7]: docs/release-notes/v0.4.7.md
 [0.4.6]: docs/release-notes/v0.4.6.md
 [0.4.5]: docs/release-notes/v0.4.5.md
