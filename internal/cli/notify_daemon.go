@@ -67,11 +67,28 @@ func newDaemonNotify(state func() (store.State, error), n notify.Notifier) *daem
 	return &daemonNotify{
 		disp: disp,
 		events: notify.NewEvents(notify.Config{
-			Emit:    disp.Enqueue,
+			Emit: func(title, body string) {
+				label := ""
+				if st, err := state(); err == nil {
+					label = st.Label
+				}
+				disp.Enqueue(labelTitle(title, label), body)
+			},
 			Enabled: func() bool { return notifyEnabled(state) },
 		}),
 		blocked: map[string]bool{},
 	}
+}
+
+// labelTitle puts the install's label into a notice title (R118): a title
+// starting "chottag: " becomes "chottag · <label>: ". No label, or a title
+// that does not start that way, comes back unchanged.
+func labelTitle(title, label string) string {
+	const prefix = "chottag: "
+	if label == "" || !strings.HasPrefix(title, prefix) {
+		return title
+	}
+	return "chottag · " + label + ": " + title[len(prefix):]
 }
 
 // notifyEnabled reads state.json's switch (D12). The daemon passes

@@ -259,6 +259,11 @@ do_build() {
 	say "running setup in the sandbox (HOME=$sandbox_home, CHOTTAG_HOME=$dev_home, claude=$real_claude)"
 	HOME="$sandbox_home" CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" "$chottag_bin" setup --claude "$real_claude" </dev/null
 	force_port
+	# The label goes on after force_port, in a second setup: a setup that
+	# already wrote state.json (which --label does) would skip force_port's
+	# "no state.json yet" branch, and with it realClaude. Setup is idempotent
+	# and the label write keeps every other field.
+	HOME="$sandbox_home" CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" "$chottag_bin" setup --label dev --claude "$real_claude" </dev/null
 	say "ready: CHOTTAG_HOME=$dev_home, port $dev_port"
 	say "next: eval \"\$(scripts/dev-env env)\" or scripts/dev-env shell, then scripts/dev-env run login NAME"
 }

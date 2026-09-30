@@ -1,0 +1,42 @@
+#!/bin/sh
+# Maintainer-only: rebuild assets/logo/png/*.png and assets/logo/*.icns from
+# the SVG masters. Run from the repo root. Not part of the gate.
+set -eu
+
+for tool in rsvg-convert iconutil; do
+	command -v "$tool" >/dev/null 2>&1 || {
+		echo "render-logo: $tool is required and was not found on PATH" >&2
+		exit 1
+	}
+done
+[ -f assets/logo/chottag.svg ] || {
+	echo "render-logo: run from the repo root (assets/logo/chottag.svg not found)" >&2
+	exit 1
+}
+
+logo=assets/logo
+mkdir -p "$logo/png"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+render() { # svg size out
+	rsvg-convert -w "$2" -h "$2" "$1" -o "$3"
+}
+
+for name in chottag chottag-dev; do
+	for size in 16 32 64 128 256 512 1024; do
+		src="$logo/$name.svg"
+		if [ "$name" = chottag-dev ] && [ "$size" -le 32 ]; then
+			src="$logo/chottag-dev-small.svg"
+		fi
+		render "$src" "$size" "$logo/png/$name-$size.png"
+	done
+	set_dir="$tmp/$name.iconset"
+	mkdir -p "$set_dir"
+	for base in 16 32 128 256 512; do
+		cp "$logo/png/$name-$base.png" "$set_dir/icon_${base}x${base}.png"
+		cp "$logo/png/$name-$((base * 2)).png" "$set_dir/icon_${base}x${base}@2x.png"
+	done
+	iconutil -c icns "$set_dir" -o "$logo/$name.icns"
+done
+echo "render-logo: done"

@@ -118,6 +118,9 @@ type State struct {
 	// null decodes to) is off. A pointer so a state that never traced
 	// writes no key.
 	Trace *Trace `json:"trace,omitempty"`
+	// Label names this install in notification titles and `chottag status`
+	// (R118): `setup --label dev` marks a dev sandbox. Empty is unlabelled.
+	Label string `json:"label,omitempty"`
 }
 
 func Default() State {

@@ -160,10 +160,10 @@ its conversation (don't use a `!` command for this: its output lands in
 the chat):
 
 1. **The status line (recommended).** `chottag statusline` prints
-   `chottag: <serving account>` for a session that goes through chottag,
-   `chottag: down` when chottag is not answering, and `chottag: off` for a
-   Home session. Ask the user first, then add this to their
-   `~/.claude/settings.json`:
+   `c» <serving account> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok` for a
+   session that goes through chottag, `c» down` when chottag is not
+   answering, and `c» off` for a Home session. Ask the user first, then
+   add this to their `~/.claude/settings.json`:
 
    ```json
    { "statusLine": { "type": "command", "command": "~/.chottag/bin/chottag statusline" } }

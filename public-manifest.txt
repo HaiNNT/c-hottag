@@ -24,6 +24,7 @@ README.md
 ROADMAP.md
 SECURITY.md
 SUPPORT.md
+assets/
 cmd/
 docs/
 go.mod
@@ -41,3 +42,5 @@ test/
 .github/dependabot.yml
 !docs/internal/
 !scripts/release
+!assets/logo/chottag.icns
+!assets/logo/chottag-dev.icns

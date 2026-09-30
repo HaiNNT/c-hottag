@@ -104,6 +104,7 @@ func runStatus(home string, args []string, r *reporter) int {
 		}
 	}
 	f.Serving, f.Remote = st.Serving, st.Remote
+	f.Label = st.Label
 	// Report in the account's configured (registration) order, not the
 	// order the cache happens to have observed them in — a user reading
 	// down the list expects it to match `chottag adopt`'s order, not
@@ -237,7 +238,11 @@ func lastSwitchText(ls status.AutoSwitch) string {
 }
 
 func renderStatus(out io.Writer, f status.File, now time.Time) {
-	fmt.Fprintf(out, "serving: %s   remote: %s\n\n", f.Serving, f.Remote)
+	label := ""
+	if f.Label != "" {
+		label = "   (" + f.Label + ")"
+	}
+	fmt.Fprintf(out, "serving: %s   remote: %s%s\n\n", f.Serving, f.Remote, label)
 	// The daemon version-mismatch line (public release design §2.4): shown
 	// only when the overlay above (runStatus) found a running daemon whose
 	// health version differs from this binary's. VersionMismatch is never

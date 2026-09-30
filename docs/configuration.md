@@ -78,6 +78,7 @@ an auto-switch.
     "cooldown": "5m"
   },
   "notify": true,
+  "label": "dev",
   "trace": {
     "until": "2026-01-01T10:00:00Z"
   }
@@ -110,6 +111,8 @@ an auto-switch.
   and the `hold5h`/`hold7d`/`cooldown` durations. Absent means every
   default.
 - `notify` — desktop notifications on or off. Absent means on.
+- `label` — a short name for this install (`chottag setup --label NAME`),
+  shown in `chottag status` and in notification titles. Absent means none.
 - `trace` — the trace-mode window; absent means tracing is off.
 
 Change these with `chottag` commands (`chottag plan`, `chottag auto`,
@@ -134,6 +137,8 @@ corrupt `state.json` on the next read.
 | `CMUX_CLAUDE_PID` | cmux's own claude wrapper. | Lets the shim tell whether cmux's wrapper already exec'd it directly, so it hands off at most once per launch. |
 | `CMUX_CLAUDE_HOOKS_DISABLED` | cmux, inside a cmux surface. | When `1`, cmux's own wrapper adds no session hooks, so the shim skips the hand-off — it would exec the wrapper for nothing. |
 | `CMUX_CUSTOM_CLAUDE_PATH` | cmux's own "Claude Binary Path" setting, when you have set one. | The skip applies when it names any executable other than chottag's own `bin/claude`: cmux's wrapper then never comes back to chottag, so the shim skips the hand-off too (see [Known limitations](known-limitations.md#cmux)). |
+| `CMUX_WORKSPACE_ID` | cmux, inside a cmux workspace. | When set, `chottag statusline` also sets a cmux sidebar pill for that workspace (see [`chottag statusline`](commands.md#chottag-statusline)). |
+| `NO_COLOR` | You. | When non-empty, `chottag statusline` prints no colour. |
 | `CHOTTAG_CMUX_HANDOFF` | The `claude` shim, internally, across its own cmux hand-off. | Not for you to set directly — marks a launch that already handed off once, so the shim does not loop; dropped before Claude Code itself starts. |
 
 ## The port

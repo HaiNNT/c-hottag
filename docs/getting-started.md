@@ -141,10 +141,13 @@ has no chottag PATH entry), and resume it there with `claude --continue` or
 `chottag statusline` prints one short segment for Claude Code's status
 line:
 
-- `chottag: A`: this session goes through chottag, and A is serving;
-- `chottag: down`: it goes through chottag, but the daemon is not
-  answering;
-- `chottag: off`: it uses your normal login.
+- `c» A · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`: this session goes through
+  chottag, A is serving, with its usage, its next reset and how many
+  accounts in rotation are not limited;
+- `c» down`: it goes through chottag, but the daemon is not answering;
+- `c» off`: it uses your normal login.
+
+With an install label the label follows the mark, as in `c» dev off`.
 
 To show it, add this to your own `~/.claude/settings.json` (chottag never
 edits that file for you):

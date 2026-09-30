@@ -92,7 +92,7 @@ Without arguments, work out what the user wants and use "Common tasks".
 | the user wants | run |
 |---|---|
 | which account is serving, usage, limits | `chottag status --json` |
-| show in a status line whether this session goes through chottag | `chottag statusline` (one line: `chottag: <serving>`, `chottag: down` or `chottag: off`; never fails) |
+| show in a status line whether this session goes through chottag | `chottag statusline` (one line: `c» <serving> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, `c» down` or `c» off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
 | add or re-login an account | `chottag login <name> --json` (timeout 600000) |
@@ -161,8 +161,17 @@ verifies each download against the release's checksums.
 
 ## Status line
 
-chottag must not edit `~/.claude/settings.json`. To show the serving account
-in the user's status line, give them this script to save OUTSIDE
+chottag must not edit `~/.claude/settings.json`, and neither do you. Offer
+the user the built-in status line first, and only with their yes: it prints
+the mark, the serving account, its 5h/7d usage, the next reset and pool
+health, and never fails. They add this to `~/.claude/settings.json` by hand:
+
+```json
+{"statusLine":{"type":"command","command":"~/.chottag/bin/chottag statusline"}}
+```
+
+To combine it with an existing status line, or to show the serving account
+another way, give them this script to save OUTSIDE
 `~/.chottag` (for example as `~/.local/bin/chottag-statusline.sh`, not
 anywhere under `~/.chottag`, since `chottag uninstall --purge` deletes that
 whole tree and would take the script with it), `chmod +x`, with their

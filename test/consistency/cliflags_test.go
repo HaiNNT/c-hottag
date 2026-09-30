@@ -189,9 +189,9 @@ func cliAliases(t *testing.T) map[string]string {
 }
 
 // delegatedFlags: a command that hands its arguments to another command's
-// flag set. setup runs adopt with its own args (setup.go), so setup takes
-// adopt's flags.
-var delegatedFlags = map[string]string{"setup": "adopt"}
+// flag set. None now: setup declares its own flags (claude, name, label) and
+// rebuilds adopt's arguments from them.
+var delegatedFlags = map[string]string{}
 
 // globalFlagNames are accepted by every command: --json (globalflags.go)
 // and the help spellings (wantsHelp, cli.go).
@@ -322,13 +322,5 @@ func TestUsageFlagsExistInTheFlagSets(t *testing.T) {
 				t.Errorf("usage names `chottag %s --%s`, which its flag set does not define", path, f)
 			}
 		}
-	}
-}
-
-// TestSetupDelegatesItsFlagsToAdopt pins delegatedFlags: setup still hands
-// its args to adopt's flag set.
-func TestSetupDelegatesItsFlagsToAdopt(t *testing.T) {
-	if !strings.Contains(read(t, "internal/cli/setup.go"), "runAdopt(args, ") {
-		t.Error("setup.go no longer calls runAdopt(args, …): update delegatedFlags")
 	}
 }

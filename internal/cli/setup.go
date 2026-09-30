@@ -2,15 +2,64 @@ package cli
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/HaiNNT/c-hottag/internal/ca"
 	"github.com/HaiNNT/c-hottag/internal/exit"
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
+	"github.com/HaiNNT/c-hottag/internal/store"
 )
+
+var labelRE = regexp.MustCompile(`^[a-z0-9-]{1,16}$`)
+
+const setupUsage = "usage: chottag setup [--claude PATH] [--label NAME] [--name DIR=NAME]..."
+
+const labelUsage = "usage: chottag setup [--claude PATH] [--label NAME] [--name DIR=NAME]...: NAME is 1-16 characters of a-z, 0-9 and -; --label \"\" clears it"
+
+// parseSetupArgs parses setup's flags and returns the args to hand to adopt
+// (its own --claude and --name); a stray positional is a usage error. --label is validated here, before setup touches anything; set is
+// true when it was given, an empty value included (it clears the label).
+func parseSetupArgs(args []string, r *reporter) (adoptArgs []string, label string, set bool, code int, err error) {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fs.SetOutput(r.Stderr())
+	labelFlag := fs.String("label", "", "label this install in notification titles and status")
+	claudeBin := fs.String("claude", "claude", "path to the real claude binary")
+	names := nameFlags{}
+	fs.Var(names, "name", "DIR=NAME: register the slot dir DIR under the account name NAME (repeatable)")
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return nil, "", false, r.FlagError(err), err
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "label":
+			label, set = *labelFlag, true
+		case "claude":
+			adoptArgs = append(adoptArgs, "--claude", *claudeBin)
+		}
+	})
+	if set && label != "" && !labelRE.MatchString(label) {
+		return nil, "", false, r.Usage(labelUsage), errors.New(labelUsage)
+	}
+	dirs := make([]string, 0, len(names))
+	for dir := range names {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		adoptArgs = append(adoptArgs, "--name", dir+"="+names[dir])
+	}
+	if len(positional) != 0 {
+		return nil, "", false, r.Usage(setupUsage), errors.New(setupUsage)
+	}
+	return adoptArgs, label, set, exit.OK, nil
+}
 
 // setupDirs are created directly under $CHOTTAG_HOME. "cache" holds
 // cache/status.json (written by the daemon); nothing in this package writes
@@ -79,6 +128,10 @@ type setupResult struct {
 // adopt runs through a nested reporter (spec §5.3): its text and warnings
 // appear exactly as before, but only setup writes the one document.
 func runSetup(args []string, r *reporter) int {
+	args, label, setLabel, code, err := parseSetupArgs(args, r)
+	if err != nil {
+		return code
+	}
 	h, err := home()
 	if err != nil {
 		return r.FailErr(err)
@@ -103,6 +156,15 @@ func runSetup(args []string, r *reporter) int {
 			err = fmt.Errorf("%w; run: chottag doctor --fix", err)
 		}
 		return r.FailErr(err)
+	}
+
+	if setLabel {
+		if _, err := (store.Store{Dir: h}).Update(func(st *store.State) error {
+			st.Label = label
+			return nil
+		}); err != nil {
+			return r.FailErr(err)
+		}
 	}
 
 	exe, err := os.Executable()
@@ -147,8 +209,9 @@ func runSetup(args []string, r *reporter) int {
 	// MkdirAll's the accounts dir itself before adopt runs, so adopt's
 	// ReadDir failing there can only be a real failure (EACCES, for one),
 	// never "nothing to adopt yet" — it falls to the adopt_failed warning
-	// branch below (fix round 2). A real usage error in args (exit 2) is
-	// still propagated as adopt's own document. Any OTHER adopt failure,
+	// branch below (fix round 2). A usage error from adopt itself (exit 2)
+	// is propagated as adopt's own document; bad flags and stray positionals
+	// are already caught by setup's own flag set, before anything is written. Any OTHER adopt failure,
 	// codeNoSlots included, is an adopt_failed warning: its text is already
 	// on stderr, so text mode is unchanged (F152). The decision is always
 	// adopt's error CODE, never its message text.

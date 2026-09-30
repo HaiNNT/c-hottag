@@ -73,7 +73,7 @@ An error document:
 ### `chottag setup`
 
 ```sh
-chottag setup [--claude PATH] [--name DIR=NAME]...
+chottag setup [--claude PATH] [--label NAME] [--name DIR=NAME]...
 ```
 
 Installs the shim: the `~/.chottag` tree, the local CA, the `bin/chottag`
@@ -84,6 +84,7 @@ holds a login is registered without a fresh `claude auth login`.
 | Flag | Meaning |
 |---|---|
 | `--claude PATH` | path to the real `claude` binary, passed through to `adopt` |
+| `--label NAME` | label this install (1-16 characters of `a-z`, `0-9` and `-`; `""` clears it). It is stored as `label` in `state.json`, shows in `chottag status`, and turns notification titles into `chottag · NAME: ...`. A bare `setup` keeps the label. `scripts/dev-env` sets `dev` |
 | `--name DIR=NAME` | register the slot dir `DIR` under the account name `NAME` (repeatable), passed through to `adopt` |
 
 ```json
@@ -484,6 +485,7 @@ the account you chose. Also `chottag ls`. It takes no flags.
   ],
   "serving": "work",
   "remote": "work",
+  "label": "dev",
   "limits": {
     "allLimited": false,
     "nextReset": "2026-09-28T19:00:00Z",
@@ -523,6 +525,9 @@ the account you chose. Also `chottag ls`. It takes no flags.
 }
 ```
 
+`label` is the install's label (`chottag setup --label`); it is omitted when
+none is set, and the text form shows it as `(NAME)` on the first line.
+
 `accounts[].dir` (the account's slot directory) is never shown: `status`
 clears it from every account before reporting.
 
@@ -539,7 +544,8 @@ chottag statusline [--json]
 ```
 
 Prints one line for Claude Code's status line: whether the Claude Code
-session that runs it goes through chottag. It takes no flags besides
+session that runs it goes through chottag, which account serves it, its
+usage, its next reset and the pool's health. It takes no flags besides
 `--json`, never reads stdin, and always exits `0` (a bad argument is still
 exit `2`). It prints nothing secret: no token, email, path or proxy secret.
 
@@ -550,10 +556,33 @@ is asked, for at most 300 ms, whether it answers.
 
 | Line | Meaning |
 |---|---|
-| `chottag: work` | routed, the daemon answers; `work` is the serving account |
-| `chottag: up` | routed, the daemon answers, but no account is serving |
-| `chottag: down` | routed, but the daemon does not answer |
-| `chottag: off` | not routed, chottag is not set up, or anything went wrong |
+| `c» work · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok` | routed, the daemon answers; `work` is the serving account |
+| `c» up` | routed, the daemon answers, but no account is serving |
+| `c» down` | routed, but the daemon does not answer |
+| `c» off` | not routed, chottag is not set up, or anything went wrong |
+
+With an install label (`chottag setup --label dev`), the label follows the
+mark in every state: `c» dev off`, `c» dev · work · 5h 3% · …`.
+
+- `5h NN%` and `7d NN%` are the serving account's usage, rounded; an unknown
+  or stale value prints `–`.
+- `↻ HH:MM` is its next reset: the 5 h reset when the 5 h use is at or above
+  80 %, otherwise the earlier of the two known resets. Local time, or
+  `Mon 18:00` when more than 24 hours away. Left out when unknown.
+- `n/m ok` is the accounts in rotation that are not limited, out of all
+  accounts in rotation. Left out when none is in rotation.
+- The figures come from the status cache the daemon keeps; the statusline
+  asks the daemon nothing beyond the health probe.
+- Colour: the mark and the label are bold blue (amber with a label); a
+  limited serving account turns `5h` and `7d` red. Colour is on although
+  stdout is not a terminal, because Claude Code renders it; `NO_COLOR`
+  turns it off.
+
+When `CMUX_WORKSPACE_ID` is set, the statusline also sets a cmux sidebar
+pill named `chottag` for that workspace, holding the same line without
+colour, when the line changed since the last one sent (remembered in
+`run/pill-<workspace>.txt`). The cmux call is bounded to 300 ms and its
+failure is ignored.
 
 ```json
 {
@@ -562,13 +591,21 @@ is asked, for at most 300 ms, whether it answers.
   "warnings": [],
   "session": "routed",
   "daemon": "up",
-  "serving": "work"
+  "serving": "work",
+  "label": "dev",
+  "fiveHourPct": 41.6,
+  "sevenDayPct": 18.2,
+  "resetsAt": "2026-10-01T19:00:00+07:00",
+  "okAccounts": 2,
+  "rotationAccounts": 3
 }
 ```
 
 `session` is `routed` or `home`. `daemon` is `up`, `down` or `unknown`
 (`unknown` when the session is not routed: the daemon is not asked).
 `serving` is empty unless the session is routed and the daemon is up.
+`label`, `fiveHourPct`, `sevenDayPct`, `resetsAt` (RFC 3339), `okAccounts`
+and `rotationAccounts` are left out when unknown.
 
 ### `chottag doctor`
 

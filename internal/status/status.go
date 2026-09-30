@@ -420,7 +420,9 @@ type File struct {
 	Accounts []Account `json:"accounts"`
 	Serving  string    `json:"serving,omitempty"`
 	Remote   string    `json:"remote,omitempty"`
-	Limits   Limits    `json:"limits"`
+	// Label is the install's label from state.json (R118), set by status.
+	Label  string `json:"label,omitempty"`
+	Limits Limits `json:"limits"`
 	// Daemon is absent until a daemon has stamped it at least once (§5.1).
 	Daemon *Daemon `json:"daemon,omitempty"`
 	// Trace is absent until a daemon has traced a request (M2c).

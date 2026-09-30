@@ -7,6 +7,15 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.5.0] - 2026-09-30
+
+### Added
+
+- The chottag mark (`c»`), blue for prod and amber for dev, in `assets/logo/`.
+- `chottag statusline` v2: usage, next reset and available accounts, in colour; a cmux sidebar pill.
+- `chottag setup --label NAME`: a labelled install shows its label in notifications and `status`.
+  See [release notes](docs/release-notes/v0.5.0.md).
+
 ## [0.4.10] - 2026-09-30
 
 ### Changed
@@ -190,6 +199,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.5.0]: docs/release-notes/v0.5.0.md
 [0.4.10]: docs/release-notes/v0.4.10.md
 [0.4.9]: docs/release-notes/v0.4.9.md
 [0.4.8]: docs/release-notes/v0.4.8.md

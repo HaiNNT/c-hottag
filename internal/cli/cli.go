@@ -19,7 +19,7 @@ const usage = `usage: chottag <command>
 
 commands:
   version                       print version
-  setup [--claude PATH]         install the shim: tree, CA, symlinks, PATH; then adopt
+  setup [--label NAME]          install the shim: tree, CA, symlinks, PATH; then adopt
   uninstall [--purge]           remove the shim and restore the shell rc; --purge also deletes every login
   adopt [--claude PATH]         register the account slots that already hold a login
   login NAME [--claude PATH]    log a slot in (browser) and register it

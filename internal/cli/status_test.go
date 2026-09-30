@@ -341,3 +341,26 @@ func TestStatusRejectsAStrayPositionalFollowedByABogusFlag(t *testing.T) {
 		t.Fatalf("stdout = %q, want empty", out)
 	}
 }
+
+// TestStatusJSONLabel pins the install label (R118): top-level, omitted when empty.
+func TestStatusJSONLabel(t *testing.T) {
+	home := t.TempDir()
+	s := seedState(t, home, "D", "A")
+	get := func() map[string]any {
+		_, out, errb := runHome(t, home, "status", "--json")
+		var got map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("not JSON: %v\n%s\n%s", err, out, errb)
+		}
+		return got
+	}
+	if _, ok := get()["label"]; ok {
+		t.Error("label present with none set")
+	}
+	if _, err := s.Update(func(st *store.State) error { st.Label = "dev"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := get()["label"]; got != "dev" {
+		t.Errorf("label = %v, want dev", got)
+	}
+}

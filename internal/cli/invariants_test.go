@@ -175,6 +175,11 @@ func TestMain(m *testing.M) {
 	SetStatuslineProbeForTest(func(int) bool {
 		panic("statuslineProbe reached from internal/cli's test binary: stub it with SetStatuslineProbeForTest")
 	})
+	// cmuxSetStatus (statusline.go) runs cmux(1); a test that sets
+	// CMUX_WORKSPACE_ID must stub it with SetCmuxSetStatusForTest.
+	SetCmuxSetStatusForTest(func(context.Context, string, string, string) error {
+		panic("cmuxSetStatus reached from internal/cli's test binary: stub it with SetCmuxSetStatusForTest")
+	})
 	// newDaemonPoller (proxy.go) builds a poller aimed at the real
 	// api.anthropic.com, whose first poll reads a slot token through the
 	// real tokens.Manager (the Keychain on darwin). A test that runs
@@ -251,6 +256,8 @@ func TestMain(m *testing.M) {
 	// version wiring ever ran. Unsetting them here, process-wide, is what
 	// makes TestCliRunPassesItsOwnVersionToShim's own isolation redundant.
 	os.Unsetenv("CMUX_SURFACE_ID")
+	// statusline sets the cmux pill when this is present (cmuxSetStatus).
+	os.Unsetenv("CMUX_WORKSPACE_ID")
 	os.Unsetenv("CMUX_CLAUDE_WRAPPER_SHIM")
 	os.Unsetenv("CMUX_CLAUDE_PID")
 	os.Unsetenv("CMUX_CLAUDE_HOOKS_DISABLED")
