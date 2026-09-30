@@ -1,6 +1,9 @@
 package release
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -288,6 +291,9 @@ func TestPRPolicySkipsWritersAndDependabot(t *testing.T) {
 // TestDependabotUpdatesOnlyGitHubActions (spec part 4): the module has no
 // dependencies, so the actions' pins are the only thing to keep current.
 func TestDependabotUpdatesOnlyGitHubActions(t *testing.T) {
+	if _, err := os.Stat(filepath.Join(root(t), ".github", "dependabot.yml")); errors.Is(err, fs.ErrNotExist) {
+		t.Skip("no .github/dependabot.yml: a public snapshot")
+	}
 	y := read(t, ".github/dependabot.yml")
 	for _, want := range []string{"version: 2", `- package-ecosystem: "github-actions"`, `directory: "/"`, `interval: "weekly"`} {
 		if !hasLine(y, want) {

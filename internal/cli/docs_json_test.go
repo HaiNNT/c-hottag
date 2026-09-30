@@ -41,6 +41,7 @@ var docsResultTypes = map[string]any{
 	"auto":           autoResult{},
 	"plan":           planResult{},
 	"status":         status.File{},
+	"statusline":     statuslineResult{},
 	"doctor":         doctorResult{},
 	"daemon start":   startResult{},
 	"daemon stop":    stopResult{},

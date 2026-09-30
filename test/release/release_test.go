@@ -528,7 +528,7 @@ func TestReleaseWorkflow(t *testing.T) {
 		"contents: write",
 		"fetch-depth: 0",
 		"go-version-file: go.mod",
-		"uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0",
+		"uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3",
 		"version: v2.18.2",
 		"args: release --clean --release-notes docs/release-notes/${{ github.ref_name }}.md",
 		"GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",

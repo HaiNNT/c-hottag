@@ -227,6 +227,10 @@ type Daemon struct {
 	// "legacy", "mismatch" or "unknown"). Empty whenever nothing was
 	// probed, the same as Version's own omitempty.
 	Identity string `json:"identity,omitempty"`
+	// LiveSessions is a report overlay too: how many managed claude
+	// sessions are alive for this home, counted by `status` from the
+	// session registry. Never written by the daemon; 0 when none.
+	LiveSessions int `json:"liveSessions"`
 }
 
 // SetDaemon stamps the daemon's own view into the document. Called on the

@@ -144,14 +144,38 @@ may still fail until step 8. Any other problem is `"ok": false`, exit
 `3`, `error.code` `doctor_problems`, with the failing checks under
 `error.checks`, each row naming its own fix.
 
-## 8. Tell the user to start fresh
+## 8. Tell the user which sessions use chottag
 
-Only a Claude Code session started after chottag was installed is routed
-through it: the shell's PATH did not carry the chottag `claude` shim
-before that. Tell the user to open a new terminal and start a new Claude
-Code session there, then check with `chottag status` (or ask the new
-session to run the chottag skill) that it says `serving:` and `remote:`
-as expected.
+Tell the user, in these words or close to them:
+
+- Only Claude Code sessions started after the install use chottag.
+  Sessions already running, this one included, stay on their normal login
+  (Home) until they end.
+- To move a session over, exit it, open a **new terminal** (the old one
+  has no chottag PATH entry), and resume it with `claude --continue` or
+  `claude --resume`.
+
+Then offer a way to see which login a session uses that adds nothing to
+its conversation (don't use a `!` command for this: its output lands in
+the chat):
+
+1. **The status line (recommended).** `chottag statusline` prints
+   `chottag: <serving account>` for a session that goes through chottag,
+   `chottag: down` when chottag is not answering, and `chottag: off` for a
+   Home session. Ask the user first, then add this to their
+   `~/.claude/settings.json`:
+
+   ```json
+   { "statusLine": { "type": "command", "command": "~/.chottag/bin/chottag statusline" } }
+   ```
+
+   If they already have a `statusLine`, don't replace it: append
+   `$(~/.chottag/bin/chottag statusline 2>/dev/null)` to their script's
+   output instead. This is the one edit under `~/.claude` this guide
+   allows, and only with the user's yes; chottag itself never writes
+   there.
+2. **From another terminal.** `chottag status` shows `live sessions: N`,
+   which goes up by one when a session starts through chottag.
 
 ## Managing chottag afterwards
 
@@ -181,7 +205,8 @@ Every command, flag, exit code and JSON field: [Command reference](commands.md).
 
 - Never run `/login` or `/logout` inside a Claude Code session: they log
   Home in or out, not a chottag account.
-- Never edit `~/.claude`, `~/.claude.json`, or anything under them.
+- Never edit `~/.claude`, `~/.claude.json`, or anything under them, except
+  the `statusLine` entry in step 8, and only after the user says yes.
 - Never run `chottag uninstall --purge` for the user: it deletes every
   account's login and needs a typed confirmation in a terminal chottag
   controls. Tell the user the command instead.

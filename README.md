@@ -61,7 +61,7 @@ chottag tag A          # A serves inference
 chottag remote B       # new remote-control sessions, artifacts, routines belong to B
 chottag own artifact <artifact-id> B  # move one object that already exists to B
 claude                 # Claude Code, through chottag (the daemon starts by itself)
-chottag status         # usage and limits per account
+chottag status         # usage and limits per account; `chottag statusline` for a status line
 chottag next           # serving -> the next account that is not limited
 chottag doctor         # check the install; --fix repairs what it safely can
 ```

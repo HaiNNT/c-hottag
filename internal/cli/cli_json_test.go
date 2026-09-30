@@ -69,6 +69,20 @@ func init() {
 			wantExit: exit.Error, wantCode: codeInternal,
 		},
 		jsonCase{
+			name: "statusline on an empty home", command: "statusline",
+			setup: func(t *testing.T) []string { cliJSONHome(t); return []string{"statusline"} },
+			check: func(t *testing.T, doc map[string]any) {
+				if doc["session"] != "home" || doc["daemon"] != "unknown" || doc["serving"] != "" {
+					t.Errorf("doc = %v, want home / unknown / empty serving", doc)
+				}
+			},
+		},
+		jsonCase{
+			name: "statusline with a stray argument", command: "statusline",
+			setup:    func(t *testing.T) []string { cliJSONHome(t); return []string{"statusline", "extra"} },
+			wantExit: exit.Usage, wantCode: codeUsage,
+		},
+		jsonCase{
 			name: "ls on an empty home", command: "ls",
 			setup: func(t *testing.T) []string { cliJSONHome(t); return []string{"ls"} },
 		},

@@ -128,6 +128,42 @@ serving: A   remote: B
 auto: balanced
 ```
 
+## Which sessions use chottag
+
+Only a Claude Code session started after the install goes through chottag.
+A session that was already running stays on your normal login (Home) until
+it ends. To move one over, exit it, open a **new terminal** (the old one
+has no chottag PATH entry), and resume it there with `claude --continue` or
+`claude --resume`.
+
+### See it in the status line
+
+`chottag statusline` prints one short segment for Claude Code's status
+line:
+
+- `chottag: A`: this session goes through chottag, and A is serving;
+- `chottag: down`: it goes through chottag, but the daemon is not
+  answering;
+- `chottag: off`: it uses your normal login.
+
+To show it, add this to your own `~/.claude/settings.json` (chottag never
+edits that file for you):
+
+```json
+{
+  "statusLine": { "type": "command", "command": "~/.chottag/bin/chottag statusline" }
+}
+```
+
+If you already have a status-line script, add the segment to its output
+instead: `$(~/.chottag/bin/chottag statusline 2>/dev/null)`.
+
+### Or check from another terminal
+
+Run `chottag status` in a separate terminal. Its `live sessions` count goes
+up by one when a session starts through chottag. Nothing is added to the
+session's conversation either way.
+
 ## Next
 
 - [How it works](how-it-works.md)

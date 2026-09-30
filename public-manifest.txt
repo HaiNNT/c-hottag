@@ -38,5 +38,6 @@ test/
 
 # Private: never exported.
 !.claude/tracker.json
+.github/dependabot.yml
 !docs/internal/
 !scripts/release

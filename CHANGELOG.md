@@ -7,6 +7,19 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.4.9] - 2026-09-30
+
+### Added
+
+- `chottag statusline`, a segment for Claude Code's status line that shows whether the session
+  goes through chottag, and `live sessions` in `chottag status`.
+  See [release notes](docs/release-notes/v0.4.9.md).
+
+### Changed
+
+- The guides explain which sessions use chottag and how to move a running one over.
+- CI actions: checkout v7.0.1, setup-go v7.0.0, goreleaser-action v7.2.3.
+
 ## [0.4.8] - 2026-09-30
 
 ### Changed
@@ -169,6 +182,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.4.9]: docs/release-notes/v0.4.9.md
 [0.4.8]: docs/release-notes/v0.4.8.md
 [0.4.7]: docs/release-notes/v0.4.7.md
 [0.4.6]: docs/release-notes/v0.4.6.md

@@ -146,6 +146,19 @@ func runStatus(home string, args []string, r *reporter) int {
 		}
 	}
 
+	// Live sessions (R111): the same registry reader `daemon stop` uses. A
+	// home with no daemon object and no live session keeps reporting none.
+	// A registry that cannot be read counts as none: this is a report
+	// overlay, not a reason to fail `status`.
+	if live, err := liveSessions(home); err == nil && len(live) > 0 {
+		if f.Daemon == nil {
+			f.Daemon = &status.Daemon{}
+		}
+		f.Daemon.LiveSessions = len(live)
+	} else if f.Daemon != nil {
+		f.Daemon.LiveSessions = 0
+	}
+
 	if r.JSON() {
 		if f.Accounts == nil {
 			// encoding/json renders a nil slice as null, not []: an empty
@@ -254,6 +267,9 @@ func renderStatus(out io.Writer, f status.File, now time.Time) {
 		fmt.Fprint(out, "daemon: running without proxy authentication (run: chottag daemon restart)\n\n")
 	case f.Daemon != nil && f.Daemon.Identity == string(shim.IdentityMismatch):
 		fmt.Fprintf(out, "daemon: port %d answered but did not prove it is this install's daemon (run: chottag doctor)\n\n", f.Daemon.Port)
+	}
+	if f.Daemon != nil && (f.Daemon.Running || f.Daemon.LiveSessions > 0) {
+		fmt.Fprintf(out, "live sessions: %d\n\n", f.Daemon.LiveSessions)
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 3, ' ', 0)
 	fmt.Fprintln(tw, "  NAME\tPLAN\tORG\t5h\t7d\tSTATE")

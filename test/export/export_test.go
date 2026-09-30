@@ -2336,3 +2336,197 @@ func TestExportDiesWhenGitStatusFails(t *testing.T) {
 		t.Errorf("public clone changed: %q -> %q", before, after)
 	}
 }
+
+// syncManifest also selects .github/ and plugin/, so a --sync test can change
+// a workflow or a plugin doc.
+const syncManifest = "README.md\nCLAUDE.md\nrun.sh\ninternal/\ndocs/\n.github/\nplugin/\n.claude-plugin/\npublic-manifest.txt\n!docs/internal/\n"
+
+// syncEnv is an env whose v1.2.3 export is done and whose fixture also holds
+// a workflow and a plugin doc (committed and exported as v1.2.4).
+func syncEnv(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t)
+	e.write(map[string]string{
+		"public-manifest.txt":      syncManifest,
+		".github/workflows/ci.yml": "name: ci\n",
+		"plugin/skills/x/SKILL.md": "skill\n",
+		".claude-plugin/README.md": "marketplace\n",
+		"docs/guide.md":            "guide\n",
+		"docs/extra.md":            "extra\n",
+	})
+	e.commitAndTag("v1.2.4")
+	e.mustExport("v1.2.4")
+	return e
+}
+
+func (e *env) commitAll(msg string) {
+	e.t.Helper()
+	e.git(e.priv, "add", "-A")
+	e.git(e.priv, "commit", "-q", "-m", msg)
+}
+
+func TestSyncCommitsADocsOnlyChangeWithoutATag(t *testing.T) {
+	e := newEnv(t)
+	e.mustExport("v1.2.3")
+	head := e.git(e.pub, "rev-parse", "HEAD")
+	tags := e.git(e.pub, "tag", "-l")
+	e.write(map[string]string{"docs/release-notes/v1.md": "new notes\n", "docs/new.md": "new\n"})
+	e.commitAll("docs")
+	out, errb, code := e.export("--sync", "HEAD", e.pub)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s%s", code, out, errb)
+	}
+	short := e.git(e.pub, "rev-parse", "--short", "HEAD")
+	if want := "(docs sync after v1.2.3)."; !strings.Contains(out, want) || !strings.Contains(out, "as "+short+" ") {
+		t.Errorf("stdout %q lacks the final line with %q and short id %s", out, want, short)
+	}
+	if n := e.git(e.pub, "rev-list", "--count", head+"..HEAD"); n != "1" {
+		t.Errorf("%s new commits, want exactly 1", n)
+	}
+	if e.git(e.pub, "rev-parse", "HEAD^") != head {
+		t.Error("the sync commit is not on top of the clone's old HEAD")
+	}
+	if got := e.git(e.pub, "tag", "-l"); got != tags {
+		t.Errorf("tags %q -> %q, want none created", tags, got)
+	}
+	raw := e.git(e.pub, "cat-file", "commit", "HEAD")
+	if _, msg, _ := strings.Cut(raw, "\n\n"); msg != "c-hottag docs update after v1.2.3" {
+		t.Errorf("commit message = %q", msg)
+	}
+	if tr := e.git(e.pub, "log", "-1", "--format=%(trailers)"); tr != "" {
+		t.Errorf("trailers %q", tr)
+	}
+	if who := e.git(e.pub, "log", "-1", "--format=%an <%ae>|%cn <%ce>"); who != publicAuthor+"|"+publicAuthor {
+		t.Errorf("author|committer = %q", who)
+	}
+	if got := e.git(e.pub, "show", "HEAD:docs/new.md"); got != "new" {
+		t.Errorf("docs/new.md = %q", got)
+	}
+	if st := e.git(e.pub, "status", "--porcelain", "--untracked-files=all"); st != "" {
+		t.Errorf("work tree not clean: %q", st)
+	}
+}
+
+func TestSyncRefusesACodeChange(t *testing.T) {
+	cases := []struct{ path, body string }{
+		{"internal/a.go", "package a\n// changed\n"},
+		{"run.sh", "#!/bin/sh\necho changed\n"},
+		{".github/workflows/ci.yml", "name: changed\n"},
+		{"plugin/skills/x/SKILL.md", "changed skill\n"},
+		{".claude-plugin/README.md", "changed marketplace\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			e := syncEnv(t)
+			e.write(map[string]string{c.path: c.body, "docs/guide.md": "changed guide\n"})
+			e.commitAll("mixed")
+			before := e.pubState()
+			refs := e.git(e.pub, "for-each-ref")
+			_, errb, code := e.export("--sync", "HEAD", e.pub)
+			if code == 0 || !strings.Contains(errb, c.path+" changed") {
+				t.Errorf("exit %d, stderr %q; want a refusal naming %s", code, errb, c.path)
+			}
+			if after := e.pubState(); after != before {
+				t.Errorf("clone changed: %q -> %q", before, after)
+			}
+			if got := e.git(e.pub, "for-each-ref"); got != refs {
+				t.Errorf("refs changed: %q -> %q", refs, got)
+			}
+		})
+	}
+}
+
+func TestSyncNamesTheFirstOffendingPath(t *testing.T) {
+	e := syncEnv(t)
+	e.write(map[string]string{"run.sh": "#!/bin/sh\necho changed\n", "internal/a.go": "package a\n// changed\n"})
+	e.commitAll("code")
+	_, errb, code := e.export("--sync", "HEAD", e.pub)
+	if code == 0 || !strings.Contains(errb, "internal/a.go changed") {
+		t.Errorf("exit %d, stderr %q; want the first sorted offender internal/a.go", code, errb)
+	}
+}
+
+func TestSyncCountsDeletionsAndRenames(t *testing.T) {
+	e := syncEnv(t)
+	e.git(e.priv, "rm", "-q", "docs/extra.md")
+	e.git(e.priv, "mv", "docs/guide.md", "docs/manual.md")
+	e.commitAll("delete and rename docs")
+	if out, errb, code := e.export("--sync", "HEAD", e.pub); code != 0 {
+		t.Fatalf("docs delete/rename refused: exit %d\n%s%s", code, out, errb)
+	}
+	if got := e.git(e.pub, "ls-files", "docs"); strings.Contains(got, "extra.md") || strings.Contains(got, "guide.md") || !strings.Contains(got, "docs/manual.md") {
+		t.Errorf("docs in the clone = %q", got)
+	}
+
+	e2 := syncEnv(t)
+	e2.git(e2.priv, "rm", "-q", "internal/a.go")
+	e2.commitAll("delete code")
+	before := e2.pubState()
+	_, errb, code := e2.export("--sync", "HEAD", e2.pub)
+	if code == 0 || !strings.Contains(errb, "internal/a.go changed") {
+		t.Errorf("deleting a non-docs file: exit %d, stderr %q; want a refusal", code, errb)
+	}
+	if after := e2.pubState(); after != before {
+		t.Errorf("clone changed: %q -> %q", before, after)
+	}
+}
+
+func TestSyncRefusesAnUnbornOrUntaggedClone(t *testing.T) {
+	// Unborn: a fresh clone with no commit.
+	e := newEnv(t)
+	unborn := filepath.Join(filepath.Dir(e.pub), "unborn")
+	e.git(filepath.Dir(e.pub), "init", "-q", "-b", "main", unborn)
+	if _, errb, code := e.export("--sync", "HEAD", unborn); code == 0 || !strings.Contains(errb, "no commit yet") {
+		t.Errorf("unborn: exit %d, stderr %q", code, errb)
+	}
+	if st := e.git(unborn, "status", "--porcelain", "--ignored") + e.git(unborn, "for-each-ref"); st != "" {
+		t.Errorf("unborn clone changed: %q", st)
+	}
+	// Untagged: e.pub has one commit and no v* tag.
+	before := e.pubState()
+	if _, errb, code := e.export("--sync", "HEAD", e.pub); code == 0 || !strings.Contains(errb, "no v* tag") {
+		t.Errorf("untagged: exit %d, stderr %q", code, errb)
+	}
+	if after := e.pubState(); after != before {
+		t.Errorf("clone changed: %q -> %q", before, after)
+	}
+}
+
+func TestSyncRefusesNoChange(t *testing.T) {
+	e := newEnv(t)
+	e.mustExport("v1.2.3")
+	before := e.pubState()
+	_, errb, code := e.export("--sync", "HEAD", e.pub)
+	if code == 0 || !strings.Contains(errb, "nothing to sync") {
+		t.Errorf("exit %d, stderr %q; want nothing to sync", code, errb)
+	}
+	if after := e.pubState(); after != before {
+		t.Errorf("clone changed: %q -> %q", before, after)
+	}
+}
+
+func TestSyncRejectsBadUsage(t *testing.T) {
+	e := newEnv(t)
+	for _, args := range [][]string{{"--sync", "HEAD"}, {"--sync", "--check", "HEAD"}, {"--check", "--sync", "HEAD"}} {
+		if _, _, code := e.export(args...); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+	}
+}
+
+func TestSyncRefusesAnOddlyNamedBaseTag(t *testing.T) {
+	e := newEnv(t)
+	e.mustExport("v1.2.3")
+	e.git(e.pub, "commit", "-q", "--allow-empty", "-m", "later")
+	e.git(e.pub, "tag", "vnext")
+	e.write(map[string]string{"docs/new.md": "new\n"})
+	e.commitAll("docs")
+	before := e.pubState()
+	_, errb, code := e.export("--sync", "HEAD", e.pub)
+	if code == 0 || !strings.Contains(errb, "does not look like") {
+		t.Errorf("exit %d, stderr %q", code, errb)
+	}
+	if after := e.pubState(); after != before {
+		t.Errorf("clone changed: %q -> %q", before, after)
+	}
+}

@@ -3,8 +3,22 @@
 # in a separate local clone of the public repo, and tag it (R83, spec §4).
 #
 #   usage: scripts/export-public [-p PATTERNS] TAG PUBLIC_CLONE
+#          scripts/export-public [-p PATTERNS] --sync REV PUBLIC_CLONE
 #          scripts/export-public [-p PATTERNS] --check REV
 #          scripts/export-public [-p PATTERNS] --check-index
+#
+# --sync REV PUBLIC_CLONE (R109) is the tagless docs-only mode: it runs
+# every step below on REV (any commit-ish, e.g. HEAD or main) instead of a
+# tag, and makes ONE commit "c-hottag docs update after vX.Y.Z" on the
+# clone's branch, where vX.Y.Z is the clone's newest v* tag reachable from
+# its HEAD (`git describe --tags --abbrev=0 --match 'v*' HEAD`). It creates
+# and moves no tag. It refuses unless the clone has a HEAD and such a tag,
+# and unless EVERY path that differs between the clone's HEAD tree and the
+# new tree (added, modified, deleted or renamed) is docs-only: ends in .md
+# and is not under plugin/, .claude-plugin/ or .github/. The first
+# offending path (sorted) is named. An identical snapshot is refused
+# ("nothing to sync"). Exit 0 = exactly one new commit, no tag; non-zero =
+# the clone exactly as found.
 #
 # --check REV runs steps 1-5 below on REV's tree (no clone, no gate) and
 # commits nothing anywhere: `--check HEAD` checks the LAST commit.
@@ -113,7 +127,7 @@
 # committed unless every step passes. It needs git 2.40 or newer
 # (--attr-source).
 #
-# Exit status: 0 committed and tagged; 1 a failed check (nothing
+# Exit status: 0 committed (and tagged, except --sync); 1 a failed check (nothing
 # committed, the clone exactly as it was); 2 a usage error.
 set -eu
 unset CDPATH
@@ -136,7 +150,7 @@ die() {
 	exit 1
 }
 usage() {
-	printf 'export-public: %s\nusage: scripts/export-public [-p PATTERNS] TAG PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] --check REV\n       scripts/export-public [-p PATTERNS] --check-index\n' "$*" >&2
+	printf 'export-public: %s\nusage: scripts/export-public [-p PATTERNS] TAG PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] --sync REV PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] --check REV\n       scripts/export-public [-p PATTERNS] --check-index\n' "$*" >&2
 	exit 2
 }
 
@@ -328,6 +342,7 @@ main() {
 	# file mode) is "export" or "check"; index=1 marks --check-index.
 	op=export
 	index=0
+	sync=0
 	while [ $# -gt 0 ]; do
 		case $1 in
 		-p)
@@ -336,8 +351,13 @@ main() {
 			patterns=$2
 			shift 2
 			;;
+		--sync)
+			[ "$op" = export ] && [ "$sync" -eq 0 ] || usage "give only one of --sync, --check and --check-index"
+			sync=1
+			shift
+			;;
 		--check | --check-index)
-			[ "$op" = export ] || usage "give only one of --check and --check-index"
+			[ "$op" = export ] && [ "$sync" -eq 0 ] || usage "give only one of --sync, --check and --check-index"
 			op=check
 			[ "$1" = --check ] || index=1
 			shift
@@ -352,6 +372,11 @@ main() {
 	elif [ "$op" = check ]; then
 		[ $# -eq 1 ] || usage "want REV after --check"
 		rev=$1
+		label=$rev
+	elif [ "$sync" -eq 1 ]; then
+		[ $# -eq 2 ] || usage "want REV and PUBLIC_CLONE after --sync"
+		rev=$1
+		clone=$2
 		label=$rev
 	else
 		[ $# -eq 2 ] || usage "want TAG and PUBLIC_CLONE"
@@ -389,6 +414,9 @@ main() {
 	elif [ "$op" = check ]; then
 		revspec=$(git -C "$root" rev-parse -q --verify "$rev^{commit}") ||
 			die "no revision $rev in $root; nothing was checked"
+	elif [ "$sync" -eq 1 ]; then
+		revspec=$(git -C "$root" rev-parse -q --verify "$rev^{commit}") ||
+			die "no revision $rev in $root; nothing was exported"
 	else
 		git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null ||
 			die "no tag $tag in $root; nothing was exported"
@@ -438,7 +466,7 @@ main() {
 		theirs=$(cd "$clone" && cd "$(cgit rev-parse --git-common-dir)" && pwd -P)
 		[ "$mine" != "$theirs" ] || die "$clone is this repository; give a separate clone of the public repo"
 		branchref=$(cgit symbolic-ref -q HEAD) || die "$clone is not on a branch"
-		! cgit rev-parse -q --verify "refs/tags/$tag" >/dev/null ||
+		[ "$sync" -eq 1 ] || ! cgit rev-parse -q --verify "refs/tags/$tag" >/dev/null ||
 			die "$clone already has tag $tag; nothing was exported"
 		# I3: a stale lock left by a killed or crashed git process would make
 		# every index-touching step below fail partway through; catch it up
@@ -518,6 +546,26 @@ main() {
 		# Ignored files count too: step 7 replaces the work tree, so anything
 		# not in git would be lost.
 		clean_or_die "$clone has uncommitted, untracked or ignored files; use a dedicated, clean clone; nothing was exported"
+		if [ "$sync" -eq 1 ]; then
+			# R109: a docs sync always follows a release. tag is the clone's
+			# newest v* tag reachable from its HEAD; it only names the base in
+			# the message, and no tag is ever created or moved in this mode.
+			# Read the clone's HEAD ONCE: the base tag and the docs-only diff
+			# both use this commit id, and it must equal $old (pinned before
+			# the gate), so the commit's parent is the tree that was checked.
+			syncbase=$(cgit rev-parse -q --verify HEAD 2>/dev/null) ||
+				die "$clone has no commit yet (an unborn branch); a docs sync follows a release, so export a release tag first; nothing was exported"
+			tag=$(cgit describe --tags --abbrev=0 --match 'v*' "$syncbase" 2>/dev/null) ||
+				die "$clone has no v* tag reachable from its HEAD; a docs sync follows a release, so export a release tag first; nothing was exported"
+			# The same anchored form as TAG, so nothing else reaches the
+			# commit message.
+			case $tag in
+			*'
+'*) die "the newest v* tag in $clone has a newline in its name; nothing was exported" ;;
+			esac
+			printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
+				die "the newest v* tag in $clone ('$tag') does not look like vX.Y.Z or vX.Y.Z-pre.N; nothing was exported"
+		fi
 	fi
 
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/export-public.XXXXXX") || die "could not make a temporary directory"
@@ -738,7 +786,11 @@ main() {
 	# here on every selected path is known clean, so a message may name
 	# one. --check has no commit, so it scans the path names alone.
 	if [ "$op" = export ]; then
-		printf 'c-hottag %s\n' "$tag" >"$tmp/meta/msg"
+		if [ "$sync" -eq 1 ]; then
+			printf 'c-hottag docs update after %s\n' "$tag" >"$tmp/meta/msg"
+		else
+			printf 'c-hottag %s\n' "$tag" >"$tmp/meta/msg"
+		fi
 		if ! printf 'paths.txt\nmsg\n' | "$here/leak-scan" -p "$patterns" -C "$tmp/meta" >"$tmp/hits"; then
 			cat "$tmp/hits" >&2
 			die "a selected path name or the commit message failed the leak scan (hits above give the line of paths.txt, the selected-path list, or of msg; never the text); nothing was committed"
@@ -856,6 +908,38 @@ main() {
 		return 0
 	fi
 
+	# R109: --sync only ever publishes documentation. Every path that differs
+	# between the clone's HEAD tree and the new tree (added, modified or
+	# deleted; a rename is a delete plus an add) must be docs-only: a .md
+	# path outside plugin/, .claude-plugin/ and .github/. Done before the
+	# gate, from the selected records alone; nothing is written anywhere.
+	if [ "$sync" -eq 1 ]; then
+		cgit ls-tree -r -z --full-tree "$syncbase" >"$tmp/old.z" ||
+			die "could not read $clone's current tree; nothing was exported"
+		onuls=$(tr -dc '\0' <"$tmp/old.z" | wc -c | tr -d ' ')
+		tr '\0' '\n' <"$tmp/old.z" >"$tmp/old" || die "could not read $clone's current tree; nothing was exported"
+		olines=$(wc -l <"$tmp/old" | tr -d ' ')
+		[ "$onuls" = "$olines" ] ||
+			die "$clone's tree has a path with an embedded newline byte; nothing was exported"
+		awk 'NR == FNR { o[substr($0, index($0, "\t") + 1)] = $0; next }
+		{
+			p = substr($0, index($0, "\t") + 1)
+			seen[p] = 1
+			if (!(p in o) || o[p] != $0) print p
+		}
+		END { for (p in o) if (!(p in seen)) print p }' "$tmp/old" "$tmp/sel" >"$tmp/changed.raw" ||
+			die "could not compare $clone's tree with the new one; nothing was exported"
+		sort -u "$tmp/changed.raw" >"$tmp/changed" || die "could not sort the changed paths; nothing was exported"
+		[ -s "$tmp/changed" ] || die "nothing to sync: the snapshot of $label matches $clone's current tree; nothing was exported"
+		while IFS= read -r cp_; do
+			case $cp_ in
+			plugin/* | .claude-plugin/* | .github/*) die "$cp_ changed, and it is not docs-only (a docs sync may change only .md files outside plugin/, .claude-plugin/ and .github/); release it with a tag instead; nothing was exported" ;;
+			*.md) ;;
+			*) die "$cp_ changed, and it is not docs-only (a docs sync may change only .md files outside plugin/, .claude-plugin/ and .github/); release it with a tag instead; nothing was exported" ;;
+			esac
+		done <"$tmp/changed"
+	fi
+
 	# 6. The gate, as CLAUDE.md writes it, in a throwaway copy of the
 	# selected tree made only now: every check above has passed, so no
 	# two paths fold together and no symlink leaves the tree. Directories
@@ -915,7 +999,7 @@ main() {
 		got=$(ggit hash-object --no-filters -w -- "$tmp/blobs/$oid") ||
 			die "could not write blob $oid into the gate's git repo; nothing was committed"
 		[ "$got" = "$oid" ] ||
-			die "the exported tree does not byte-for-byte match $tag's own selected files (blob $oid changed after the scan, before the gate); nothing was committed"
+			die "the exported tree does not byte-for-byte match $label's own selected files (blob $oid changed after the scan, before the gate); nothing was committed"
 	done <"$tmp/oids"
 	tr '\n' '\0' <"$tmp/sel" >"$tmp/gate.z" || die "could not build the gate's git index; nothing was committed"
 	ggit update-index -z --index-info <"$tmp/gate.z" ||
@@ -991,6 +1075,8 @@ main() {
 	# (owner-reviewed patches only) plus the owner's review of the export
 	# commit and the clone (docs/internal/public-export.md) before pushing.
 	old=$(cgit rev-parse -q --verify HEAD 2>/dev/null) || old=""
+	[ "$sync" -eq 0 ] || [ "$old" = "$syncbase" ] ||
+		die "$clone's HEAD moved after the docs-only check (before the gate); nothing was committed"
 	metabefore=$(clone_meta) || die "could not fingerprint $clone's git metadata; nothing was committed"
 	refsbefore=$(cgit for-each-ref) || die "could not list $clone's refs; nothing was committed"
 	gatelist=$(cat "$tmp/gatecmds") || die "could not read the gate block; nothing was committed"
@@ -1053,7 +1139,7 @@ $line
 	cur=$(cgit rev-parse -q --verify HEAD 2>/dev/null) || cur=""
 	[ "$cur" = "$old" ] ||
 		die "$clone's HEAD moved during the gate (something committed or reset there); nothing was committed"
-	! cgit rev-parse -q --verify "refs/tags/$tag" >/dev/null ||
+	[ "$sync" -eq 1 ] || ! cgit rev-parse -q --verify "refs/tags/$tag" >/dev/null ||
 		die "tag $tag appeared in $clone during the gate; nothing was committed"
 	refsafter=$(cgit for-each-ref) || die "could not list $clone's refs after the gate; nothing was committed"
 	[ "$refsafter" = "$refsbefore" ] ||
@@ -1083,7 +1169,11 @@ $line
 		extra=$(head -n 1 "$post/added")
 		die "a file was added to the scanned files during the gate (blobs/$extra); nothing was committed"
 	fi
-	printf 'c-hottag %s\n' "$tag" >"$post/msg" || die "could not write the commit message; nothing was committed"
+	if [ "$sync" -eq 1 ]; then
+		printf 'c-hottag docs update after %s\n' "$tag" >"$post/msg" || die "could not write the commit message; nothing was committed"
+	else
+		printf 'c-hottag %s\n' "$tag" >"$post/msg" || die "could not write the commit message; nothing was committed"
+	fi
 
 	# 7. X2: only now does anything reach the clone. Each blob, checked
 	# above, is written and its id checked again.
@@ -1091,7 +1181,7 @@ $line
 		got=$(cgit hash-object --no-filters -w -- "$tmp/blobs/$oid") ||
 			die "could not stage blob $oid in $clone; nothing was committed"
 		[ "$got" = "$oid" ] ||
-			die "the exported tree does not byte-for-byte match $tag's own selected files (blob $oid); nothing was committed"
+			die "the exported tree does not byte-for-byte match $label's own selected files (blob $oid); nothing was committed"
 	done <"$post/oids"
 
 	# The tree, from the selected records themselves (mode, id, path),
@@ -1113,12 +1203,12 @@ $line
 		die "could not read the export's tree; nothing was committed"
 	tr '\0' '\n' <"$post/actual.z" >"$post/actual" || die "could not read the export's tree; nothing was committed"
 	sort "$post/actual" >"$post/actual.sorted" || die "could not sort the export's tree; nothing was committed"
-	sort "$post/sel" >"$post/expected.sorted" || die "could not sort $tag's own tree; nothing was committed"
+	sort "$post/sel" >"$post/expected.sorted" || die "could not sort $label's own tree; nothing was committed"
 	cmp -s "$post/expected.sorted" "$post/actual.sorted" ||
-		die "the exported tree does not byte-for-byte match $tag's own selected files; nothing was committed"
+		die "the exported tree does not byte-for-byte match $label's own selected files; nothing was committed"
 	if [ -n "$old" ]; then
 		oldtree=$(cgit rev-parse "$old^{tree}") || die "could not read $clone's current tree; nothing was committed"
-		[ "$oldtree" != "$newtree" ] || die "$clone already matches $tag; nothing was committed"
+		[ "$oldtree" != "$newtree" ] || die "$clone already matches $label; nothing was committed"
 	fi
 
 	# M4: a fixed UTC date, so the owner's local time zone never reaches
@@ -1170,22 +1260,26 @@ $line
 	# refuses a branch the gate (or anything since) moved.
 	cgit update-ref "$branchref" "$new" "$old" || die "could not update $branchref in $clone; nothing was committed"
 
-	# The tag is created with update-ref, not `git tag`: a lightweight
-	# ref, never subject to tag.gpgSign, tag.forceSignAnnotated or an
-	# editor (I4). The empty third argument asserts the tag does not
-	# already exist (it was checked above, but this keeps the create
-	# atomic against anything racing it).
-	tagged=1
-	cgit update-ref "refs/tags/$tag" "$new" "" || die "could not create tag $tag in $clone; nothing was committed"
+	if [ "$sync" -eq 0 ]; then
+		# The tag is created with update-ref, not `git tag`: a lightweight
+		# ref, never subject to tag.gpgSign, tag.forceSignAnnotated or an
+		# editor (I4). The empty third argument asserts the tag does not
+		# already exist (it was checked above, but this keeps the create
+		# atomic against anything racing it).
+		tagged=1
+		cgit update-ref "refs/tags/$tag" "$new" "" || die "could not create tag $tag in $clone; nothing was committed"
+	fi
 
 	# X5: wtgit, so the work tree gets exactly the committed bytes.
 	touched=1
 	wtgit reset -q --hard || die "could not update $clone's work tree; nothing was committed"
 	# Review round 2: the work-tree sync is the one step that can run
 	# anything (a driver) after both ref moves, so re-read both.
-	cur=$(cgit rev-parse -q --verify "refs/tags/$tag" 2>/dev/null) || cur=""
-	[ "$cur" = "$new" ] ||
-		die "tag $tag in $clone is not the export commit after the work-tree sync; nothing was committed"
+	if [ "$sync" -eq 0 ]; then
+		cur=$(cgit rev-parse -q --verify "refs/tags/$tag" 2>/dev/null) || cur=""
+		[ "$cur" = "$new" ] ||
+			die "tag $tag in $clone is not the export commit after the work-tree sync; nothing was committed"
+	fi
 	cur=$(cgit rev-parse -q --verify HEAD 2>/dev/null) || cur=""
 	[ "$cur" = "$new" ] ||
 		die "HEAD in $clone is not the export commit after the work-tree sync; nothing was committed"
@@ -1195,8 +1289,13 @@ $line
 	# failure (the commit and tag already exist; exit 1 would contradict
 	# "nothing was committed").
 	trap - HUP INT TERM
-	say "exported $(wc -l <"$post/sel" | tr -d ' ') files of $tag into $clone as $(cgit rev-parse --short HEAD), tagged $tag."
-	say "Nothing was pushed. Review the commit and the tag, then push both to the public repo yourself."
+	if [ "$sync" -eq 1 ]; then
+		say "exported $(wc -l <"$post/sel" | tr -d ' ') files of $label into $clone as $(cgit rev-parse --short HEAD) (docs sync after $tag)."
+		say "Nothing was pushed and no tag was made. Review the commit, then push the branch to the public repo yourself."
+	else
+		say "exported $(wc -l <"$post/sel" | tr -d ' ') files of $tag into $clone as $(cgit rev-parse --short HEAD), tagged $tag."
+		say "Nothing was pushed. Review the commit and the tag, then push both to the public repo yourself."
+	fi
 }
 
 # Review round 1, M1: one line, so sh never reads (and runs) code that

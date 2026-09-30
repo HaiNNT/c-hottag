@@ -497,6 +497,7 @@ the account you chose. Also `chottag ls`. It takes no flags.
     "zeroIdExtractions": 0,
     "ownerWriteDrops": 0,
     "notifyErrors": 0,
+    "liveSessions": 1,
     "version": "v0.4.0",
     "versionMismatch": false,
     "identity": "verified"
@@ -524,6 +525,50 @@ the account you chose. Also `chottag ls`. It takes no flags.
 
 `accounts[].dir` (the account's slot directory) is never shown: `status`
 clears it from every account before reporting.
+
+`daemon.liveSessions` counts the `claude` sessions chottag launched that are
+still alive, from the same session registry `daemon stop` reads. The text
+form prints it as `live sessions: N` next to the daemon lines. It is `0`
+when none is alive, and is present whenever a daemon object is reported or a
+session is alive.
+
+### `chottag statusline`
+
+```sh
+chottag statusline [--json]
+```
+
+Prints one line for Claude Code's status line: whether the Claude Code
+session that runs it goes through chottag. It takes no flags besides
+`--json`, never reads stdin, and always exits `0` (a bad argument is still
+exit `2`). It prints nothing secret: no token, email, path or proxy secret.
+
+A session counts as routed when either holds: one of its first 8 ancestor
+processes is a live `claude` session chottag launched, or `HTTPS_PROXY` is
+`http://chottag:...@127.0.0.1:<port>` for this home's port. Then the daemon
+is asked, for at most 300 ms, whether it answers.
+
+| Line | Meaning |
+|---|---|
+| `chottag: work` | routed, the daemon answers; `work` is the serving account |
+| `chottag: up` | routed, the daemon answers, but no account is serving |
+| `chottag: down` | routed, but the daemon does not answer |
+| `chottag: off` | not routed, chottag is not set up, or anything went wrong |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "session": "routed",
+  "daemon": "up",
+  "serving": "work"
+}
+```
+
+`session` is `routed` or `home`. `daemon` is `up`, `down` or `unknown`
+(`unknown` when the session is not routed: the daemon is not asked).
+`serving` is empty unless the session is routed and the daemon is up.
 
 ### `chottag doctor`
 

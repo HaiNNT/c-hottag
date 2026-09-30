@@ -100,11 +100,24 @@ func VerifyHealth(port int, secret proxyauth.Secret, ownVersion string) (Identit
 // legitimately larger — so neither caller can be made to buffer an
 // unbounded body.
 func probe(port int, nonce string) (bool, proxy.Health) {
+	return probeWith(healthClient, port, nonce)
+}
+
+// ProbeHealthWithin is ProbeHealth with its own overall timeout, for a
+// caller that runs on a display's clock (`chottag statusline`) and cannot
+// wait healthTimeout. ProbeHealth itself is unchanged for every other caller.
+func ProbeHealthWithin(port int, timeout time.Duration) bool {
+	c := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil}}
+	ok, _ := probeWith(c, port, "")
+	return ok
+}
+
+func probeWith(client *http.Client, port int, nonce string) (bool, proxy.Health) {
 	u := "http://127.0.0.1:" + strconv.Itoa(port) + proxy.HealthPath
 	if nonce != "" {
 		u += "?" + proxyauth.NonceParam + "=" + nonce
 	}
-	resp, err := healthClient.Get(u)
+	resp, err := client.Get(u)
 	if err != nil {
 		return false, proxy.Health{}
 	}

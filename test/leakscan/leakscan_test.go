@@ -511,6 +511,10 @@ func TestLeakScanFailsClosedOnASignal(t *testing.T) {
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
+	// Close stdin right after the signal (F242): the scan can no longer
+	// block on an open pipe, and the test stays meaningful, since a lost
+	// signal would let it reach EOF and exit 1 on leak.txt's hit, not 2.
+	stdin.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {

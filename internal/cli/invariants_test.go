@@ -166,6 +166,15 @@ func TestMain(m *testing.M) {
 	// never leak into a test that forgot to stub this.
 	SetDoctorIdentityForTest(func(string, int) string { return "none" })
 	SetStatusIdentityForTest(func(string, int) string { return "none" })
+	// parentPID and statuslineProbe (statusline.go) are `statusline`'s ps(1)
+	// walk and daemon probe. A test that forgets to stub one must fail loudly
+	// rather than run ps or reach a real port.
+	SetParentPIDForTest(func(int) (int, error) {
+		panic("parentPID reached from internal/cli's test binary: stub it with SetParentPIDForTest")
+	})
+	SetStatuslineProbeForTest(func(int) bool {
+		panic("statuslineProbe reached from internal/cli's test binary: stub it with SetStatuslineProbeForTest")
+	})
 	// newDaemonPoller (proxy.go) builds a poller aimed at the real
 	// api.anthropic.com, whose first poll reads a slot token through the
 	// real tokens.Manager (the Keychain on darwin). A test that runs
@@ -247,6 +256,12 @@ func TestMain(m *testing.M) {
 	os.Unsetenv("CMUX_CLAUDE_HOOKS_DISABLED")
 	os.Unsetenv("CMUX_CUSTOM_CLAUDE_PATH")
 	os.Unsetenv("CHOTTAG_CMUX_HANDOFF")
+	// Run from inside a chottag session, the shell's HTTPS_PROXY is chottag's
+	// own address, so `daemon restart` reports an upstream change the test
+	// never set up (F250). A test that needs a proxy sets it with t.Setenv.
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		os.Unsetenv(k)
+	}
 	code := m.Run()
 	os.RemoveAll(safeHome)
 	os.Exit(code)

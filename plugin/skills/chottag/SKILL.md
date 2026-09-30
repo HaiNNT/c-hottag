@@ -92,6 +92,7 @@ Without arguments, work out what the user wants and use "Common tasks".
 | the user wants | run |
 |---|---|
 | which account is serving, usage, limits | `chottag status --json` |
+| show in a status line whether this session goes through chottag | `chottag statusline` (one line: `chottag: <serving>`, `chottag: down` or `chottag: off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
 | add or re-login an account | `chottag login <name> --json` (timeout 600000) |
@@ -119,7 +120,8 @@ verifies each download against the release's checksums.
 
 ## Reading results
 
-- `status`: `serving` and `remote` are account NAMES that index `accounts[]`.
+- `status`: `daemon.liveSessions` counts the live sessions chottag launched.
+  `serving` and `remote` are account NAMES that index `accounts[]`.
   Usage percentages are 0–100. An absent percentage, or `stale: true` on the
   account, means unknown: never show it as 0%. `limited: true` means limited
   now, until `limitedUntil` when that is present. `token` is a state
