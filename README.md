@@ -82,15 +82,15 @@ chottag auto off
 
 ## Compared with the best-known switchers
 
-By GitHub stars (as of 2026-09-29), chottag next to the best-known Claude Code account switchers:
+By GitHub stars (as of 2026-09-29), chottag next to the best-known Claude Code account switchers (✅ yes, ⚠️ partly, ❌ no, ❔ not stated in its README):
 
 | Tool | Pins Remote Control, connectors, artifacts to one account | Mid-session switch, no restart | Auto-switch at a limit | Never writes Home's login |
 |---|---|---|---|---|
-| **chottag** | **yes, built in** | yes | yes, on by default | yes |
-| [claude-swap](https://github.com/realiti4/claude-swap) | no; the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it | Linux/Windows: yes; macOS: ~30s or a restart | yes | no |
-| [clauth](https://github.com/uwuclxdy/clauth) | no | not stated | yes | no |
-| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | no | no, switch before a new session | yes, reactive | no |
-| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | no | yes | not stated | no |
+| **chottag** | ✅ **built in** | ✅ | ✅ on by default | ✅ |
+| [claude-swap](https://github.com/realiti4/claude-swap) | ❌ (the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it) | ⚠️ Linux/Windows: yes; macOS: ~30s or a restart | ✅ | ❌ |
+| [clauth](https://github.com/uwuclxdy/clauth) | ❌ | ❔ not stated | ✅ | ❌ |
+| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | ❌ | ❌ switch before a new session | ✅ reactive | ❌ |
+| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | ❌ | ✅ | ❔ not stated | ❌ |
 
 The four others switch by swapping Claude Code's whole login, so every claude.ai feature moves with it. [CC Switch](https://github.com/farion1231/cc-switch) is the best-known "switch" tool for Claude Code, but it switches API providers and gateways, not your own subscription accounts. Full sourcing, more tools and migration guides: [docs/comparison.md](docs/comparison.md).
 
