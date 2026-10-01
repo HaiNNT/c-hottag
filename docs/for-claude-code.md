@@ -97,17 +97,40 @@ can change later through the skill.
    `work` and `personal`)? Is any of them a company Team or Enterprise
    account? If so, it may be added only if that organization allows
    chottag.
-2. **Which account is pinned?** The pinned account (chottag calls it
+2. **Which plan is each one?** `pro`, `max5x`, `max20x` or `team`.
+   Auto-switch and `spread` size each account's capacity by its plan. A
+   login tells chottag only "Max", not which Max, so a Max account shows
+   as `max?` until it's set. Default: the plan the login reports; ask only
+   about Max accounts.
+3. **Which account is pinned?** The pinned account (chottag calls it
    `remote`) owns the user's Remote Control sessions, connectors and
    artifacts, so they stay put when chottag switches the account that pays
    for prompts. Default: the account the user already uses those features
    with, or else the first one.
-3. **Should the pinned account also pay for prompts?** Default: yes. Say
+4. **Should the pinned account also pay for prompts?** Default: yes. Say
    no to keep it for claude.ai features only (for example a work account
    whose usage the user wants to leave alone).
+5. **Do they run several Claude Code sessions at once?** Ask only when at
+   least two accounts will pay for prompts. Default: no, which keeps
+   `serial`: every session uses one serving account, and auto-switch moves
+   them all together. Yes turns on `spread`: each new session goes to the
+   account with the most room left and stays there, so its prompt cache
+   stays warm, and only that session moves when its account nears a limit.
+6. **Should chottag install its own updates?** Default: no. chottag checks
+   for a new release once a day either way and says so in `chottag status`,
+   on the status line and in one notification. Yes lets the daemon install
+   a release by itself (same major version, at least 24 hours old).
 
-Tell the user, without asking, that auto-switch is on by default: when the
-serving account nears its limit, chottag moves to the next one.
+Tell the user, without asking:
+
+- Auto-switch is on by default (`balanced`): when the serving account nears
+  its limit, chottag moves to the next one, holding a warm prompt cache when
+  a reset is close. `chottag auto mode cache-optimize` stays on one
+  account until it is actually limited.
+- Desktop notifications are on: a switch, a limit, an available update.
+  `chottag notify off` turns them off.
+- After an update, the daemon restarts itself onto the new version once
+  Claude Code is idle (no request for 5 minutes).
 
 ## 6. Log the accounts in
 
@@ -120,16 +143,20 @@ finishes in the browser):
 chottag login <name> --json
 ```
 
-Then set the pinned account explicitly, and take it out of rotation if the
-user answered no to question 3:
+Then apply the answers, in this order:
 
 ```sh
-chottag remote <pinned> --json
-chottag rotate <pinned> off --json     # only if it must not pay for prompts
+chottag plan <name> max20x --json      # question 2: each account whose plan is not right yet
+chottag remote <pinned> --json         # question 3
+chottag rotate <pinned> off --json     # question 4, only if it must not pay for prompts
+chottag tag <name> --json              # only if the pinned account is out of rotation: serve from another one
+chottag policy spread --json           # question 5, only on yes
+chottag update --auto-install on --json  # question 6, only on yes
 ```
 
 With the pinned account out of rotation, log in at least one other account
-and make it the serving one: `chottag tag <name> --json`.
+before `tag`. Run `tag` before `policy spread`: under `spread`, `tag` pins
+new sessions to that account instead of setting the serving one.
 
 ## 7. Verify
 
@@ -139,7 +166,8 @@ chottag doctor --json
 ```
 
 `status` must list every account the user named under `accounts`, with
-`remote` the pinned one. `doctor` exits `0` when nothing is wrong; `path`
+`remote` the pinned one, no `max?` plan left, and `policy` set to `spread`
+if the user chose it (it is left out under `serial`). `doctor` exits `0` when nothing is wrong; `path`
 may still fail until step 8. Any other problem is `"ok": false`, exit
 `3`, `error.code` `doctor_problems`, with the failing checks under
 `error.checks`, each row naming its own fix.

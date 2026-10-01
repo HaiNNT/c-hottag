@@ -128,7 +128,7 @@ login), so they are placed normally. `bad_policy` means a value other than
 | desktop notifications | `chottag notify on --json` / `chottag notify off --json` |
 | automatic switching near a limit (on by default) | `chottag auto --json`; `chottag auto off --json` / `chottag auto on --json` |
 | auto-switch mode | `chottag auto mode balanced --json` or `chottag auto mode cache-optimize --json` |
-| tell chottag an account's plan size | `chottag plan <name> max20x --json` (tiers: `pro`, `max5x`, `max20x`, `team`; `--units N` overrides the tier's capacity per 1%, and a later `plan` without it clears the override) |
+| tell chottag an account's plan size (a `max?` plan on `status` means a Max account of unknown size: ask the user 5x or 20x) | `chottag plan <name> max20x --json` (tiers: `pro`, `max5x`, `max20x`, `team`; `--units N` overrides the tier's capacity per 1%, and a later `plan` without it clears the override) |
 | check for, or install, a newer chottag release | `chottag update --check --json`, then `chottag update --json` if the user agrees (`--repo OWNER/NAME` names another repo; `--check` reads GitHub directly) |
 
 Accounts are named by name, email, or a unique name prefix.

@@ -7,6 +7,13 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.7.1] - 2026-10-01
+
+### Changed
+
+- The agent install guide's setup questions now cover each account's plan (`max?`), `chottag policy spread` and automatic updates, and apply the answers in the right order; the plugin skill explains a `max?` plan.
+  See [release notes](docs/release-notes/v0.7.1.md).
+
 ## [0.7.0] - 2026-10-01
 
 ### Added
@@ -245,6 +252,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.7.1]: docs/release-notes/v0.7.1.md
 [0.7.0]: docs/release-notes/v0.7.0.md
 [0.6.0]: docs/release-notes/v0.6.0.md
 [0.5.1]: docs/release-notes/v0.5.1.md
