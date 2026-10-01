@@ -7,6 +7,13 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.8.1] - 2026-10-01
+
+### Changed
+
+- The README comparison's two new columns say what users get: "Best prompt-cache use with more than 3 accounts and parallel sessions" and "Isolated work and personal accounts"; `docs/comparison.md` explains the more-than-three threshold.
+  See [release notes](docs/release-notes/v0.8.1.md).
+
 ## [0.8.0] - 2026-10-01
 
 ### Added
@@ -270,6 +277,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.8.1]: docs/release-notes/v0.8.1.md
 [0.8.0]: docs/release-notes/v0.8.0.md
 [0.7.1]: docs/release-notes/v0.7.1.md
 [0.7.0]: docs/release-notes/v0.7.0.md

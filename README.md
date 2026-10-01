@@ -82,15 +82,15 @@ chottag auto off
 
 ## Compared with the best-known switchers
 
-By GitHub stars (as of 2026-09-29; the spread and pools columns checked 2026-10-01), chottag next to the best-known Claude Code account switchers (✅ yes, ⚠️ partly, ❌ no, ❔ not stated in its README):
+By GitHub stars (as of 2026-09-29; the last two columns checked 2026-10-01), chottag next to the best-known Claude Code account switchers (✅ yes, ⚠️ partly, ❌ no, ❔ not stated in its README):
 
-| Tool | Pins Remote Control, connectors, artifacts to one account | Mid-session switch, no restart | Auto-switch at a limit | Spreads parallel sessions over accounts | Separate account pools | Never writes Home's login |
+| Tool | Pins Remote Control, connectors, artifacts to one account | Mid-session switch, no restart | Auto-switch at a limit | Best prompt-cache use with more than 3 accounts and parallel sessions | Isolated work and personal accounts | Never writes Home's login |
 |---|---|---|---|---|---|---|
-| <img src="assets/logo/chottag.svg" alt="" width="16" align="absmiddle"> **chottag** | ✅ **built in** | ✅ | ✅ on by default | ✅ by headroom, each kept on one account (`chottag policy spread`) | ✅ an account can be in several (`CHOTTAG_POOL=work claude`) | ✅ |
-| [claude-swap](https://github.com/realiti4/claude-swap) | ❌ (the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it) | ⚠️ Linux/Windows: yes; macOS: ~30s or a restart | ✅ | ⚠️ by hand, [one account per terminal](https://github.com/realiti4/claude-swap#run-multiple-accounts-at-the-same-time-session-mode) | ⚠️ binds a directory to one account (`cswap map`) | ❌ |
-| [clauth](https://github.com/uwuclxdy/clauth) | ❌ | ❔ not stated | ✅ | ⚠️ by hand, a profile per session (`clauth start`) | ❔ not stated | ❌ |
-| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | ❌ | ❌ switch before a new session | ✅ reactive | ⚠️ ranks accounts for a new session (`caam limits --rank`); you launch it | ❔ not stated | ❌ |
-| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | ❌ | ✅ | ❔ not stated | ❌ one login for every session | ❔ not stated | ❌ |
+| <img src="assets/logo/chottag.svg" alt="" width="16" align="absmiddle"> **chottag** | ✅ **built in** | ✅ | ✅ on by default | ✅ each session stays on one account, so a limit moves only that account's share and the rest keep their warm cache | ✅ work sessions only ever use work accounts; one account can serve both | ✅ |
+| [claude-swap](https://github.com/realiti4/claude-swap) | ❌ (the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it) | ⚠️ Linux/Windows: yes; macOS: ~30s or a restart | ✅ | ⚠️ you [assign each terminal](https://github.com/realiti4/claude-swap#run-multiple-accounts-at-the-same-time-session-mode) by hand | ⚠️ per directory, one account each | ❌ |
+| [clauth](https://github.com/uwuclxdy/clauth) | ❌ | ❔ not stated | ✅ | ⚠️ you pick a profile per session | ❔ not stated | ❌ |
+| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | ❌ | ❌ switch before a new session | ✅ reactive | ⚠️ suggests an account; you launch the session on it | ❔ not stated | ❌ |
+| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | ❌ | ✅ | ❔ not stated | ❌ every session uses one login | ❔ not stated | ❌ |
 
 The four others switch by swapping Claude Code's whole login, so every claude.ai feature moves with it. [CC Switch](https://github.com/farion1231/cc-switch) is the best-known "switch" tool for Claude Code, but it switches API providers and gateways, not your own subscription accounts. Full sourcing, more tools and migration guides: [docs/comparison.md](docs/comparison.md).
 

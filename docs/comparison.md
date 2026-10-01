@@ -91,7 +91,12 @@ which would add it as an optional extra, is still open (checked 2026-09-29).
 **Spreading parallel sessions over accounts** (checked 2026-10-01). chottag's `chottag policy
 spread` places each new Claude Code session on the account with the most room before its switch
 point, divided by the sessions already on it, and keeps it there so its prompt cache stays warm;
-it moves a session only at a switch point, a limit, or when its cache is already cold. claude-swap
+it moves a session only at a switch point, a limit, or when its cache is already cold. It pays off most
+with more than three accounts and several sessions at once: under serial switching every session
+sits on the one serving account, so a switch moves them all and every prompt cache goes cold
+together, while under spread a limit moves only that account's share (about a quarter with four
+accounts). With one or two sessions, serial's `cache-optimize` already keeps the cache warm near
+a reset. claude-swap
 can run accounts in parallel by hand: its session mode launches "Claude Code as a specific account
 in the current terminal only", and `cswap map` binds a directory to an account
 ([README](https://github.com/realiti4/claude-swap)).
