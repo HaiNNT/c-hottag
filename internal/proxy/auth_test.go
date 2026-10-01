@@ -360,6 +360,19 @@ func TestBlindTunnelNeedsAuthWhenChainedWithCredentials(t *testing.T) {
 	}
 }
 
+// A daemon with caller auth on accepts session credentials and says so; one
+// with auth off has no credential to hand out (F255).
+func TestHealthAdvertisesSessionsOnlyWithCallerAuth(t *testing.T) {
+	h, _, _ := authHarness(t, http.NotFoundHandler(), nil)
+	if !getHealth(t, "http://"+h.ProxyAddr+proxy.HealthPath, nil).Sessions {
+		t.Fatal("a daemon with caller auth on must report sessions: true")
+	}
+	off := proxytest.Start(t, http.NotFoundHandler(), proxytest.Options{})
+	if getHealth(t, "http://"+off.ProxyAddr+proxy.HealthPath, nil).Sessions {
+		t.Fatal("a daemon with caller auth off must not report sessions")
+	}
+}
+
 func TestHealthProofOnlyForAValidNonce(t *testing.T) {
 	h, s, _ := authHarness(t, http.NotFoundHandler(), nil)
 	n := proxyauth.NewNonce()

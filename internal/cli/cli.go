@@ -33,8 +33,8 @@ commands:
   notify [on|off]               show or set desktop notifications (macOS; on by default)
   auto [VERB]                   show auto-switch (on by default); VERB: on, off, mode M, set KEY VALUE, reset
   plan NAME TIER [--units N]    set NAME's plan tier for auto-switch: pro, max5x, max20x or team
-  status [--json] (alias ls)    print each account's usage and limit state
-  statusline [--json] [--cmux]  one line for Claude Code's status line: whether this session goes through chottag
+  status [--json] (alias ls)    print each account's usage and limit state, and the live sessions
+  statusline [--json] [--cmux]  one line for Claude Code's status line: whether this session goes through chottag, and its account
   doctor [--fix]                check the install; --fix repairs what it safely can
   proxy run [flags]             run the routing proxy in the foreground
   daemon run [--claude PATH]    run the daemon in the foreground (the shim starts it on demand)
@@ -42,7 +42,8 @@ commands:
   daemon stop [--force]         stop the daemon (the next claude launch starts it again)
   daemon restart [--force]      stop the daemon, then start it again
   daemon logs [-n N] [-f]       print the last N lines of daemon.log; -f follows it
-  update [--check] [--version V] [--repo OWNER/NAME] [--restart]  install the latest release (from the repo you installed from); --check only reports
+  update [--check] [--version V] [--repo OWNER/NAME] [--restart|--no-restart]  install the latest release (from the repo you installed from); --check only reports
+  update [--auto-check on|off] [--auto-install on|off] [--auto-restart on|off]  turn the daily update check, automatic install, and restart when idle, on or off
   trace [on [--for DUR]|off]    show or switch the daemon's trace mode (default 1h, at most 24h)
   trace mark TEXT...            add a marker to the trace log
   trace summarize [--all]       print the route table since the last trace on (--all: whole log)

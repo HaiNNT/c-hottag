@@ -48,6 +48,9 @@ var (
 // about what an actual flock can and cannot be forged.
 var inspectLock = daemonlock.Inspect
 
+// newSID mints each launch's session id; a seam so a test can pin it.
+var newSID = proxyauth.NewSID
+
 // TrustLegacy is Ruling 30's one decision for whether a proof-less
 // "legacy" health answer (VerifyHealth's IdentityLegacy) may be trusted:
 // only while THIS home's own daemon.lock is held, by the EXACT pid that
@@ -326,10 +329,29 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 	//     having confirmed at all.
 	id, vh := VerifyHealth(port, secret, version)
 	var httpsProxy string
+	// sid is this launch's session id: minted once, so both registerSession
+	// calls below (cmux hand-off, then fall-through) record the same one.
+	// Empty for a legacy daemon, or a proving daemon that does not advertise
+	// Health.Sessions: neither can verify an identified caller.
+	var sid string
 	switch id {
 	case IdentityVerified:
 		health = vh
-		httpsProxy = secret.ProxyURL("127.0.0.1:" + strconv.Itoa(port))
+		hostport := "127.0.0.1:" + strconv.Itoa(port)
+		if vh.Sessions {
+			sid = newSID()
+			httpsProxy = secret.SessionProxyURL(hostport, proxyauth.DefaultPool, sid)
+		} else {
+			// A v0.4.0-v0.5.x daemon proves the secret but accepts only
+			// chottag:<secret>; a session credential would get a 407 on
+			// every request (F255). Legacy credential, no sid or pool.
+			httpsProxy = secret.ProxyURL(hostport)
+		}
+		if httpsProxy == "" {
+			// Fixed text: the URL and the secret never reach a message.
+			fmt.Fprintln(stderr, "chottag: could not build this session's proxy credential; claude was not started")
+			return exit.Error
+		}
 	case IdentityLegacy:
 		trusted, lockStatus, lerr := TrustLegacy(home, vh.PID)
 		switch {
@@ -459,15 +481,19 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 	// same pid BECOMES the `claude` process — registering before it, not
 	// after (which would never run), is what makes the entry correct. A
 	// failure is reported, not fatal — refusing to launch `claude` over a
-	// bookkeeping file is worse than a missing registry entry. Registry.Add
+	// bookkeeping file is worse than a missing registry entry. Registry.Put
 	// (over)writes the one file named by this pid, so calling this more
 	// than once in the same Run (the hand-off exec below, AND the
 	// fall-through exec further down) is idempotent: never a second entry,
 	// just the same one confirmed again (F243-R2).
+	entry := session.Session{PID: os.Getpid(), Port: port, SID: sid, Started: time.Now().UTC()}
+	if sid != "" {
+		entry.Pool = proxyauth.DefaultPool
+	}
 	registerSession := func() {
 		if reg, err := session.Open(filepath.Join(home, "run")); err != nil {
 			fmt.Fprintln(stderr, "chottag: could not open the session registry:", err)
-		} else if err := reg.Add(os.Getpid(), port); err != nil {
+		} else if err := reg.Put(entry); err != nil {
 			fmt.Fprintln(stderr, "chottag: could not register the session:", err)
 		}
 	}

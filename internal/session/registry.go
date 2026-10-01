@@ -18,9 +18,12 @@
 // it: Live() prunes dead entries when read instead, which is the cleanup
 // this registry was built around, so there is no moment at which removing
 // an entry eagerly would do anything Live() does not already do lazily
-// (spec §4.3 step 6). Live() itself has no production reader yet — that is
-// a later milestone's diagnostic or guard to write, once one exists to
-// consult it.
+// (spec §4.3 step 6).
+//
+// Since M6 the registry also records each session's sid and pool, for the
+// daemon's view of who is calling, and Live() has production readers:
+// `status` and `statusline`. Put writes the full entry; Add is the
+// identity-less form.
 package session
 
 import (
@@ -31,11 +34,20 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/HaiNNT/c-hottag/internal/fsutil"
 )
 
+// Session is one managed `claude` process. SID and Pool are the identity the
+// shim gave it (M6); an entry written before M6 has neither, and reads back
+// with an empty SID. Started is when the shim registered it.
 type Session struct {
-	PID  int `json:"pid"`
-	Port int `json:"port"`
+	PID     int       `json:"pid"`
+	Port    int       `json:"port"`
+	SID     string    `json:"sid,omitempty"`
+	Pool    string    `json:"pool,omitempty"`
+	Started time.Time `json:"started,omitzero"`
 }
 
 // Registry is a directory of one small file per managed session, named by
@@ -55,12 +67,18 @@ func (r *Registry) path(pid int) string {
 	return filepath.Join(r.dir, strconv.Itoa(pid)+".json")
 }
 
+// Add records a session with no identity; it is Put(Session{PID: pid, Port: port}).
 func (r *Registry) Add(pid, port int) error {
-	b, err := json.Marshal(Session{PID: pid, Port: port})
+	return r.Put(Session{PID: pid, Port: port})
+}
+
+// Put writes the session's entry, <pid>.json, mode 0600, atomically so a concurrent Live never reads a partial file.
+func (r *Registry) Put(s Session) error {
+	b, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(r.path(pid), b, 0o600)
+	return fsutil.WriteFileAtomic(r.path(s.PID), b, 0o600)
 }
 
 func (r *Registry) Remove(pid int) error {

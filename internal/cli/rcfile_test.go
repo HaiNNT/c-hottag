@@ -17,14 +17,14 @@ func TestWriteRCBlockIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
 	once, err := os.ReadFile(rc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
 	twice, err := os.ReadFile(rc)
@@ -133,7 +133,7 @@ func TestWriteRCBlockSkipsTheWriteWhenContentIsUnchanged(t *testing.T) {
 	if err := os.WriteFile(rc, []byte("export EDITOR=vim\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", "/home/u/.chottag"); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", "/home/u/.chottag"); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.Stat(rc)
@@ -141,7 +141,7 @@ func TestWriteRCBlockSkipsTheWriteWhenContentIsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", "/home/u/.chottag"); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", "/home/u/.chottag"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,7 +164,7 @@ func TestRemoveRCBlockRestoresTheFileExactly(t *testing.T) {
 	if err := os.WriteFile(rc, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := removeRCBlock(rc); err != nil {
@@ -188,7 +188,7 @@ func TestRemoveRCBlockRestoresTheFileExactly(t *testing.T) {
 // something the user had, or unlinking a dotfiles symlink).
 func TestRemoveRCBlockNeverDeletesEvenWhenNothingRemains(t *testing.T) {
 	rc := filepath.Join(t.TempDir(), ".zshrc")
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := removeRCBlock(rc); err != nil {
@@ -213,7 +213,7 @@ func TestWriteAndRemoveRCBlockPreserveA0600Mode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(rc)
@@ -290,10 +290,10 @@ func TestWriteRCBlockPreservesASymlinkedRC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -330,7 +330,7 @@ func TestRemoveRCBlockPreservesASymlinkedRC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeRCBlock(rc, "/home/u/.chottag/bin", ""); err != nil {
+	if _, _, err := writeRCBlock(t.TempDir(), rc, "/home/u/.chottag/bin", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := removeRCBlock(rc); err != nil {

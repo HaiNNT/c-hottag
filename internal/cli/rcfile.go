@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,17 +117,23 @@ func resolveRCPath(rcPath string) string {
 // it would write already equals what is on disk, it returns without
 // touching the file at all, so a repeat `chottag setup` never bumps the
 // rc's mtime or gives it a new inode.
-func writeRCBlock(rcPath, binDir, chottagHome string) error {
+//
+// When the write would change an existing file, the file is first copied to
+// <home>/backups/<rc name without its dot> (R123) and that path returned; a
+// new file or an unchanged one makes no backup (""). A backup failure
+// returns before the rc is touched.
+func writeRCBlock(home, rcPath, binDir, chottagHome string) (backup string, pruneWarn, err error) {
 	target := resolveRCPath(rcPath)
 	perm := os.FileMode(0o644)
 	if info, err := os.Stat(target); err == nil {
 		perm = info.Mode().Perm()
 	} else if !os.IsNotExist(err) {
-		return err
+		return "", nil, err
 	}
 	data, err := os.ReadFile(target)
+	existed := err == nil
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return "", nil, err
 	}
 	base := stripRCBlock(string(data))
 	content := base
@@ -137,9 +145,19 @@ func writeRCBlock(rcPath, binDir, chottagHome string) error {
 	}
 	content += rcBlock(binDir, chottagHome)
 	if content == string(data) {
-		return nil
+		return "", nil, nil
 	}
-	return fsutil.WriteFileAtomic(target, []byte(content), perm)
+	if existed {
+		backup, err = backupFile(home, target, strings.TrimPrefix(filepath.Base(rcPath), "."))
+		var pe *backupPruneError
+		switch {
+		case errors.As(err, &pe):
+			pruneWarn, err = pe, nil
+		case err != nil:
+			return "", nil, fmt.Errorf("could not back up %s before changing it: %w", target, err)
+		}
+	}
+	return backup, pruneWarn, fsutil.WriteFileAtomic(target, []byte(content), perm)
 }
 
 // removeRCBlock undoes what writeRCBlock did, restoring rcPath (or, if it is

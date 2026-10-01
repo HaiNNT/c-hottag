@@ -143,7 +143,7 @@ func TestStatuslineJSONShapes(t *testing.T) {
 	home, port := statuslineEnv(t, true, map[int]int{os.Getppid(): os.Getpid()})
 	registerLive(t, home, os.Getpid(), port)
 	_, out, _ := runHome(t, home, "statusline", "--json")
-	want := `{"version":1,"ok":true,"warnings":[],"session":"routed","daemon":"up","serving":"work","okAccounts":2,"rotationAccounts":2}`
+	want := `{"version":1,"ok":true,"warnings":[],"session":"routed","daemon":"up","serving":"work","account":"work","okAccounts":2,"rotationAccounts":2}`
 	if compact(t, out) != want {
 		t.Fatalf("routed json = %s", out)
 	}
@@ -191,7 +191,7 @@ func TestStatusLiveSessionsCountsRegisteredPids(t *testing.T) {
 
 	registerLive(t, home, os.Getpid(), 47821)
 	_, out, _ = runHome(t, home, "status")
-	if !strings.Contains(out, "live sessions: 1\n") {
+	if !strings.Contains(out, "live sessions: 1 (– 1)\n") {
 		t.Fatalf("text = %q", out)
 	}
 	_, out, _ = runHome(t, home, "status", "--json")

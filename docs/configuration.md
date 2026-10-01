@@ -31,7 +31,7 @@ Every path below is relative to the chottag home (`~/.chottag` unless
 | `versions/` | One subdirectory per chottag version `chottag update` has downloaded, so a broken update can roll back. | `chottag update`; older ones are pruned automatically, keeping the newest three plus whatever `bin/chottag` currently links to. | Yes, other than the version currently in use — `chottag update` prunes the rest on its own. |
 | `ca/ca.pem` | The public certificate of chottag's local certificate authority, which lets the proxy present valid HTTPS certificates for the hosts it intercepts. | `chottag setup` (or the first command that needs a CA), once. | No while any session might still be running — every account and Claude Code invocation is configured to trust this exact file (`NODE_EXTRA_CA_CERTS`); deleting it breaks TLS for them until they restart. |
 | `ca/ca.key` | The CA's private key. | `chottag setup`, alongside `ca.pem`. | No — losing it (without also removing `ca.pem`) breaks the CA; chottag refuses to regenerate one half without the other. Never share this file. |
-| `ca/proxy.secret` | The per-install secret the `claude` shim's `HTTPS_PROXY` carries, which proves a caller belongs to this install (`internal/proxyauth`). | `chottag setup`, and regenerated if it goes missing. | No while a session is running — a caller with the old secret can no longer reach the daemon; running sessions need a restart after it changes. |
+| `ca/proxy.secret` | The per-install secret. Each `claude` the shim launches gets its own `HTTPS_PROXY` credential derived from it (user `chottag.default.<sid>`, an HMAC password); the older `chottag:<secret>` form is still accepted (`internal/proxyauth`). | `chottag setup`, and regenerated if it goes missing. | No while a session is running — a caller with the old secret can no longer reach the daemon; running sessions need a restart after it changes. |
 | `ca/bundle.pem` | A merged CA bundle: chottag's `ca.pem` plus whatever `NODE_EXTRA_CA_CERTS` already named, for a shell that had its own extra CA before chottag (`internal/shim/shim.go`). | The `claude` shim, only when `NODE_EXTRA_CA_CERTS` was already set. | Yes — it is rebuilt on the next `claude` invocation that needs it. |
 | `ca/` | Holds the CA and the proxy secret above. | `chottag setup`. | No, for the reasons above. |
 | `bin/` | Holds the `chottag` and `claude` symlinks that `setup` puts on `PATH`. | `chottag setup`. | No — removing it breaks the `claude` shim; re-run `chottag setup` to recreate it. |
@@ -79,6 +79,11 @@ an auto-switch.
   },
   "notify": true,
   "label": "dev",
+  "updates": {
+    "check": true,
+    "auto": false,
+    "restart": true
+  },
   "trace": {
     "until": "2026-01-01T10:00:00Z"
   }
@@ -113,6 +118,11 @@ an auto-switch.
 - `notify` — desktop notifications on or off. Absent means on.
 - `label` — a short name for this install (`chottag setup --label NAME`),
   shown in `chottag status` and in notification titles. Absent means none.
+- `updates` — the update-check settings. `check` turns the daemon's release
+  check on or off (absent means on); `auto` lets it install a new release by
+  itself (absent means off, and turning it on also turns `check` on);
+  `restart` lets the daemon restart itself, once idle, onto an installed
+  newer version (absent means on).
 - `trace` — the trace-mode window; absent means tracing is off.
 
 Change these with `chottag` commands (`chottag plan`, `chottag auto`,
@@ -125,10 +135,11 @@ corrupt `state.json` on the next read.
 | Variable | Set by | What it does |
 | --- | --- | --- |
 | `CHOTTAG_HOME` | You, before running `chottag` or `claude`. | Overrides the chottag home from its default of `~/.chottag`. |
-| `CHOTTAG_BYPASS` | You, for one invocation. | `CHOTTAG_BYPASS=1 claude` skips the shim entirely and runs the real Claude Code directly, unmanaged. |
-| `HTTPS_PROXY` | The `claude` shim, on every `claude` invocation it manages. | Points Claude Code's HTTPS traffic at chottag's local proxy; the URL also carries this install's proxy secret. |
+| `CHOTTAG_BYPASS` | You, for one invocation. | `CHOTTAG_BYPASS=1 claude` skips the shim entirely and runs the real Claude Code directly, unmanaged. Inside a chottag session, the inherited `HTTPS_PROXY` still routes it through chottag, counted as that session; unset `HTTPS_PROXY` as well to leave chottag entirely. |
+| `HTTPS_PROXY` | The `claude` shim, on every `claude` invocation it manages. | Points Claude Code's HTTPS traffic at chottag's local proxy; the URL also carries this session's proxy credential (`chottag.default.<sid>` and a password derived from the install's secret). |
 | `NODE_EXTRA_CA_CERTS` | The `claude` shim. | Points Node (and so Claude Code) at chottag's CA certificate, so the proxy's intercepted HTTPS connections validate. If you already had this set, the shim merges your CA into `ca/bundle.pem` and points there instead. |
 | `CHOTTAG_UPSTREAM_PROXY` | The `claude` shim, internally, to hand the daemon its upstream. | Not for you to set directly — see [An existing HTTPS_PROXY](#an-existing-https_proxy) and `daemon run --upstream-proxy`. |
+| `CHOTTAG_NO_UPDATE_CHECK` | You, in the daemon's environment. | `CHOTTAG_NO_UPDATE_CHECK=1` stops the daemon's daily check for a new release (see [Updating](updating.md#the-daily-check)); the same as `chottag update --auto-check off`, without changing `state.json`. |
 | `HOME` | Your shell. | Where `~/.chottag` resolves when `CHOTTAG_HOME` is unset, and where `setup`/`uninstall` look for your shell rc file. |
 | `PATH` | Your shell. | Where the shim finds the real `claude` binary to run, once its own `bin/` entry is skipped. |
 | `SHELL` | Your shell. | Tells `setup`/`uninstall` which rc file to edit: `~/.zshrc` for zsh, `~/.bashrc` for bash, and neither for anything else. |

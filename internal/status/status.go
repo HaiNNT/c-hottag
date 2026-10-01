@@ -27,6 +27,7 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/fsutil"
+	"github.com/HaiNNT/c-hottag/internal/sessions"
 	"github.com/HaiNNT/c-hottag/internal/usage"
 )
 
@@ -227,6 +228,13 @@ type Daemon struct {
 	// "legacy", "mismatch" or "unknown"). Empty whenever nothing was
 	// probed, the same as Version's own omitempty.
 	Identity string `json:"identity,omitempty"`
+	// RestartPending is the installed version the running daemon is not yet
+	// using (R126), stamped by the daemon's restart loop; empty when none.
+	// The daemon clears it on shutdown (ClearDaemon).
+	RestartPending string `json:"restartPending,omitempty"`
+	// RestartsWhenIdle is a report overlay (never stored): `status` sets it
+	// when the daemon would restart itself once idle, so the text can say so.
+	RestartsWhenIdle bool `json:"-"`
 	// LiveSessions is a report overlay too: how many managed claude
 	// sessions are alive for this home, counted by `status` from the
 	// session registry. Never written by the daemon; 0 when none.
@@ -316,6 +324,24 @@ func (f *File) ClearDaemon() {
 	}
 	f.Daemon.Running = false
 	f.Daemon.Heartbeat = time.Time{}
+	f.Daemon.RestartPending = ""
+}
+
+// SetRestartPending stamps the installed version this daemon is not yet
+// running ("" for none) and reports whether that changed anything. A nil
+// Daemon is created only for a non-empty version.
+func (f *File) SetRestartPending(version string) bool {
+	if f.Daemon == nil {
+		if version == "" {
+			return false
+		}
+		f.Daemon = &Daemon{}
+	}
+	if f.Daemon.RestartPending == version {
+		return false
+	}
+	f.Daemon.RestartPending = version
+	return true
 }
 
 // SetLastTraced records version as the last traced Claude Code version,
@@ -415,6 +441,25 @@ func sameAuto(x, y Auto) bool {
 		a.Pct == b.Pct && a.At.Equal(b.At) && a.Retried == b.Retried
 }
 
+// AutoAttempt is the last auto-install try (R124).
+type AutoAttempt struct {
+	Version string    `json:"version"`
+	At      time.Time `json:"at"`
+	OK      bool      `json:"ok"`
+	Error   string    `json:"error,omitempty"`
+}
+
+// Update is the daemon's update-check cache (R124).
+type Update struct {
+	Latest      string       `json:"latest,omitempty"`
+	PublishedAt time.Time    `json:"publishedAt,omitzero"`
+	CheckedAt   time.Time    `json:"checkedAt,omitzero"`
+	Available   bool         `json:"available,omitempty"`
+	Notified    string       `json:"notified,omitempty"`
+	Error       string       `json:"error,omitempty"`
+	Auto        *AutoAttempt `json:"auto,omitempty"`
+}
+
 type File struct {
 	Version  int       `json:"version"`
 	Accounts []Account `json:"accounts"`
@@ -429,6 +474,12 @@ type File struct {
 	Trace *Trace `json:"trace,omitempty"`
 	// Auto is absent until a daemon has made an auto-switch decision (M4).
 	Auto *Auto `json:"auto,omitempty"`
+	// Sessions is the daemon's view of what each identified session has done
+	// through the proxy (M6). `status` rebuilds its own sessions array from
+	// the registry and reads this only for the per-session account and counts.
+	Sessions []sessions.Activity `json:"sessions,omitempty"`
+	// Update is absent until a daemon has checked for a release (R124).
+	Update *Update `json:"update,omitempty"`
 }
 
 // Path is the cache's location under a chottag home.

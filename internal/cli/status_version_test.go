@@ -203,3 +203,80 @@ func TestStatusShowsMismatchAgainstADevBuild(t *testing.T) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
 	}
 }
+
+// pendingDaemon is runningDaemon with the restart loop's pending mark.
+func pendingDaemon(t *testing.T, home, pending string) {
+	t.Helper()
+	var f status.File
+	f.SetDaemon(47821, 0, 0, 0, time.Now())
+	f.SetRestartPending(pending)
+	saveStatus(t, home, f)
+}
+
+// TestStatusSaysAnInstalledVersionIsPendingAndWhenItRestarts pins R126: the
+// text names the installed version and that the daemon restarts when idle,
+// and --json carries daemon.restartPending.
+func TestStatusSaysAnInstalledVersionIsPendingAndWhenItRestarts(t *testing.T) {
+	home := t.TempDir()
+	seedState(t, home, "D", "A")
+	pendingDaemon(t, home, "0.6.0")
+	defer cli.SetStatusProbeForTest(func(int) (bool, string) { return true, "0.5.0" })()
+	origVersion := cli.Version
+	cli.Version = "0.6.0"
+	defer func() { cli.Version = origVersion }()
+
+	_, out, _ := runHome(t, home, "status")
+	want := "daemon: running 0.5.0, installed 0.6.0 (restarts when idle, or run: chottag daemon restart)"
+	if !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	_, jsonOut, _ := runHome(t, home, "status", "--json")
+	var got struct {
+		Daemon struct {
+			RestartPending string `json:"restartPending"`
+		} `json:"daemon"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil || got.Daemon.RestartPending != "0.6.0" {
+		t.Fatalf("daemon.restartPending = %q (err %v) in %s, want 0.6.0", got.Daemon.RestartPending, err, jsonOut)
+	}
+}
+
+// TestStatusWithAutoRestartOffDoesNotPromiseARestart: the pending version is
+// still shown, but only the manual command is offered.
+func TestStatusWithAutoRestartOffDoesNotPromiseARestart(t *testing.T) {
+	home := t.TempDir()
+	seedState(t, home, "D", "A")
+	pendingDaemon(t, home, "0.6.0")
+	if code, _, errOut := runHome(t, home, "update", "--auto-restart", "off"); code != 0 {
+		t.Fatalf("update --auto-restart off = %d: %s", code, errOut)
+	}
+	defer cli.SetStatusProbeForTest(func(int) (bool, string) { return true, "0.5.0" })()
+	origVersion := cli.Version
+	cli.Version = "0.6.0"
+	defer func() { cli.Version = origVersion }()
+
+	_, out, _ := runHome(t, home, "status")
+	want := "daemon: running 0.5.0, installed 0.6.0 (run: chottag daemon restart)"
+	if !strings.Contains(out, want) || strings.Contains(out, "restarts when idle") {
+		t.Fatalf("output = %q, want %q and no idle promise", out, want)
+	}
+}
+
+// TestStatusIgnoresAStalePendingMarkWhenNoDaemonRuns: a stopped daemon's
+// last mark must not outlive it.
+func TestStatusIgnoresAStalePendingMarkWhenNoDaemonRuns(t *testing.T) {
+	home := t.TempDir()
+	seedState(t, home, "D", "A")
+	var f status.File
+	f.SetDaemon(47821, 0, 0, 0, time.Now().Add(-time.Hour)) // stale heartbeat
+	f.SetRestartPending("0.6.0")
+	saveStatus(t, home, f)
+	_, out, _ := runHome(t, home, "status")
+	if strings.Contains(out, "installed 0.6.0") {
+		t.Fatalf("output = %q, want no pending line for a daemon that is not running", out)
+	}
+	_, jsonOut, _ := runHome(t, home, "status", "--json")
+	if strings.Contains(jsonOut, "restartPending") {
+		t.Fatalf("json = %s, want no restartPending for a daemon that is not running", jsonOut)
+	}
+}

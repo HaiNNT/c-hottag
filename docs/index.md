@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/HaiNNT/c-hottag/main/assets/logo/chottag.svg" alt="The chottag mark" width="64" align="right">
+
 # c-hottag documentation
 
 c-hottag (`chottag`) keeps several of your Claude accounts logged in on one

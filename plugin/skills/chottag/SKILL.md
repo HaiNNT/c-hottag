@@ -92,7 +92,8 @@ Without arguments, work out what the user wants and use "Common tasks".
 | the user wants | run |
 |---|---|
 | which account is serving, usage, limits | `chottag status --json` |
-| show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <serving> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, `c» down` or `c» off`; never fails) |
+| which account is this session on, or what each live session uses | `chottag statusline --json` (`account`: this session's own account; `serving`: the install's); `chottag status --json` lists every live session in `sessions[]` |
+| show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <this session's account> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, `c» down` or `c» off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
 | add or re-login an account | `chottag login <name> --json` (timeout 600000) |
@@ -115,8 +116,26 @@ Accounts are named by name, email, or a unique name prefix.
 update` installs it, following the repo the user installed from, restarting
 the daemon only if no Claude session is running (`--restart` restarts it
 anyway); `chottag update --version vX.Y.Z` installs a specific release,
-including an older one, to roll back. It keeps the last three versions and
-verifies each download against the release's checksums.
+including an older one, to roll back. Before installing, `update` backs up
+`state.json` into `~/.chottag/backups/` (`backups` in `--json`), and `setup`
+backs up the shell rc file the same way before changing it. `update` keeps
+the last three versions and verifies each download against the release's
+checksums. `--no-restart` installs and leaves the daemon running.
+
+The daemon also checks for a new release about once a day; `status` shows
+`update: <v> available`, and `status --json` has `update` and `updates`.
+**Tell the user when one is available and offer `chottag update`.** The check
+is on by default and can be turned off with `chottag update --auto-check off`.
+`chottag update --auto-install on` lets the daemon install releases by itself
+(same major version, at least 24 hours old). **Never turn auto-install on
+unless the user says yes.**
+
+When a newer chottag is installed but the daemon still runs the old one,
+`status` says `daemon: running X, installed Y (restarts when idle, ...)`
+(`daemon.restartPending` in `--json`, `⟳Y` on the status line). The daemon
+restarts itself onto it once the proxy is idle (no request in flight, none in
+the last 5 minutes); this is on by default and `chottag update --auto-restart
+off` turns it off. To switch at once, run `chottag daemon restart`.
 
 ## Reading results
 
@@ -184,7 +203,7 @@ status line something to show. Ask first whether they already have one.
 
   To show only some of it, read fields instead:
   `chottag statusline --json | jq -r '.serving'` (fields: `session`,
-  `daemon`, `serving`, `label`, `fiveHourPct`, `sevenDayPct`, `resetsAt`,
+  `daemon`, `serving`, `account`, `label`, `fiveHourPct`, `sevenDayPct`, `resetsAt`,
   `okAccounts`, `rotationAccounts`).
 - **They have none.** Offer chottag's line on its own; they add this to
   `~/.claude/settings.json` by hand:

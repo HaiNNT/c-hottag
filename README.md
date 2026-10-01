@@ -1,14 +1,14 @@
+<p align="center"><img src="assets/logo/chottag.svg" alt="chottag logo" width="112"></p>
+
 # c-hottag (`chottag`)
 
-> **A Claude Code session installing this?** Follow [For Claude Code](#for-claude-code)
-> from start to finish: it runs `install.sh` *and* installs the plugin.
+> **A Claude Code session installing this?** Follow [For Claude Code](#for-claude-code) from start to finish: it runs `install.sh` *and* installs the plugin.
 
 Keep several Claude accounts logged in on one machine, and switch the one Claude Code uses, even mid-session, without logging out — with claude.ai objects pinned to their owner across the switch.
 
 c-hottag is an independent project: not affiliated with or endorsed by Anthropic.
 
-**The name**, said "See-Hot-Tag": in WWE tag-team wrestling, the *hot tag* is when a worn-out wrestler tags in a fresh
-partner. chottag does that for Claude Code: when one account is spent, a fresh one tags in and the session keeps going.
+**The name**, said "See-Hot-Tag": in WWE tag-team wrestling, the *hot tag* is when a worn-out wrestler tags in a fresh partner. chottag does that for Claude Code: when one account is spent, a fresh one tags in and the session keeps going.
 
 ```text
 $ chottag status
@@ -86,7 +86,7 @@ By GitHub stars (as of 2026-09-29), chottag next to the best-known Claude Code a
 
 | Tool | Pins Remote Control, connectors, artifacts to one account | Mid-session switch, no restart | Auto-switch at a limit | Never writes Home's login |
 |---|---|---|---|---|
-| **chottag** | ✅ **built in** | ✅ | ✅ on by default | ✅ |
+| <img src="assets/logo/chottag.svg" alt="" width="16" align="absmiddle"> **chottag** | ✅ **built in** | ✅ | ✅ on by default | ✅ |
 | [claude-swap](https://github.com/realiti4/claude-swap) | ❌ (the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it) | ⚠️ Linux/Windows: yes; macOS: ~30s or a restart | ✅ | ❌ |
 | [clauth](https://github.com/uwuclxdy/clauth) | ❌ | ❔ not stated | ✅ | ❌ |
 | [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | ❌ | ❌ switch before a new session | ✅ reactive | ❌ |

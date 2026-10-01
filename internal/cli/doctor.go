@@ -245,18 +245,24 @@ func newDoctorEnv(h string) (*doctor.Env, error) {
 		chottagHomeExport = h
 	}
 	return &doctor.Env{
-		Home:           h,
-		UserHome:       os.Getenv("HOME"),
-		Shell:          os.Getenv("SHELL"),
-		PATH:           os.Getenv("PATH"),
-		Executable:     exe,
-		TempDirs:       doctorTempDirs,
-		SetupDirs:      setupDirs,
-		ProvisionBin:   provisionBinSymlinks,
-		SameFile:       sameFile,
-		RCPathFor:      rcPathFor,
-		RCBlock:        func(binDir string) string { return rcBlock(binDir, chottagHomeExport) },
-		WriteRCBlock:   func(rcPath, binDir string) error { return writeRCBlock(rcPath, binDir, chottagHomeExport) },
+		Home:         h,
+		UserHome:     os.Getenv("HOME"),
+		Shell:        os.Getenv("SHELL"),
+		PATH:         os.Getenv("PATH"),
+		Executable:   exe,
+		TempDirs:     doctorTempDirs,
+		SetupDirs:    setupDirs,
+		ProvisionBin: provisionBinSymlinks,
+		SameFile:     sameFile,
+		RCPathFor:    rcPathFor,
+		RCBlock:      func(binDir string) string { return rcBlock(binDir, chottagHomeExport) },
+		WriteRCBlock: func(rcPath, binDir string) error {
+			backup, _, err := writeRCBlock(h, rcPath, binDir, chottagHomeExport)
+			if err == nil && backup != "" {
+				fmt.Fprintf(os.Stderr, "chottag: backed up %s to %s\n", rcPath, backup)
+			}
+			return err
+		},
 		ResolveClaude:  shim.ResolveClaude,
 		ClaudeVersion:  func(bin string) (string, error) { return doctorClaudeVersion(bin) },
 		ProbeHealth:    func(port int) bool { return doctorNet.probe(port) },

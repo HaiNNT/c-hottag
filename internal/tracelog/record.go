@@ -6,6 +6,7 @@ import "time"
 
 type Record struct {
 	T         time.Time `json:"t"`
+	SID       string    `json:"sid,omitempty"`  // the first 8 characters of a session id, never more (M6)
 	Kind      string    `json:"kind"`           // "req" | "head" | "tunnel" | "mark"
 	ID        string    `json:"id,omitempty"`   // pairs a stream's "head" and "req" records (NewID); empty on every other record
 	Form      string    `json:"form,omitempty"` // "mitm" | "absolute" | "blind"

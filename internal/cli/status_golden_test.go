@@ -193,6 +193,11 @@ func TestStatusJSONGoldenOutput(t *testing.T) {
 		"    },\n" +
 		"    \"userChosen\": false,\n" +
 		"    \"burnRate\": 0\n" +
+		"  },\n" +
+		"  \"updates\": {\n" +
+		"    \"check\": true,\n" +
+		"    \"auto\": false,\n" +
+		"    \"restart\": true\n" +
 		"  }\n" +
 		"}\n"
 

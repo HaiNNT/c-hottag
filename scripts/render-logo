@@ -39,4 +39,5 @@ for name in chottag chottag-dev; do
 	done
 	iconutil -c icns "$set_dir" -o "$logo/$name.icns"
 done
+rsvg-convert -w 1280 -h 640 "$logo/social.svg" -o "$logo/png/social-1280x640.png"
 echo "render-logo: done"

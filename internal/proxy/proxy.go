@@ -178,6 +178,10 @@ type Server struct {
 	netDialer *net.Dialer // nil when cfg.DialContext was supplied
 	transport *http.Transport
 	drift     atomic.Uint64
+	// inflight counts requests being served; lastStart is the Unix-nano
+	// time the latest one began (construction time before any). Both feed Idle.
+	inflight  atomic.Int64
+	lastStart atomic.Int64
 	conns     connSet
 
 	// clientConns holds the CLIENT side of every live MITM tunnel: the
@@ -194,6 +198,7 @@ type Server struct {
 
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
+	s.lastStart.Store(time.Now().UnixNano())
 	if cfg.DialContext != nil {
 		s.dial = cfg.DialContext
 	} else {
@@ -279,6 +284,27 @@ func (s *Server) CloseUpstreams() int {
 // keeps serving requests after serve() returns (F54).
 func (s *Server) CloseClientTunnels() int { return s.clientConns.closeAll() }
 
+// Idle reports whether the proxy is quiet enough to restart (R126): no HTTP
+// request in flight (a streaming response counts until its body ends), and
+// the most recent one started at least quiet before now. A tunnel with no
+// request in it does not count. A new server counts its construction as the
+// last start.
+func (s *Server) Idle(now time.Time, quiet time.Duration) bool {
+	if s.inflight.Load() != 0 {
+		return false
+	}
+	return now.Sub(time.Unix(0, s.lastStart.Load())) >= quiet
+}
+
+// requestStarted marks one request in flight and returns the func that ends
+// it. The start time is stored before the counter rises, so Idle never sees
+// the request counted without its time.
+func (s *Server) requestStarted() func() {
+	s.lastStart.Store(time.Now().UnixNano())
+	s.inflight.Add(1)
+	return func() { s.inflight.Add(-1) }
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodConnect:
@@ -289,16 +315,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// acts on.
 		s.handleConnect(w, r)
 	case r.URL.IsAbs():
-		if s.gated() && !s.authorized(r) {
-			s.requireAuth(w, tracelog.Record{Kind: "req", Form: "absolute", Method: r.Method, Host: router.HostOnly(r.URL.Host)})
-			return
+		var caller proxyauth.Caller
+		if s.gated() {
+			var ok bool
+			if caller, ok = s.caller(r); !ok {
+				s.requireAuth(w, tracelog.Record{Kind: "req", Form: "absolute", Method: r.Method, Host: router.HostOnly(r.URL.Host)})
+				return
+			}
 		}
 		// ReverseProxy would drop this anyway (Proxy-Authorization is
 		// hop-by-hop), but deleting it here means upstream never sees it
 		// even if that stops being true; TestAuthorisedClientStillSwapsAndStripsTheHeader
 		// pins the outcome.
 		r.Header.Del("Proxy-Authorization")
-		s.forward(w, r, "absolute")
+		s.forward(w, withIdentity(r, caller, router.HostOnly(r.URL.Host), false), "absolute")
 	case r.URL.Path == HealthPath:
 		s.serveHealth(w, r)
 	default:
@@ -310,8 +340,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // set ProxyAuth, and tests that leave it zero see the old behaviour.
 func (s *Server) gated() bool { return !s.cfg.ProxyAuth.IsZero() }
 
-func (s *Server) authorized(r *http.Request) bool {
-	return s.cfg.ProxyAuth.Authorized(r.Header.Get("Proxy-Authorization"))
+// caller authenticates r's Proxy-Authorization once: ok=false is a 407. With
+// caller auth off the caller is the zero Caller and ok is false, so a caller
+// checks gated() first, as every gate here does.
+func (s *Server) caller(r *http.Request) (proxyauth.Caller, bool) {
+	return s.cfg.ProxyAuth.Caller(r.Header.Get("Proxy-Authorization"))
 }
 
 // requireAuth answers 407 and records the refusal with the host only: never
@@ -357,6 +390,15 @@ type Health struct {
 	// Proof is the HMAC proof of the install secret for the probe's nonce
 	// (F221, L4); empty from a daemon older than part 1.
 	Proof string `json:"proof,omitempty"`
+	// Sessions is true when this daemon accepts a per-session proxy
+	// credential (chottag.<pool>.<sid>, M6) as well as the legacy
+	// chottag:<secret>. A v0.4.0-v0.5.x daemon proves the secret but
+	// accepts only the legacy credential, and omits the field, so a shim
+	// that sees it absent must hand claude the legacy credential. It is
+	// not covered by the proof: only a daemon whose proof verifies is
+	// trusted at all, and stripping the field can only downgrade a
+	// session to the legacy credential every daemon accepts.
+	Sessions bool `json:"sessions,omitempty"`
 }
 
 // serveHealth answers the shim's "is that you?" probe.
@@ -414,6 +456,9 @@ func (s *Server) serveHealth(w http.ResponseWriter, r *http.Request) {
 			h.Proof = s.cfg.ProxyAuth.Proof(port, n)
 		}
 	}
+	// Caller auth on means Caller (session and legacy credentials) gates
+	// requests, so this daemon understands a session credential.
+	h.Sessions = s.gated()
 	b, err := json.Marshal(h)
 	if err != nil {
 		http.Error(w, "chottag: health encode failed", http.StatusInternalServerError)

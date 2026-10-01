@@ -292,14 +292,34 @@ func leaf(t reflect.Type) bool {
 }
 
 type field struct {
-	name string
-	typ  reflect.Type
+	name  string
+	typ   reflect.Type
+	depth int
 }
 
 // jsonFields lists t's fields as encoding/json names them: the json tag's
 // name, else the Go name; "-" and unexported fields skipped; an untagged
-// embedded struct's fields promoted.
+// embedded struct's fields promoted. A name found at two depths keeps the
+// shallower one, as encoding/json does (an outer field shadows a promoted
+// one).
 func jsonFields(t reflect.Type) []field {
+	all := jsonFieldsAt(t, 0)
+	shallowest := map[string]int{}
+	for _, f := range all {
+		if d, ok := shallowest[f.name]; !ok || f.depth < d {
+			shallowest[f.name] = f.depth
+		}
+	}
+	var out []field
+	for _, f := range all {
+		if f.depth == shallowest[f.name] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func jsonFieldsAt(t reflect.Type, depth int) []field {
 	var out []field
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
@@ -315,7 +335,7 @@ func jsonFields(t reflect.Type) []field {
 				et = et.Elem()
 			}
 			if et.Kind() == reflect.Struct {
-				out = append(out, jsonFields(et)...)
+				out = append(out, jsonFieldsAt(et, depth+1)...)
 				continue
 			}
 		}
@@ -325,7 +345,7 @@ func jsonFields(t reflect.Type) []field {
 		if name == "" {
 			name = f.Name
 		}
-		out = append(out, field{name: name, typ: ft})
+		out = append(out, field{name: name, typ: ft, depth: depth})
 	}
 	return out
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/rotate"
 	"github.com/HaiNNT/c-hottag/internal/router"
 	"github.com/HaiNNT/c-hottag/internal/selector"
+	"github.com/HaiNNT/c-hottag/internal/sessions"
 	"github.com/HaiNNT/c-hottag/internal/store"
 	"github.com/HaiNNT/c-hottag/internal/tokens"
 	"github.com/HaiNNT/c-hottag/internal/tracelog"
@@ -297,6 +298,12 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 		poller = p
 	}
 
+	ul := newUpdateLoop(h, upstreamURL, cache.State, sink, dn, stderr)
+	rl := newRestartLoop(h, cache.State, sink, dn, stderr)
+	if ul != nil && rl != nil {
+		ul.restartNotified = rl.NoteNotified // one notice per unattended update
+	}
+
 	// A single SIGINT/SIGTERM begins graceful shutdown (drains the sink,
 	// closes tunnels, gives in-flight requests shutdownGrace). A SECOND
 	// one arriving before that has finished skips the rest of the grace
@@ -324,6 +331,8 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Poller:     poller,
 			Notify:     dn,
 			Auto:       as,
+			Update:     ul,
+			Restart:    rl,
 			// nil in production: runDaemon's own RosterProcessed default.
 			RosterProcessed: rosterProcessedForTest,
 		})
@@ -766,6 +775,17 @@ type daemonDeps struct {
 	// replaces "available again" (S8). nil (every daemonDeps literal
 	// before M4) switches nothing.
 	Auto *autoSwitcher
+	// Update, if non-nil, is the update-check loop (R124). runDaemon runs it
+	// on the roster watcher's context and joins it before the sink closes.
+	// nil (a dev build, CHOTTAG_NO_UPDATE_CHECK=1, every test literal) never
+	// checks.
+	Update *updateLoop
+	// Restart, if non-nil, is the restart-when-idle loop (R126). runDaemon
+	// binds the proxy's idle signal to it (unless a test already set one),
+	// runs it on the roster watcher's context, wakes it on a wake from
+	// sleep, and joins it before the sink closes. nil (a dev build, every
+	// test literal) never restarts the daemon.
+	Restart *restartLoop
 }
 
 // rosterTickInterval is how often the roster watcher ticks in production.
@@ -913,6 +933,11 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		// roll-up at now, since a reset time passing changes nothing a
 		// counter sees. A nil d.Notify does nothing.
 		d.Auto.tick(now)
+		// Session activity rides the same tick; it queues its own write
+		// only when the snapshot changed.
+		if d.Chooser != nil && d.Chooser.tracker != nil && d.Sink != nil {
+			stampSessions(d.Sink, d.Chooser.tracker, d.Home, now)
+		}
 		d.Notify.tick(d.Cache.State, d.Sink, routeDrift, now)
 		notifyErrs := d.Notify.Errors()
 		zeroIDs := d.Owners.ZeroIDExtractions()
@@ -979,6 +1004,27 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 	} else {
 		close(pollDone)
 	}
+	updateDone := make(chan struct{})
+	if d.Update != nil {
+		go func() {
+			defer close(updateDone)
+			d.Update.Run(watchCtx)
+		}()
+	} else {
+		close(updateDone)
+	}
+	restartDone := make(chan struct{})
+	if d.Restart != nil {
+		if d.Restart.idle == nil {
+			d.Restart.idle = srv.Idle
+		}
+		go func() {
+			defer close(restartDone)
+			d.Restart.Run(watchCtx)
+		}()
+	} else {
+		close(restartDone)
+	}
 	closeOwners := func() {
 		// Stop and JOIN the roster watcher before closing the map.
 		// watchRoster calls own.Forget every 5s; a Forget that lands after
@@ -987,6 +1033,8 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		stopWatch()
 		<-rosterDone
 		<-pollDone
+		<-updateDone
+		<-restartDone
 		d.Owners.Close()
 	}
 
@@ -1017,6 +1065,14 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		wakerCfg.OnWake = func() {
 			onWake()
 			d.Poller.Wake()
+		}
+	}
+	if d.Restart != nil {
+		// Chained like the poller's: Wake never blocks.
+		onWake := wakerCfg.OnWake
+		wakerCfg.OnWake = func() {
+			onWake()
+			d.Restart.Wake()
 		}
 	}
 	waker := proxy.NewWaker(wakerCfg)
@@ -1613,6 +1669,9 @@ type chooser struct {
 	// notice. nil (every chooser literal before this field existed) is a
 	// no-op.
 	notify *daemonNotify
+	// tracker, if non-nil, is told about every successful Choose made for an
+	// identified caller (M6). nil is a no-op, as for notify.
+	tracker *sessions.Tracker
 }
 
 // newDaemonChooser builds the chooser runProxyWithSignal wires into
@@ -1621,7 +1680,7 @@ type chooser struct {
 // runProxyWithSignal literal so a test can construct the same wiring
 // directly and pin that notify is never dropped.
 func newDaemonChooser(sel *selector.Selector, own *owners.Map, tm *tokens.Manager, state func() (store.State, error), dn *daemonNotify) *chooser {
-	return &chooser{sel: sel, own: own, tm: tm, state: state, notify: dn}
+	return &chooser{sel: sel, own: own, tm: tm, state: state, notify: dn, tracker: sessions.NewTracker()}
 }
 
 func (c *chooser) Choose(ctx context.Context, d router.Decision, bodyID string) (string, string, bool, bool) {
@@ -1630,6 +1689,11 @@ func (c *chooser) Choose(ctx context.Context, d router.Decision, bodyID string) 
 		return "", "", false, false
 	}
 	c.notify.beginChoose(ch.Account)
+	// requests counts account choices, not client requests: a 429 retry
+	// chooses again, so one request can count twice.
+	if id, ok := proxy.IdentityFrom(ctx); ok && c.tracker != nil {
+		c.tracker.Seen(id.Caller.SID, id.Caller.Pool, ch.Account, id.Inference, id.NativeID, timeNow())
+	}
 	return ch.Account, ch.Token, ch.Role == selector.RoleOwner, true
 }
 

@@ -7,6 +7,20 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.6.0] - 2026-10-01
+
+### Added
+
+- Each `claude` session gets its own proxy credential; the older `chottag:<secret>` form still works, and is what a daemon from before 0.6.0 gets until `chottag daemon restart`.
+- `chottag status` lists the live sessions and the account each one uses (`sessions` in `--json`).
+- `chottag statusline` shows this session's account (`account` in `--json`).
+- `chottag update` backs up state.json, and setup backs up your shell rc file before changing it, into ~/.chottag/backups/. The state.json backup starts with updates run by 0.6.0 or later.
+- The chottag mark in the README and the manual.
+- `chottag status` and `chottag statusline` show an available update (`update`, `updates` and `updateAvailable` in `--json`); `chottag update --check` records it too, and reads GitHub directly, with no `gh`.
+- `chottag update` takes a lock (`update_in_progress`), has `--no-restart`, and `--auto-check on|off` and `--auto-install on|off` for the daemon's update check and opt-in automatic install.
+- The daemon restarts itself onto an installed newer version when the proxy is idle (no request in flight, none in the last 5 minutes), checking every minute and on wake from sleep. `status` and `statusline` show a pending restart (`daemon.restartPending`, `restartPending`, ` · ⟳<v>`). On by default; `chottag update --auto-restart on|off`.
+  See [release notes](docs/release-notes/v0.6.0.md).
+
 ## [0.5.1] - 2026-10-01
 
 ### Changed
@@ -207,6 +221,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.6.0]: docs/release-notes/v0.6.0.md
 [0.5.1]: docs/release-notes/v0.5.1.md
 [0.5.0]: docs/release-notes/v0.5.0.md
 [0.4.10]: docs/release-notes/v0.4.10.md

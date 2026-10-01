@@ -56,7 +56,7 @@ func parseSetupArgs(args []string, r *reporter) (adoptArgs []string, label strin
 		adoptArgs = append(adoptArgs, "--name", dir+"="+names[dir])
 	}
 	if len(positional) != 0 {
-		return nil, "", false, r.Usage(setupUsage), errors.New(setupUsage)
+		return nil, "", false, r.Usage(setupUsage), errors.New("setup: unexpected arguments")
 	}
 	return adoptArgs, label, set, exit.OK, nil
 }
@@ -108,6 +108,9 @@ type setupResult struct {
 	Installed string `json:"installed"`
 	RCUpdated bool   `json:"rcUpdated"`
 	RCPath    string `json:"rcPath,omitempty"`
+	// RCBackup is where the rc file's previous content was copied before
+	// setup changed it (R123); absent when nothing was backed up.
+	RCBackup string `json:"rcBackup,omitempty"`
 	// Adopt is the inner adopt's own result, the same fields as
 	// `adopt --json` (F152). It is present with empty arrays when there
 	// was nothing to adopt (not a warning — fix round 1), and absent for
@@ -193,8 +196,16 @@ func runSetup(args []string, r *reporter) int {
 		// block under --json, so a script can still show it.
 		r.TextWarn(warnRCNotWritten, strings.TrimSuffix("unrecognised $SHELL; add this to your shell's rc yourself:\n"+rcBlock(binDir, chottagHomeExport), "\n"))
 	} else {
-		if err := writeRCBlock(rcPath, binDir, chottagHomeExport); err != nil {
+		backup, pruneWarn, err := writeRCBlock(h, rcPath, binDir, chottagHomeExport)
+		if err != nil {
 			return r.FailErr(err)
+		}
+		if pruneWarn != nil {
+			r.Warn(warnPruneFailed, "chottag: "+pruneWarn.Error())
+		}
+		if backup != "" {
+			r.Text("backed up %s to %s\n", rcPath, backup)
+			res.RCBackup = backup
 		}
 		r.Text("updated %s to put %s first on PATH\n", rcPath, binDir)
 		res.RCUpdated, res.RCPath = true, rcPath

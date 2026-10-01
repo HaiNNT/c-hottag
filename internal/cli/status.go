@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -13,9 +14,12 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/selector"
+	"github.com/HaiNNT/c-hottag/internal/session"
+	"github.com/HaiNNT/c-hottag/internal/sessions"
 	"github.com/HaiNNT/c-hottag/internal/shim"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
+	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 	usagehdr "github.com/HaiNNT/c-hottag/internal/usage"
 )
 
@@ -105,6 +109,10 @@ func runStatus(home string, args []string, r *reporter) int {
 	}
 	f.Serving, f.Remote = st.Serving, st.Remote
 	f.Label = st.Label
+	// The cache's sessions are the daemon's raw view; `status` reports the
+	// registry's own, joined with them (below), never the cache's list.
+	cached := f.Sessions
+	f.Sessions = nil
 	// Report in the account's configured (registration) order, not the
 	// order the cache happens to have observed them in — a user reading
 	// down the list expects it to match `chottag adopt`'s order, not
@@ -130,6 +138,13 @@ func runStatus(home string, args []string, r *reporter) int {
 	// nothing is listening on it anymore, and a home that has never run a
 	// daemon has no Daemon object to probe a port from at all.
 	f.DaemonRunningAt(now)
+	if f.Daemon != nil && !f.Daemon.Running {
+		// A stopped daemon's last pending mark is not a statement about now.
+		f.Daemon.RestartPending = ""
+	}
+	if f.Daemon != nil {
+		f.Daemon.RestartsWhenIdle = st.RestartOn()
+	}
 	if f.Daemon != nil && f.Daemon.Running {
 		if ok, version := statusProbe(f.Daemon.Port); ok {
 			if version != "" {
@@ -151,11 +166,13 @@ func runStatus(home string, args []string, r *reporter) int {
 	// home with no daemon object and no live session keeps reporting none.
 	// A registry that cannot be read counts as none: this is a report
 	// overlay, not a reason to fail `status`.
+	var rows []sessionRow
 	if live, err := liveSessions(home); err == nil && len(live) > 0 {
 		if f.Daemon == nil {
 			f.Daemon = &status.Daemon{}
 		}
 		f.Daemon.LiveSessions = len(live)
+		rows = sessionRows(live, cached)
 	} else if f.Daemon != nil {
 		f.Daemon.LiveSessions = 0
 	}
@@ -197,11 +214,21 @@ func runStatus(home string, args []string, r *reporter) int {
 		// The reporter splices the §5.3 header (ok, warnings) after f's own
 		// version and writes the rest exactly as MarshalIndent did (§5.1:
 		// additive only).
-		return r.OK(f)
+		// update.available says what the text line says: an update the CLI
+		// already has is not available, whatever the cache last recorded.
+		if f.Update != nil {
+			u := *f.Update
+			u.Available = availableUpdate(f) != ""
+			f.Update = &u
+		}
+		return r.OK(statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st)})
 	}
 
-	renderStatus(r.Stdout(), f, now)
+	renderStatusWith(r.Stdout(), f, now, accountCounts(rows))
 	fmt.Fprintln(r.Stdout(), autoStatusLine(st, f, now))
+	if v := availableUpdate(f); v != "" {
+		fmt.Fprintf(r.Stdout(), "update: %s available (run: chottag update)\n", v)
+	}
 	return r.OK(nil)
 }
 
@@ -238,6 +265,12 @@ func lastSwitchText(ls status.AutoSwitch) string {
 }
 
 func renderStatus(out io.Writer, f status.File, now time.Time) {
+	renderStatusWith(out, f, now, "")
+}
+
+// renderStatusWith is renderStatus with the per-account session counts the
+// live-sessions line carries, e.g. " (A 2, B 1)"; "" adds nothing.
+func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string) {
 	label := ""
 	if f.Label != "" {
 		label = "   (" + f.Label + ")"
@@ -258,8 +291,18 @@ func renderStatus(out io.Writer, f status.File, now time.Time) {
 	// restart" is the WRONG advice for a squatter (there is no legitimate
 	// daemon on that port to restart), and Version here is that unverified
 	// listener's own self-reported, unauthenticated claim.
-	if f.Daemon != nil && f.Daemon.VersionMismatch && f.Daemon.Identity != string(shim.IdentityLegacy) && f.Daemon.Identity != string(shim.IdentityMismatch) {
-		fmt.Fprintf(out, "daemon: running %s, installed %s (run: chottag daemon restart)\n\n", f.Daemon.Version, Version)
+	if d := f.Daemon; d != nil && d.Version != "" && (d.VersionMismatch || d.RestartPending != "") &&
+		d.Identity != string(shim.IdentityLegacy) && d.Identity != string(shim.IdentityMismatch) {
+		// A restart the daemon knows is pending names the installed version
+		// it saw, and says when it will happen (R126).
+		installed, how := Version, "run: chottag daemon restart"
+		if d.RestartPending != "" {
+			installed = d.RestartPending
+			if d.RestartsWhenIdle {
+				how = "restarts when idle, or run: chottag daemon restart"
+			}
+		}
+		fmt.Fprintf(out, "daemon: running %s, installed %s (%s)\n\n", d.Version, installed, how)
 	}
 	// The daemon-identity lines (F221, part 1 T11): shown only when the
 	// overlay above found a running daemon that answered but did not
@@ -274,7 +317,7 @@ func renderStatus(out io.Writer, f status.File, now time.Time) {
 		fmt.Fprintf(out, "daemon: port %d answered but did not prove it is this install's daemon (run: chottag doctor)\n\n", f.Daemon.Port)
 	}
 	if f.Daemon != nil && (f.Daemon.Running || f.Daemon.LiveSessions > 0) {
-		fmt.Fprintf(out, "live sessions: %d\n\n", f.Daemon.LiveSessions)
+		fmt.Fprintf(out, "live sessions: %d%s\n\n", f.Daemon.LiveSessions, counts)
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 3, ' ', 0)
 	fmt.Fprintln(tw, "  NAME\tPLAN\tORG\t5h\t7d\tSTATE")
@@ -314,6 +357,110 @@ func renderStatus(out io.Writer, f status.File, now time.Time) {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", a.Name, planLabel(store.Account{Plan: a.Plan}), a.Org, five, seven, state)
 	}
 	tw.Flush()
+}
+
+// availableUpdate is the release the update-check cache says is available,
+// or "" when none is. A cache an older daemon wrote can still say available
+// after this binary was updated, so it must also be newer than this build.
+func availableUpdate(f status.File) string {
+	u := f.Update
+	if u == nil || !u.Available || !updatecheck.Newer(u.Latest, Version) {
+		return ""
+	}
+	return u.Latest
+}
+
+// statusDocument is `status --json`: the cache's File plus the live sessions
+// and the update switches (from state.json).
+// Its Sessions shadows File.Sessions (the cache's raw list, cleared before
+// this is built), so the document carries one `sessions` array.
+type statusDocument struct {
+	status.File
+	Sessions []sessionRow   `json:"sessions,omitempty"`
+	Updates  updateSwitches `json:"updates"`
+}
+
+// sessionRow is one live registry entry. An unidentified one (an old shim's)
+// has only pid and started; an identified one adds its first 8 sid
+// characters and pool, and whatever the daemon's cache knows of it.
+type sessionRow struct {
+	PID           int        `json:"pid"`
+	Started       *time.Time `json:"started,omitempty"`
+	SID           string     `json:"sid,omitempty"`
+	Pool          string     `json:"pool,omitempty"`
+	Account       string     `json:"account,omitempty"`
+	LastSeen      *time.Time `json:"lastSeen,omitempty"`
+	Requests      *int       `json:"requests,omitempty"`
+	Conversations *int       `json:"conversations,omitempty"`
+}
+
+// sessionRows joins the live registry entries with the cache's activity by
+// sid, ordered by start time (pid breaks a tie).
+func sessionRows(live []session.Session, cached []sessions.Activity) []sessionRow {
+	bySID := make(map[string]sessions.Activity, len(cached))
+	for _, a := range cached {
+		bySID[a.SID] = a
+	}
+	sorted := append([]session.Session(nil), live...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if !sorted[i].Started.Equal(sorted[j].Started) {
+			return sorted[i].Started.Before(sorted[j].Started)
+		}
+		return sorted[i].PID < sorted[j].PID
+	})
+	rows := make([]sessionRow, 0, len(sorted))
+	for _, s := range sorted {
+		row := sessionRow{PID: s.PID}
+		if !s.Started.IsZero() {
+			started := s.Started
+			row.Started = &started
+		}
+		if s.SID != "" {
+			row.SID = s.SID
+			if len(row.SID) > 8 {
+				row.SID = row.SID[:8]
+			}
+			row.Pool = s.Pool
+			if a, ok := bySID[s.SID]; ok {
+				row.Account = a.Account
+				seen, req, conv := a.LastSeen, a.Requests, a.Conversations
+				row.LastSeen, row.Requests, row.Conversations = &seen, &req, &conv
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// accountCounts is " (A 2, B 1, – 1)": sessions per account in name order,
+// sessions with no account (unidentified, or not yet inferred) last under
+// "–". "" when there are no rows.
+func accountCounts(rows []sessionRow) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	none := 0
+	for _, r := range rows {
+		if r.Account == "" {
+			none++
+			continue
+		}
+		counts[r.Account]++
+	}
+	names := make([]string, 0, len(counts))
+	for n := range counts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names)+1)
+	for _, n := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", n, counts[n]))
+	}
+	if none > 0 {
+		parts = append(parts, fmt.Sprintf("– %d", none))
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 // pctOrUnknown renders a usage.Window's utilization. p is nil when the
@@ -425,6 +572,11 @@ type statusSink struct {
 	// goroutine.
 	write func(path string, b []byte) error
 
+	// loadUpdate reads the `update` a CLI run may have written to the file
+	// at path (loadDiskUpdate). Set once at construction. Never called with
+	// mu held.
+	loadUpdate func(path string) *status.Update
+
 	// onObserved, when set, is told each account's limit state after an
 	// observation that carried usage headers, so the usage poller can
 	// cancel a no-data poll and move a reset poll (spec §6.4). It is
@@ -443,13 +595,14 @@ func newStatusSink(home string, onError func(error)) (*statusSink, error) {
 		return nil, err
 	}
 	c := &statusSink{
-		path:     status.Path(home),
-		file:     f,
-		interval: time.Second,
-		onError:  onError,
-		wake:     make(chan struct{}, 1),
-		done:     make(chan struct{}),
-		write:    status.WriteBytes,
+		path:       status.Path(home),
+		file:       f,
+		interval:   time.Second,
+		onError:    onError,
+		wake:       make(chan struct{}, 1),
+		done:       make(chan struct{}),
+		write:      status.WriteBytes,
+		loadUpdate: loadDiskUpdate,
 	}
 	go c.writeLoop()
 	return c, nil
@@ -482,6 +635,17 @@ func (c *statusSink) writePending() {
 	c.mu.Unlock()
 	if b == nil {
 		return
+	}
+	// A newer `update --check` on disk is merged in here, on the writer
+	// goroutine: the read stays off the lock the response path takes.
+	if d := c.loadUpdate(c.path); d != nil {
+		c.mu.Lock()
+		if c.mergeCLIUpdateLocked(d) {
+			if nb, err := status.Marshal(c.file); err == nil {
+				b = nb
+			}
+		}
+		c.mu.Unlock()
 	}
 	if err := c.write(c.path, b); err != nil && c.onError != nil {
 		c.onError(err)
@@ -701,6 +865,52 @@ func (c *statusSink) setDaemon(port int, routeDrift, zeroIDs, drops, notifyError
 	c.queueLocked()
 }
 
+// setRestartPending stamps (or clears, with "") the installed version this
+// daemon is not yet running, and queues a write only when it changed.
+func (c *statusSink) setRestartPending(version string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.file.SetRestartPending(version) {
+		c.queueLocked()
+	}
+}
+
+// setSessions replaces the cached document's sessions and queues a write only
+// when they changed, so a busy daemon writes at most once per roster tick.
+func (c *statusSink) setSessions(acts []sessions.Activity) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(acts) == 0 && len(c.file.Sessions) == 0 {
+		return
+	}
+	if slices.Equal(acts, c.file.Sessions) {
+		return
+	}
+	c.file.Sessions = acts
+	c.queueLocked()
+}
+
+// stampSessions forgets the tracker's dead sessions past their grace, keeping
+// every sid a live registry entry of home names (a registry that cannot be
+// read keeps everything), then hands the snapshot to the sink. It returns the
+// snapshot.
+func stampSessions(sink *statusSink, tr *sessions.Tracker, home string, now time.Time) []sessions.Activity {
+	keep := func(string) bool { return true }
+	if live, err := liveSessions(home); err == nil {
+		set := make(map[string]bool, len(live))
+		for _, s := range live {
+			if s.SID != "" {
+				set[s.SID] = true
+			}
+		}
+		keep = func(sid string) bool { return set[sid] }
+	}
+	tr.Forget(keep, now, sessions.Grace)
+	snap := tr.Snapshot()
+	sink.setSessions(snap)
+	return snap
+}
+
 // clearDaemon takes the lock and calls status.File.ClearDaemon, then queues
 // the result (fix round 2, item 1). serve (proxy.go) calls this immediately
 // before its final sink.Close() on both of its exit paths, so a clean
@@ -713,6 +923,9 @@ func (c *statusSink) clearDaemon() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.file.ClearDaemon()
+	// A stopped daemon's per-session accounts are stale: status would join
+	// them with live claude processes.
+	c.file.Sessions = nil
 	c.queueLocked()
 }
 

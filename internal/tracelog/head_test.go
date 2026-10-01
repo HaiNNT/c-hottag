@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestNewIDIsEightLowercaseHex(t *testing.T) {
 // allowlist is checked field by field.
 func fullRecord() tracelog.Record {
 	return tracelog.Record{
-		T: time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC), Kind: "req", ID: "0a1b2c3d",
+		T: time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC), Kind: "req", ID: "0a1b2c3d", SID: "01234567",
 		Form: "mitm", Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
 		PathIDs: []string{"cse_1234abcd"}, QueryKeys: []string{"beta=true"},
 		Class: "serving", Auth: "oauth-access", Swapped: true, Account: "B", Drift: true,
@@ -49,7 +50,7 @@ func fullRecord() tracelog.Record {
 func TestHeadOfKeepsOnlyHeaderTimeFields(t *testing.T) {
 	got := tracelog.HeadOf(fullRecord())
 	want := tracelog.Record{
-		T: time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC), Kind: "head", ID: "0a1b2c3d",
+		T: time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC), Kind: "head", ID: "0a1b2c3d", SID: "01234567",
 		Form: "mitm", Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
 		PathIDs: []string{"cse_1234abcd"}, QueryKeys: []string{"beta=true"},
 		Class: "serving", Auth: "oauth-access", Swapped: true, Account: "B", Drift: true,
@@ -67,7 +68,7 @@ func TestHeadOfKeepsOnlyHeaderTimeFields(t *testing.T) {
 // carry it (spec §4.2: the head adds no new category of data to disk).
 func TestHeadOfClassifiesEveryRecordField(t *testing.T) {
 	inHead := map[string]bool{
-		"T": true, "Kind": true, "ID": true, "Form": true, "Method": true, "Host": true, "Path": true,
+		"T": true, "Kind": true, "ID": true, "SID": true, "Form": true, "Method": true, "Host": true, "Path": true,
 		"PathIDs": true, "QueryKeys": true, "Class": true, "Auth": true, "Swapped": true,
 		"Account": true, "Drift": true, "Status": true, "ReqType": true, "RespType": true,
 		"RespHeaderNames": true, "RespLimitHeaders": true, "RespErrorType": true, "RespResetAt": true,
@@ -126,5 +127,18 @@ func TestReadAllReadsHeadRecordsAndOldLines(t *testing.T) {
 	}
 	if recs[1].Kind != "head" || recs[1].ID != "0a1b2c3d" || recs[2].Kind != "req" || recs[2].ID != "0a1b2c3d" || recs[2].Millis != 5000 {
 		t.Fatalf("head/req pair read as %+v / %+v", recs[1], recs[2])
+	}
+}
+
+// TestSIDMarshalsAsSidAndIsOmittedWhenEmpty pins the field's wire name and
+// that a record with no session (every legacy one) is unchanged on disk.
+func TestSIDMarshalsAsSidAndIsOmittedWhenEmpty(t *testing.T) {
+	b, err := json.Marshal(tracelog.Record{Kind: "tunnel", SID: "01234567"})
+	if err != nil || !strings.Contains(string(b), `"sid":"01234567"`) {
+		t.Fatalf("got %s, err %v", b, err)
+	}
+	b, err = json.Marshal(tracelog.Record{Kind: "tunnel"})
+	if err != nil || strings.Contains(string(b), "sid") {
+		t.Fatalf("got %s, err %v", b, err)
 	}
 }

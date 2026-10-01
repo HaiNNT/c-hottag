@@ -16,7 +16,6 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/doccheck"
 	"github.com/HaiNNT/c-hottag/internal/doctor"
 	"github.com/HaiNNT/c-hottag/internal/exit"
-	"github.com/HaiNNT/c-hottag/internal/status"
 )
 
 // docsCommandsPath is the command reference, from this package's directory.
@@ -40,7 +39,7 @@ var docsResultTypes = map[string]any{
 	"notify":         notifyResult{},
 	"auto":           autoResult{},
 	"plan":           planResult{},
-	"status":         status.File{},
+	"status":         statusDocument{},
 	"statusline":     statuslineResult{},
 	"doctor":         doctorResult{},
 	"daemon start":   startResult{},
@@ -106,8 +105,12 @@ func docsKeys(m map[string]any) []string {
 // docsHasField reports whether t (a struct) has a JSON field named name.
 func docsHasField(t reflect.Type, name string) bool {
 	for i := 0; i < t.NumField(); i++ {
-		tag, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		f := t.Field(i)
+		tag, _, _ := strings.Cut(f.Tag.Get("json"), ",")
 		if tag == name {
+			return true
+		}
+		if f.Anonymous && tag == "" && f.Type.Kind() == reflect.Struct && docsHasField(f.Type, name) {
 			return true
 		}
 	}

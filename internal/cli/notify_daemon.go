@@ -52,6 +52,8 @@ var newDaemonNotifier = func() notify.Notifier { return notify.New(runtime.GOOS)
 type daemonNotify struct {
 	events *notify.Events
 	disp   *notify.Dispatcher
+	// state is how the notify switch and the label are read (post).
+	state func() (store.State, error)
 
 	// blockedCount lets beginChoose and isBlocked skip the mutex and the
 	// map on the common path where nothing is blocked.
@@ -65,7 +67,8 @@ type daemonNotify struct {
 func newDaemonNotify(state func() (store.State, error), n notify.Notifier) *daemonNotify {
 	disp := notify.NewDispatcher(n, notify.SendTimeout)
 	return &daemonNotify{
-		disp: disp,
+		disp:  disp,
+		state: state,
 		events: notify.NewEvents(notify.Config{
 			Emit: func(title, body string) {
 				label := ""
@@ -78,6 +81,21 @@ func newDaemonNotify(state func() (store.State, error), n notify.Notifier) *daem
 		}),
 		blocked: map[string]bool{},
 	}
+}
+
+// post sends one notice that is not part of the notify.Events state machine
+// (the update loop keeps its own once-per-version record), honouring the
+// notify switch like every other notice and labelling the title (R118). A
+// nil dn does nothing.
+func (dn *daemonNotify) post(title, body string) {
+	if dn == nil || !notifyEnabled(dn.state) {
+		return
+	}
+	label := ""
+	if st, err := dn.state(); err == nil {
+		label = st.Label
+	}
+	dn.disp.Enqueue(labelTitle(title, label), body)
 }
 
 // labelTitle puts the install's label into a notice title (R118): a title

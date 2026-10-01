@@ -88,11 +88,18 @@ func wireFakeUpstream(t *testing.T, up *httptest.Server, upCA *ca.Authority) {
 // HTTPS_PROXY would.
 func mitmConn(t *testing.T, home, addr string) (*tls.Conn, *bufio.Reader) {
 	t.Helper()
-	proxyCA, err := ca.LoadOrCreate(filepath.Join(home, "ca"))
+	secret, err := proxyauth.Load(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, err := proxyauth.Load(home)
+	return mitmConnAs(t, home, addr, proxyAuthHeaderForTest(t, secret))
+}
+
+// mitmConnAs is mitmConn with the caller's own Proxy-Authorization value
+// (a session credential, say).
+func mitmConnAs(t *testing.T, home, addr, authHeader string) (*tls.Conn, *bufio.Reader) {
+	t.Helper()
+	proxyCA, err := ca.LoadOrCreate(filepath.Join(home, "ca"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +108,7 @@ func mitmConn(t *testing.T, home, addr string) (*tls.Conn, *bufio.Reader) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Close() })
-	if _, err := io.WriteString(c, "CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\nProxy-Authorization: "+proxyAuthHeaderForTest(t, secret)+"\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(c, "CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\nProxy-Authorization: "+authHeader+"\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(c), nil)

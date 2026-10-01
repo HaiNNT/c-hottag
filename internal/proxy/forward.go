@@ -21,6 +21,7 @@ import (
 const maxShapeBytes = 1 << 20
 
 func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
+	defer s.requestStarted()()
 	start := time.Now()
 	// traced is asked ONCE, here. Every shape decision and record below
 	// uses it, so a switch flipped mid-request changes only the next
@@ -33,7 +34,8 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 	})
 	path, ids := tracelog.TemplatePath(r.URL.Path)
 	rec := tracelog.Record{
-		T: start.UTC(), Kind: "req", Form: form, Method: r.Method, Host: host, Path: path, PathIDs: ids,
+		SID: sidOf(r.Context()),
+		T:   start.UTC(), Kind: "req", Form: form, Method: r.Method, Host: host, Path: path, PathIDs: ids,
 		QueryKeys: tracelog.QueryKeys(r.URL.RawQuery), Class: string(d.Class),
 		Auth:    tracelog.AuthKind(r.Header.Get("Authorization"), r.Header.Get("X-Api-Key") != ""),
 		ReqType: r.Header.Get("Content-Type"), Upgrade: r.Header.Get("Upgrade"),

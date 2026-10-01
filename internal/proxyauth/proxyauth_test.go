@@ -387,3 +387,149 @@ func TestRegenerateUnlessCallsBusyAfterTheLock(t *testing.T) {
 		t.Fatalf("RegenerateUnless = %v, calls=%d; want no error and exactly one busy call", err, calls)
 	}
 }
+
+func basic(user, pass string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+}
+
+func sessionPass(secretHex, user string) string {
+	m := hmac.New(sha256.New, []byte(secretHex))
+	m.Write([]byte("chottag-session-v1\n" + user))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+func newTestSecret(t *testing.T) (proxyauth.Secret, string) {
+	t.Helper()
+	home := t.TempDir()
+	s, err := proxyauth.LoadOrCreate(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, raw(t, home)
+}
+
+func TestSessionCredentialRoundTrip(t *testing.T) {
+	s, _ := newTestSecret(t)
+	sid := proxyauth.NewSID()
+	pu := s.SessionProxyURL("127.0.0.1:47850", "default", sid)
+	if pu == "" {
+		t.Fatal("SessionProxyURL returned empty")
+	}
+	u, err := url.Parse(pu)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw, _ := u.User.Password()
+	c, ok := s.Caller(basic(u.User.Username(), pw))
+	if !ok || c.Pool != "default" || c.SID != sid || !c.Identified() {
+		t.Fatalf("Caller = %+v, %v", c, ok)
+	}
+}
+
+func TestCallerLegacyAcceptedUnidentified(t *testing.T) {
+	s, sec := newTestSecret(t)
+	c, ok := s.Caller(basic("chottag", sec))
+	if !ok || c.Identified() || c != (proxyauth.Caller{}) {
+		t.Fatalf("Caller = %+v, %v", c, ok)
+	}
+	if !s.Authorized(basic("chottag", sec)) || s.Authorized(basic("chottag", "x")) {
+		t.Fatal("Authorized disagrees with Caller")
+	}
+}
+
+func TestCallerRefusals(t *testing.T) {
+	s, sec := newTestSecret(t)
+	sid := proxyauth.NewSID()
+	user := "chottag.default." + sid
+	good := sessionPass(sec, user)
+	proof := s.Proof(47850, strings.Repeat("a", 32))
+	if proof == "" {
+		t.Fatal("health proof is empty")
+	}
+	enc := func(u, p string) string { return basic(u, p) }
+	cases := map[string]string{
+		"wrong password":      enc(user, strings.Repeat("0", 64)),
+		"pool changed":        enc("chottag.other."+sid, good),
+		"sid changed":         enc("chottag.default."+proxyauth.NewSID(), good),
+		"secret as password":  enc(user, sec),
+		"bad base64":          "Basic !!!notbase64",
+		"no colon":            "Basic " + base64.StdEncoding.EncodeToString([]byte("chottag")),
+		"extra dots":          enc(user+".x", sessionPass(sec, user+".x")),
+		"one dot":             enc("chottag.default", sessionPass(sec, "chottag.default")),
+		"uppercase sid":       enc("chottag.default."+strings.ToUpper(sid), sessionPass(sec, "chottag.default."+strings.ToUpper(sid))),
+		"31 char sid":         enc("chottag.default."+sid[:31], sessionPass(sec, "chottag.default."+sid[:31])),
+		"33 char sid":         enc("chottag.default."+sid+"a", sessionPass(sec, "chottag.default."+sid+"a")),
+		"empty pool":          enc("chottag."+"."+sid, sessionPass(sec, "chottag.."+sid)),
+		"17 char pool":        enc("chottag."+strings.Repeat("a", 17)+"."+sid, sessionPass(sec, "chottag."+strings.Repeat("a", 17)+"."+sid)),
+		"other user":          enc("alice."+"default."+sid, sessionPass(sec, "alice.default."+sid)),
+		"health proof":        enc(user, proof),
+		"health proof legacy": enc("chottag", proof),
+		"empty header":        "",
+		"wrong scheme":        "Bearer abc",
+		"legacy wrong secret": enc("chottag", good),
+	}
+	for name, h := range cases {
+		if c, ok := s.Caller(h); ok || c != (proxyauth.Caller{}) {
+			t.Errorf("%s: accepted %+v", name, c)
+		}
+	}
+	// the good one is accepted, with scheme case and extra spaces tolerated.
+	h := "basic   " + strings.TrimPrefix(enc(user, good), "Basic ")
+	if c, ok := s.Caller(h); !ok || c.SID != sid {
+		t.Fatalf("good header refused: %v", ok)
+	}
+	var zero proxyauth.Secret
+	if _, ok := zero.Caller(enc(user, good)); ok {
+		t.Fatal("zero secret accepted a caller")
+	}
+	if _, ok := zero.Caller(enc("chottag", "")); ok {
+		t.Fatal("zero secret accepted legacy")
+	}
+}
+
+func TestNewSIDAndValidators(t *testing.T) {
+	a, b := proxyauth.NewSID(), proxyauth.NewSID()
+	if !proxyauth.ValidSID(a) || a == b {
+		t.Fatalf("NewSID: %q %q", a, b)
+	}
+	for _, p := range []string{"default", "a", "a-1", strings.Repeat("z", 16)} {
+		if !proxyauth.ValidPool(p) {
+			t.Errorf("pool %q invalid", p)
+		}
+	}
+	for _, p := range []string{"", "A", "a.b", "a_b", strings.Repeat("z", 17)} {
+		if proxyauth.ValidPool(p) {
+			t.Errorf("pool %q valid", p)
+		}
+	}
+	if proxyauth.DefaultPool != "default" {
+		t.Fatal("DefaultPool")
+	}
+}
+
+func TestSessionProxyURLRefusesBadInput(t *testing.T) {
+	s, _ := newTestSecret(t)
+	sid := proxyauth.NewSID()
+	if s.SessionProxyURL("h:1", "Bad", sid) != "" || s.SessionProxyURL("h:1", "default", "abc") != "" {
+		t.Fatal("bad pool or sid produced a URL")
+	}
+	var zero proxyauth.Secret
+	if zero.SessionProxyURL("h:1", "default", sid) != "" {
+		t.Fatal("zero secret produced a URL")
+	}
+}
+
+func TestCallerFormatsWithoutPassword(t *testing.T) {
+	s, sec := newTestSecret(t)
+	sid := proxyauth.NewSID()
+	user := "chottag.default." + sid
+	pw := sessionPass(sec, user)
+	c, ok := s.Caller(basic(user, pw))
+	if !ok {
+		t.Fatal("refused")
+	}
+	out := fmt.Sprintf("%v %+v %#v", c, c, c)
+	if strings.Contains(out, pw) || strings.Contains(out, sec) {
+		t.Fatal("Caller formatting holds a password")
+	}
+}

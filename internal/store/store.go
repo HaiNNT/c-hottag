@@ -100,6 +100,14 @@ type Trace struct {
 	Until time.Time `json:"until"`
 }
 
+// Updates holds the update switches (R124, R126). All are pointers so an
+// absent key reads as the default: check on, auto-install off, restart on.
+type Updates struct {
+	Check   *bool `json:"check,omitempty"`   // nil = true
+	Auto    *bool `json:"auto,omitempty"`    // nil = false
+	Restart *bool `json:"restart,omitempty"` // nil = true
+}
+
 type State struct {
 	Version    int       `json:"version"`
 	Accounts   []Account `json:"accounts"` // registration order is the `next` order
@@ -121,6 +129,8 @@ type State struct {
 	// Label names this install in notification titles and `chottag status`
 	// (R118): `setup --label dev` marks a dev sandbox. Empty is unlabelled.
 	Label string `json:"label,omitempty"`
+	// Updates is the update-check settings (R124). Zero writes no key.
+	Updates Updates `json:"updates,omitzero"`
 }
 
 func Default() State {
@@ -157,6 +167,32 @@ func (s State) NotifyOn() bool { return s.Notify == nil || *s.Notify }
 // SetNotify records the switch explicitly. It stores a fresh pointer, so a
 // copy of the State taken before the call never sees the change.
 func (st *State) SetNotify(on bool) { st.Notify = &on }
+
+// UpdateCheckOn reports whether the daemon checks for a new release. Absent is on.
+func (s State) UpdateCheckOn() bool { return s.Updates.Check == nil || *s.Updates.Check }
+
+// AutoUpdateOn reports whether the daemon installs a new release by itself.
+// Absent is off.
+func (s State) AutoUpdateOn() bool { return s.Updates.Auto != nil && *s.Updates.Auto }
+
+// RestartOn reports whether the daemon restarts itself onto an installed
+// newer version when idle (R126). Absent is on.
+func (s State) RestartOn() bool { return s.Updates.Restart == nil || *s.Updates.Restart }
+
+// SetAutoRestart records the idle-restart switch, with a fresh pointer.
+func (st *State) SetAutoRestart(on bool) { st.Updates.Restart = &on }
+
+// SetUpdateCheck records the check switch explicitly, with a fresh pointer.
+func (st *State) SetUpdateCheck(on bool) { st.Updates.Check = &on }
+
+// SetAutoUpdate records the auto-install switch. Turning it on also turns the
+// check on, since auto-install needs the check.
+func (st *State) SetAutoUpdate(on bool) {
+	st.Updates.Auto = &on
+	if on {
+		st.SetUpdateCheck(true)
+	}
+}
 
 // TracingAt reports whether a trace window is open at now: strictly before
 // until, so a window ends by itself at until (M2c T4).

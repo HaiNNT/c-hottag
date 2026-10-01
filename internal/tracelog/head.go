@@ -34,7 +34,7 @@ func NewID() string {
 // has), and they are empty unless `trace run --limit-fingerprint` is on.
 func HeadOf(r Record) Record {
 	return Record{
-		T: r.T, Kind: "head", ID: r.ID,
+		T: r.T, Kind: "head", ID: r.ID, SID: r.SID,
 		Form: r.Form, Method: r.Method, Host: r.Host, Path: r.Path,
 		PathIDs: r.PathIDs, QueryKeys: r.QueryKeys,
 		Class: r.Class, Auth: r.Auth,

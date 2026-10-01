@@ -39,14 +39,17 @@ only in Claude Code's own stores (the Keychain, or a slot's
 equivalent credential store), GitHub, and this repo's release workflow.
 
 **Caller authentication.** Each install has its own 32-byte secret in
-`~/.chottag/ca/proxy.secret` (mode 0600). The `claude` shim puts it in the
-userinfo of `HTTPS_PROXY`
-(`http://chottag:<secret>@127.0.0.1:47821`), and Claude Code sends it back
-as `Proxy-Authorization`. Most HTTP clients a session spawns that inherit
+`~/.chottag/ca/proxy.secret` (mode 0600). The `claude` shim gives each `claude`
+its own credential in the userinfo of `HTTPS_PROXY`
+(`http://chottag.default.<sid>:<password>@127.0.0.1:47821`, `<sid>` being 32
+random hex characters and the password `HMAC-SHA256(secret,
+"chottag-session-v1\n" + user)`), and Claude Code sends it back as
+`Proxy-Authorization`. The older `http://chottag:<secret>@...` form is still
+accepted, as an unidentified caller. Most HTTP clients a session spawns that inherit
 `HTTPS_PROXY` do too — curl, Python, Go, git (after a `407`) — but not
 every one: Node's built-in `fetch`, for example, ignores `HTTPS_PROXY`
 entirely and never reaches chottag at all. The proxy requires a
-matching secret before it will:
+valid credential (a session credential, or the legacy `chottag:<secret>`) before it will:
 
 - MITM a `CONNECT` to a host it intercepts (`api.anthropic.com`,
   `mcp-proxy.anthropic.com`);
@@ -56,8 +59,8 @@ matching secret before it will:
   upstream proxy that carries its own credentials — otherwise that upstream
   identity would be usable by any local caller without ever seeing it.
 
-A caller without the secret gets `407 Proxy Authentication Required` on all
-of those. Before handing the secret to `claude`, the shim challenges the
+A caller without a valid credential (session or legacy) gets `407 Proxy
+Authentication Required` on all of those. Before handing a credential to `claude`, the shim challenges the
 daemon over the health endpoint with a fresh nonce and checks its
 `HMAC(secret, port, nonce)` answer — bound to the port the shim actually
 probed, from the connection's own local address, not to anything the

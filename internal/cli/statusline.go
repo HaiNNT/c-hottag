@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/brand"
+	"github.com/HaiNNT/c-hottag/internal/proxyauth"
+	"github.com/HaiNNT/c-hottag/internal/session"
 	"github.com/HaiNNT/c-hottag/internal/shim"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
@@ -95,15 +97,24 @@ func SetCmuxSetStatusForTest(fn func(ctx context.Context, workspace, value, colo
 }
 
 type statuslineResult struct {
-	Session          string   `json:"session"`
-	Daemon           string   `json:"daemon"`
-	Serving          string   `json:"serving"`
+	Session string `json:"session"`
+	Daemon  string `json:"daemon"`
+	Serving string `json:"serving"`
+	// Account is the account this session uses: its own, once the daemon has
+	// seen it make an inference request, else the serving account.
+	Account          string   `json:"account,omitempty"`
 	Label            string   `json:"label,omitempty"`
 	FiveHourPct      *float64 `json:"fiveHourPct,omitempty"`
 	SevenDayPct      *float64 `json:"sevenDayPct,omitempty"`
 	ResetsAt         string   `json:"resetsAt,omitempty"`
 	OKAccounts       *int     `json:"okAccounts,omitempty"`
 	RotationAccounts *int     `json:"rotationAccounts,omitempty"`
+	// UpdateAvailable is the newer release the daemon found, shown only
+	// while this session is routed and the daemon is up.
+	UpdateAvailable string `json:"updateAvailable,omitempty"`
+	// RestartPending is the installed version the running daemon is not yet
+	// using (R126), shown under the same conditions as UpdateAvailable.
+	RestartPending string `json:"restartPending,omitempty"`
 
 	limited bool
 	resets  time.Time
@@ -158,7 +169,7 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 		return head + " off"
 	case rep.Daemon != "up":
 		return head + " down"
-	case rep.Serving == "":
+	case rep.Account == "":
 		return head + " up"
 	}
 	field := func(name string, pct *float64) string {
@@ -172,9 +183,9 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 		}
 		return f
 	}
-	first := []string{head + " " + rep.Serving}
+	first := []string{head + " " + rep.Account}
 	if rep.Label != "" {
-		first = []string{head, rep.Serving} // "c» dev · work": not one name
+		first = []string{head, rep.Account} // "c» dev · work": not one name
 	}
 	parts := append(first, field("5h", rep.FiveHourPct), field("7d", rep.SevenDayPct))
 	if rep.ResetsAt != "" {
@@ -187,6 +198,12 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 	}
 	if rep.RotationAccounts != nil && rep.OKAccounts != nil {
 		parts = append(parts, fmt.Sprintf("%d/%d ok", *rep.OKAccounts, *rep.RotationAccounts))
+	}
+	if rep.UpdateAvailable != "" {
+		parts = append(parts, "\u2191"+rep.UpdateAvailable)
+	}
+	if rep.RestartPending != "" {
+		parts = append(parts, "\u27f3"+rep.RestartPending)
 	}
 	return strings.Join(parts, " \u00b7 ")
 }
@@ -235,7 +252,15 @@ func statuslineCheck(h string) statuslineResult {
 	}
 	rep.Label = st.Label
 	port := st.ResolvedPort()
-	if !proxyEnvMatches(os.Getenv("HTTPS_PROXY"), port) && !hasLiveAncestor(h) {
+	// The sid comes from the credential's user name in HTTPS_PROXY; the
+	// password is never read. Without one, the ancestor walk's registry entry.
+	routed, sid := proxyEnvSession(os.Getenv("HTTPS_PROXY"), port)
+	if !routed {
+		if live, ok := liveAncestor(h); ok {
+			routed, sid = true, live.SID
+		}
+	}
+	if !routed {
 		return rep
 	}
 	rep.Session = "routed"
@@ -244,15 +269,35 @@ func statuslineCheck(h string) statuslineResult {
 		return rep
 	}
 	rep.Daemon, rep.Serving = "up", st.Serving
-	fillUsage(&rep, st, h)
+	f, _ := status.Load(status.Path(h)) // a missing cache is not an error
+	rep.Account = sessionAccount(f, sid, st.Serving)
+	fillUsage(&rep, st, f)
+	if rep.Account != "" {
+		rep.UpdateAvailable = availableUpdate(f)
+		if f.Daemon != nil {
+			rep.RestartPending = f.Daemon.RestartPending
+		}
+	}
 	return rep
+}
+
+// sessionAccount is the account sid's session uses per the cache, else
+// serving (no sid, an unknown sid, or no inference request seen yet).
+func sessionAccount(f status.File, sid, serving string) string {
+	if sid != "" {
+		for _, a := range f.Sessions {
+			if a.SID == sid && a.Account != "" {
+				return a.Account
+			}
+		}
+	}
+	return serving
 }
 
 // fillUsage adds the serving account's usage, its next reset and the pool
 // health from the status cache. Unknown values stay unset.
-func fillUsage(rep *statuslineResult, st store.State, h string) {
+func fillUsage(rep *statuslineResult, st store.State, f status.File) {
 	now := statuslineNow()
-	f, _ := status.Load(status.Path(h)) // a missing cache is not an error
 	byName := make(map[string]status.Account, len(f.Accounts))
 	for _, a := range f.Accounts {
 		byName[strings.ToLower(a.Name)] = a
@@ -270,15 +315,15 @@ func fillUsage(rep *statuslineResult, st store.State, h string) {
 	if rotation > 0 {
 		rep.RotationAccounts, rep.OKAccounts = &rotation, &ok
 	}
-	if rep.Serving == "" {
+	if rep.Account == "" {
 		return
 	}
-	a, found := byName[strings.ToLower(rep.Serving)]
+	a, found := byName[strings.ToLower(rep.Account)]
 	if !found {
 		return
 	}
 	rep.limited = a.Limited && (a.LimitedUntil.IsZero() || a.LimitedUntil.After(now))
-	if a.Usage == nil || !f.Fresh(rep.Serving, now) {
+	if a.Usage == nil || !f.Fresh(rep.Account, now) {
 		return
 	}
 	u := a.Usage
@@ -310,43 +355,57 @@ func fillUsage(rep *statuslineResult, st store.State, h string) {
 	}
 }
 
-// proxyEnvMatches reports whether v is http://chottag:<anything>@127.0.0.1:port,
-// the URL the shim hands a session it launched.
-func proxyEnvMatches(v string, port int) bool {
+// proxyEnvSession reports whether v is http://<user>:<anything>@127.0.0.1:port,
+// the URL the shim hands a session it launched, and the sid its user names:
+// "chottag" (the legacy form) is routed with no sid; "chottag.<pool>.<sid>"
+// with a valid pool and sid is routed with that sid. Only the user name is
+// read: the password never leaves url.Parse's result.
+func proxyEnvSession(v string, port int) (routed bool, sid string) {
 	u, err := url.Parse(v)
-	if err != nil || u.Scheme != "http" || u.User == nil || u.User.Username() != "chottag" {
-		return false
+	if err != nil || u.Scheme != "http" || u.User == nil {
+		return false, ""
 	}
-	return u.Hostname() == "127.0.0.1" && u.Port() == strconv.Itoa(port)
+	if u.Hostname() != "127.0.0.1" || u.Port() != strconv.Itoa(port) {
+		return false, ""
+	}
+	user := u.User.Username()
+	if user == "chottag" {
+		return true, ""
+	}
+	parts := strings.Split(user, ".")
+	if len(parts) == 3 && parts[0] == "chottag" && proxyauth.ValidPool(parts[1]) && proxyauth.ValidSID(parts[2]) {
+		return true, parts[2]
+	}
+	return false, ""
 }
 
-// hasLiveAncestor reports whether one of this process's first
-// statuslineMaxDepth ancestors is a claude session chottag launched. The
-// shim registers the pid it then execs claude in, so that pid is claude.
+// liveAncestor returns the registry entry of the claude session chottag
+// launched that is one of this process's first statuslineMaxDepth ancestors.
+// The shim registers the pid it then execs claude in, so that pid is claude.
 // liveSessions is the reader `daemon stop` uses: Live() prunes dead entries
 // on read.
-func hasLiveAncestor(h string) bool {
+func liveAncestor(h string) (session.Session, bool) {
 	live, err := liveSessions(h)
 	if err != nil || len(live) == 0 {
-		return false
+		return session.Session{}, false
 	}
-	set := make(map[int]bool, len(live))
+	set := make(map[int]session.Session, len(live))
 	for _, s := range live {
-		set[s.PID] = true
+		set[s.PID] = s
 	}
 	pid := os.Getppid()
 	for level := 0; level < statuslineMaxDepth; level++ {
-		if set[pid] {
-			return true
+		if s, ok := set[pid]; ok {
+			return s, true
 		}
 		if level == statuslineMaxDepth-1 {
 			break // the last pid is checked; no lookup whose result is dropped
 		}
 		next, err := parentPID(pid)
 		if err != nil || next <= 1 || next == pid {
-			return false
+			return session.Session{}, false
 		}
 		pid = next
 	}
-	return false
+	return session.Session{}, false
 }

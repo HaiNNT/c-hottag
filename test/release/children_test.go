@@ -191,6 +191,12 @@ var goSpawnAllowlist = map[string][]allowEntry{
 	"internal/cli/update.go#execUpdateChild": {
 		{kindExternalTool, ""}, // the just-replaced chottag binary
 	},
+	"internal/cli/updateloop.go#runAutoUpdateChild": {
+		{kindExternalTool, ""}, // the installed chottag, running `update --version <tag> --no-restart --json`
+	},
+	"internal/cli/restartloop.go#spawnDetached": {
+		{kindExternalTool, ""}, // the installed chottag, running `daemon restart --force --json` detached (R126)
+	},
 	"internal/cli/doctor.go#runClaudeVersion": {
 		{kindExternalTool, ""}, // claude
 	},

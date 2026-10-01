@@ -1,8 +1,12 @@
 // Package proxyauth is caller authentication for chottag's local proxy
 // (F221, public release design §3): a per-install secret, the
 // Proxy-Authorization check, and the health challenge's proof. The secret
-// never leaves this package in printable form except through ProxyURL,
-// whose one caller hands it to claude's environment (internal/shim).
+// never leaves this package in printable form except through ProxyURL, the
+// legacy chottag:<secret> credential (the shim hands it only to a daemon from
+// before sessions; also the test harness and `trace env`'s documented
+// export). Any other session gets SessionProxyURL's credential instead,
+// whose password is an HMAC derived from the secret, so it proves the
+// secret without revealing it.
 package proxyauth
 
 import (
@@ -37,9 +41,44 @@ const (
 	// ever nested the two.
 	lockName    = "proxy.secret.lock"
 	healthLabel = "chottag-health-v1\n" // domain separation: a proof is only ever a health proof
-	secretBytes = 32
-	nonceBytes  = 16
+	// sessionLabel separates a session password from a health proof.
+	sessionLabel = "chottag-session-v1\n"
+	secretBytes  = 32
+	nonceBytes   = 16
 )
+
+// DefaultPool is the one pool M6 uses.
+const DefaultPool = "default"
+
+// Caller is who a proxy request claims to be. Both fields are "" for a
+// legacy caller. It holds no password, so any fmt verb is safe.
+type Caller struct{ Pool, SID string }
+
+// Identified reports whether the caller carries a session id.
+func (c Caller) Identified() bool { return c.SID != "" }
+
+// NewSID is 16 random bytes as 32 lower-case hex characters.
+func NewSID() string {
+	b := make([]byte, 16)
+	rand.Read(b) // never fails (crypto/rand, Go 1.24+)
+	return hex.EncodeToString(b)
+}
+
+// ValidPool reports whether p matches ^[a-z0-9-]{1,16}$.
+func ValidPool(p string) bool {
+	if len(p) < 1 || len(p) > 16 {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidSID reports whether s is exactly 32 lower-case hex characters.
+func ValidSID(s string) bool { return isLowerHex(s, 32) }
 
 var ErrMalformed = errors.New("proxyauth: the proxy secret file is malformed")
 
@@ -297,24 +336,67 @@ func (s Secret) ProxyURL(hostport string) string {
 	return (&url.URL{Scheme: "http", User: url.UserPassword(User, s.v()), Host: hostport}).String()
 }
 
-// Authorized reports whether a Proxy-Authorization value is Basic
-// chottag:<this secret>, compared in constant time. A zero Secret
-// authorizes nothing. RFC 7235 §2.1's credentials grammar allows one or
-// more spaces between the scheme and the token: strings.Cut below consumes
-// only the first, and TrimSpace absorbs any that remain.
+// Authorized reports whether a Proxy-Authorization value is a credential
+// this secret issued: the legacy chottag:<secret> or a session credential.
 func (s Secret) Authorized(h string) bool {
+	_, ok := s.Caller(h)
+	return ok
+}
+
+// Caller authenticates a Proxy-Authorization value. Basic chottag:<secret>
+// is the legacy, unidentified caller. Basic chottag.<pool>.<sid>:<password>,
+// the password being hex(HMAC-SHA256(secret, "chottag-session-v1\n" + user)),
+// is an identified session. Anything else, or a zero Secret, is refused
+// (ok=false, a 407). Passwords are compared in constant time. RFC 7235 §2.1
+// allows one or more spaces after the scheme: strings.Cut consumes the
+// first, TrimSpace absorbs the rest.
+func (s Secret) Caller(proxyAuthorization string) (Caller, bool) {
 	if s.IsZero() {
-		return false
+		return Caller{}, false
 	}
-	scheme, cred, ok := strings.Cut(h, " ")
+	scheme, cred, ok := strings.Cut(proxyAuthorization, " ")
 	if !ok || !strings.EqualFold(scheme, "Basic") {
-		return false
+		return Caller{}, false
 	}
 	got, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cred))
 	if err != nil {
-		return false
+		return Caller{}, false
 	}
-	return subtle.ConstantTimeCompare(got, []byte(User+":"+s.v())) == 1
+	user, pass, ok := strings.Cut(string(got), ":")
+	if !ok {
+		return Caller{}, false
+	}
+	if user == User {
+		if subtle.ConstantTimeCompare([]byte(pass), []byte(s.v())) == 1 {
+			return Caller{}, true
+		}
+		return Caller{}, false
+	}
+	parts := strings.Split(user, ".")
+	if len(parts) != 3 || parts[0] != User || !ValidPool(parts[1]) || !ValidSID(parts[2]) {
+		return Caller{}, false
+	}
+	if !hmac.Equal([]byte(pass), []byte(s.sessionPassword(user))) {
+		return Caller{}, false
+	}
+	return Caller{Pool: parts[1], SID: parts[2]}, true
+}
+
+func (s Secret) sessionPassword(user string) string {
+	m := hmac.New(sha256.New, []byte(s.v()))
+	m.Write([]byte(sessionLabel + user))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// SessionProxyURL is the HTTPS_PROXY value for one session: user
+// chottag.<pool>.<sid>, the HMAC as its password. "" for a zero Secret or an
+// invalid pool or sid.
+func (s Secret) SessionProxyURL(hostport, pool, sid string) string {
+	if s.IsZero() || !ValidPool(pool) || !ValidSID(sid) {
+		return ""
+	}
+	user := User + "." + pool + "." + sid
+	return (&url.URL{Scheme: "http", User: url.UserPassword(user, s.sessionPassword(user)), Host: hostport}).String()
 }
 
 // Proof is hex(HMAC-SHA256(secret, "chottag-health-v1\n" + decimal(port) +

@@ -521,13 +521,7 @@ func TestSetsEnvRegistersTheSessionAndExecs(t *testing.T) {
 	if want := []string{"--resume"}; !slices.Equal(got.args, want) {
 		t.Errorf("args = %v, want %v: the original arguments must be passed through", got.args, want)
 	}
-	wantProxy := "HTTPS_PROXY=" + s.ProxyURL("127.0.0.1:"+strconv.Itoa(port))
-	// The failure message below never prints got.env or wantProxy
-	// themselves (fix round 1 item 7): both may carry the secret, and a
-	// test failure's own output is not exempt from "never print it".
-	if !slices.Contains(got.env, wantProxy) {
-		t.Errorf("HTTPS_PROXY = %s, want the secret URL", redact.UpstreamProxy(envGet(got.env, "HTTPS_PROXY")))
-	}
+	sessionSID(t, s, got.env, port)
 	// No pre-existing bundle, so NODE_EXTRA_CA_CERTS points straight at
 	// ca.pem and no bundle file is written (§4.3 step 5).
 	wantCA := "NODE_EXTRA_CA_CERTS=" + filepath.Join(home, "ca", "ca.pem")

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/exit"
 	"github.com/HaiNNT/c-hottag/internal/session"
+	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 )
 
 // withVersion sets the package's Version (normally stamped at build time
@@ -235,9 +237,39 @@ func bareUpdateGH(t *testing.T, base func(context.Context, ...string) ([]byte, e
 // through t.Cleanup (F130).
 func stubUpdateSeams(t *testing.T, gh func(context.Context, ...string) ([]byte, error), child func(context.Context, string, ...string) error, probe func(int) (bool, string)) {
 	t.Helper()
-	origGH, origChild, origProbe := updateGH, updateChild, updateProbe
+	origGH, origChild, origProbe, origFetch := updateGH, updateChild, updateProbe, updateFetch
 	updateGH, updateChild, updateProbe = gh, child, probe
-	t.Cleanup(func() { updateGH, updateChild, updateProbe = origGH, origChild, origProbe })
+	stubInstalled(t, "") // a test that cares overrides this after
+	if gh != nil {
+		// `update --check` asks updateFetch, not gh (R124). Answer it from the
+		// same fake "release view" tag, so a test written against gh keeps its
+		// meaning; a test about the fetch itself passes a nil gh and stubs
+		// updateFetch with stubFetch.
+		updateFetch = func(ctx context.Context, _ *url.URL, _ string) (updatecheck.Release, error) {
+			out, err := gh(ctx, "release", "view")
+			if err != nil {
+				return updatecheck.Release{}, err
+			}
+			tag := strings.TrimSpace(string(out))
+			return updatecheck.Release{Tag: tag, Version: strings.TrimPrefix(tag, "v"), PublishedAt: time.Now().Add(-72 * time.Hour)}, nil
+		}
+	}
+	t.Cleanup(func() {
+		updateGH, updateChild, updateProbe, updateFetch = origGH, origChild, origProbe, origFetch
+	})
+}
+
+// stubInstalled makes installedVersion report v, or an unknown version for "".
+func stubInstalled(t *testing.T, v string) {
+	t.Helper()
+	orig := installedVersion
+	installedVersion = func(string) (string, error) {
+		if v == "" {
+			return "", errors.New("the installed version is unknown")
+		}
+		return v, nil
+	}
+	t.Cleanup(func() { installedVersion = orig })
 }
 
 func neverRunningProbe(int) (bool, string) { return false, "" }
@@ -864,7 +896,7 @@ func TestSemverNewer(t *testing.T) {
 	cases := []struct {
 		name      string
 		a, b      string
-		wantNewer bool // semverNewer(a, b)
+		wantNewer bool // releaseNewer(a, b)
 	}{
 		{"equal", "0.3.0", "0.3.0", false},
 		{"plain newer patch", "0.3.0", "0.3.1", true},
@@ -905,8 +937,8 @@ func TestSemverNewer(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := semverNewer(c.a, c.b); got != c.wantNewer {
-				t.Errorf("semverNewer(%q, %q) = %v, want %v", c.a, c.b, got, c.wantNewer)
+			if got := releaseNewer(c.a, c.b); got != c.wantNewer {
+				t.Errorf("releaseNewer(%q, %q) = %v, want %v", c.a, c.b, got, c.wantNewer)
 			}
 		})
 	}

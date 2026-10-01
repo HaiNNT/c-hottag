@@ -36,7 +36,8 @@ login <name>`) and the passthrough clears on the next successful request.
 
 A running session that suddenly gets `407` was started before the v0.4.0
 update, or before `ca/proxy.secret` changed some other way; either way, it
-is still holding a secret the daemon no longer recognizes. Restart the
+is still holding a credential the daemon no longer recognizes (a per-session
+one is derived from the secret, so it stops working when the secret changes). Restart the
 session.
 
 ## HTTPS_PROXY conflicts with the daemon

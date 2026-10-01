@@ -14,6 +14,7 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
+	"github.com/HaiNNT/c-hottag/internal/session"
 )
 
 // cmuxTestEnv builds the environment for a launch inside a cmux surface
@@ -60,6 +61,9 @@ func health(t *testing.T, home string) proxy.Health {
 	return proxy.Health{Chottag: true, Version: "test", PID: os.Getpid()}
 }
 
+// pinnedSID is the sid the fixture makes the shim mint.
+const pinnedSID = "0123456789abcdef0123456789abcdef"
+
 // cmuxHandoffFixture bundles what every F243 test in this file needs: a
 // home with a running (fake) daemon already confirmed at state.json's own
 // port — an httptest server's real, ephemeral port, never 47821 — a fake
@@ -83,6 +87,9 @@ func newCmuxHandoffFixture(t *testing.T) cmuxHandoffFixture {
 	daemon := provingHealthServer(t, secret, health(t, home))
 	port := mustPort(t, daemon.URL)
 	writeStateWithPort(t, home, port)
+	origSID := newSID
+	newSID = func() string { return pinnedSID }
+	t.Cleanup(func() { newSID = origSID })
 	return cmuxHandoffFixture{
 		home:     home,
 		real:     fakeClaude(t),
@@ -121,17 +128,17 @@ func TestCmuxHandsOffToTheWrapperShimWithTheFullChildEnv(t *testing.T) {
 	if !slices.Contains(got.env, "CHOTTAG_CMUX_HANDOFF=1") {
 		t.Errorf("env missing CHOTTAG_CMUX_HANDOFF=1")
 	}
-	wantProxy := "HTTPS_PROXY=" + f.secret.ProxyURL("127.0.0.1:"+strconv.Itoa(f.port))
-	if !slices.Contains(got.env, wantProxy) {
-		// Never print got.env or wantProxy themselves: both may carry the
+	if !slices.Contains(got.env, "HTTPS_PROXY="+f.secret.SessionProxyURL("127.0.0.1:"+strconv.Itoa(f.port), proxyauth.DefaultPool, pinnedSID)) {
+		// Never print got.env or the expected URL themselves: both may carry the
 		// secret (the same rule shim_test.go's own happy-path test follows).
 		t.Error("handed-off env is missing HTTPS_PROXY in the secret's own proxy-URL shape")
 	}
 	if !slices.ContainsFunc(got.env, func(kv string) bool { return strings.HasPrefix(kv, "NODE_EXTRA_CA_CERTS=") }) {
 		t.Error("handed-off env is missing NODE_EXTRA_CA_CERTS")
 	}
-	if len(got.live) != 1 || got.live[0].PID != os.Getpid() || got.live[0].Port != f.port {
-		t.Errorf("registry at hand-off time = %v, want exactly one entry for this pid (%d) and port (%d)", got.live, os.Getpid(), f.port)
+	if len(got.live) != 1 || got.live[0].PID != os.Getpid() || got.live[0].Port != f.port ||
+		got.live[0].SID != pinnedSID || got.live[0].Pool != proxyauth.DefaultPool {
+		t.Errorf("registry at hand-off time = %v, want exactly one entry for this pid (%d), port (%d), pinned sid and default pool", got.live, os.Getpid(), f.port)
 	}
 }
 
@@ -430,6 +437,9 @@ func TestHandoffErrorFallsBackToTheNormalPath(t *testing.T) {
 		got.bin = bin
 		got.args = append([]string(nil), args...)
 		got.env = append([]string(nil), env...)
+		if reg, err := session.Open(filepath.Join(f.home, "run")); err == nil {
+			got.live, _ = reg.Live()
+		}
 		return nil
 	}
 	defer func() { execFn = orig }()
@@ -446,8 +456,11 @@ func TestHandoffErrorFallsBackToTheNormalPath(t *testing.T) {
 	if got.bin != f.real {
 		t.Errorf("exec'd %q, want the real claude %q after the hand-off failed", got.bin, f.real)
 	}
-	if !slices.Contains(got.env, "HTTPS_PROXY="+f.secret.ProxyURL("127.0.0.1:"+strconv.Itoa(f.port))) {
+	if !slices.Contains(got.env, "HTTPS_PROXY="+f.secret.SessionProxyURL("127.0.0.1:"+strconv.Itoa(f.port), proxyauth.DefaultPool, pinnedSID)) {
 		t.Error("the fallback's env is missing HTTPS_PROXY: it must reuse the same child environment the failed hand-off already built, not rebuild a bare one")
+	}
+	if len(got.live) != 1 || got.live[0].SID != pinnedSID || got.live[0].Pool != proxyauth.DefaultPool {
+		t.Errorf("registry at fallback exec = %v, want one entry with the pinned sid and default pool", got.live)
 	}
 	for _, kv := range got.env {
 		if kv == "CHOTTAG_CMUX_HANDOFF=1" {

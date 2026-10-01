@@ -258,7 +258,7 @@ def chottag_home_exempts(assignments):
     return os.path.realpath(expanded) != prod
 
 
-def chottag_is_readonly(args):
+def chottag_is_readonly(args, installed=False):
     """R91's read-only forms, kept short and exact, once "--json" (a
     global output flag most commands accept, not a read-only marker by
     itself -- fix round 1, item 2) is dropped from args. Anything else,
@@ -282,12 +282,39 @@ def chottag_is_readonly(args):
     if first == "update":
         # Fix round 2, item 2: read-only only for exactly `update --check`
         # -- --check plus another flag (e.g. --restart) still installs.
-        return words == ["update", "--check"]
+        # R123: prod is updated with `chottag update` like any install, so
+        # a bare `update` and `update --version vX.Y.Z` are allowed too
+        # (the product backs up state.json and the rc first). --restart,
+        # --repo and everything else stay denied.
+        # The mutating forms only run the INSTALLED chottag (`chottag` on
+        # PATH or ~/.chottag/bin/chottag), never a dev build, an unstamped
+        # `go run` or an arbitrary path: those report "dev", which is
+        # always older than any release. --check is harmless from any path.
+        if words == ["update", "--check"]:
+            return True
+        if not installed:
+            return False
+        if words == ["update"]:
+            return True
+        return (len(words) == 3 and words[1] == "--version"
+                and re.fullmatch(r"v\d+\.\d+\.\d+", words[2]) is not None)
     if first == "own" and len(words) == 3:
         return True
     if first == "rotate" and len(words) == 2:
         return True
     return False
+
+
+def is_installed_chottag(tok):
+    """True when tok is exactly `chottag` (resolved from PATH) or the
+    installed ~/.chottag/bin/chottag (spelled with ~, $HOME or the real
+    home)."""
+    if tok == "chottag":
+        return True
+    expanded = expand_real_home_refs(tok)
+    if expanded is None:
+        return False
+    return os.path.normpath(expanded) == os.path.join(REAL_HOME, ".chottag", "bin", "chottag")
 
 
 def segment_denies(segment):
@@ -311,7 +338,7 @@ def segment_denies(segment):
         return False
     if chottag_home_exempts(assignments):
         return False
-    return not chottag_is_readonly(args)
+    return not chottag_is_readonly(args, installed=is_installed_chottag(remaining[0]))
 
 
 def cmd_denies(cmd):

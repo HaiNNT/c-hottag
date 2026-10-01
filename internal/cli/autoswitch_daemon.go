@@ -503,6 +503,96 @@ func (c *statusSink) setAuto(a status.Auto, flush bool) {
 	}
 }
 
+// setUpdate publishes the update-check cache (R124). Only a change is
+// written, at once: it is rare, and it is what a notice just announced. u is
+// copied: the sink never shares a pointer with its caller. A nil u is
+// ignored.
+func (c *statusSink) setUpdate(u *status.Update) {
+	if u == nil {
+		return
+	}
+	cp := *u
+	if u.Auto != nil {
+		a := *u.Auto
+		cp.Auto = &a
+	}
+	c.mu.Lock()
+	changed := c.file.Update == nil || !sameUpdate(*c.file.Update, cp)
+	if changed {
+		c.file.Update = &cp
+	}
+	c.mu.Unlock()
+	if changed {
+		c.flush()
+	}
+}
+
+// updateCopy returns a copy of the update-check cache the daemon last
+// published, with a newer check `chottag update --check` wrote to disk since
+// merged in (mergeCLIUpdateLocked). The zero value when there is none. Only
+// the update loop calls it: the disk is read without the lock held.
+func (c *statusSink) updateCopy() status.Update {
+	d := c.loadUpdate(c.path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mergeCLIUpdateLocked(d)
+	if c.file.Update == nil {
+		return status.Update{}
+	}
+	u := *c.file.Update
+	if u.Auto != nil {
+		a := *u.Auto
+		u.Auto = &a
+	}
+	return u
+}
+
+// loadDiskUpdate is the default loadUpdate: the `update` in the status.json
+// at path, or nil when there is none or the file cannot be read.
+func loadDiskUpdate(path string) *status.Update {
+	f, err := status.Load(path)
+	if err != nil || f.Update == nil {
+		return nil
+	}
+	return f.Update
+}
+
+// mergeCLIUpdateLocked keeps a check `chottag update --check` wrote to
+// status.json when it is newer (by CheckedAt) than the sink's own, so the
+// sink's next write does not overwrite it. It adopts only the fields the CLI
+// owns (Latest, PublishedAt, CheckedAt, Available, Error): Notified and
+// Auto stay the daemon's, since a CLI copy of them can predate the
+// daemon's own newer write. Call with c.mu held. It reports whether it
+// changed c.file.
+func (c *statusSink) mergeCLIUpdateLocked(d *status.Update) bool {
+	if d == nil {
+		return false
+	}
+	if c.file.Update != nil && !d.CheckedAt.After(c.file.Update.CheckedAt) {
+		return false
+	}
+	u := status.Update{}
+	if c.file.Update != nil {
+		u = *c.file.Update
+	}
+	u.Latest, u.PublishedAt, u.CheckedAt, u.Available, u.Error = d.Latest, d.PublishedAt, d.CheckedAt, d.Available, d.Error
+	c.file.Update = &u
+	return true
+}
+
+// sameUpdate reports whether two cache values are equal, comparing times
+// by instant.
+func sameUpdate(a, b status.Update) bool {
+	if (a.Auto == nil) != (b.Auto == nil) {
+		return false
+	}
+	if a.Auto != nil && (a.Auto.Version != b.Auto.Version || !a.Auto.At.Equal(b.Auto.At) || a.Auto.OK != b.Auto.OK || a.Auto.Error != b.Auto.Error) {
+		return false
+	}
+	return a.Latest == b.Latest && a.PublishedAt.Equal(b.PublishedAt) && a.CheckedAt.Equal(b.CheckedAt) &&
+		a.Available == b.Available && a.Notified == b.Notified && a.Error == b.Error
+}
+
 // setNeedsLoginCleared replaces a recorded needs-login token state with ok
 // once the account has answered a request on its own credential (ruling 7):
 // eligibility reads this state, and nothing else ever cleared it. It goes

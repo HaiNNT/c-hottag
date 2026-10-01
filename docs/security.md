@@ -24,14 +24,23 @@ only in Claude Code's own stores.
 
 The daemon listens on `127.0.0.1` only. Each install has its own secret in
 `~/.chottag/ca/proxy.secret` (or `$CHOTTAG_HOME/ca/proxy.secret`; mode
-0600); the `claude` shim puts it in the
-userinfo of `HTTPS_PROXY` (`http://chottag:<secret>@127.0.0.1:47821`).
-Most HTTP clients that inherit `HTTPS_PROXY` send the secret back
+0600); the `claude` shim never hands it over itself. It gives each `claude` its
+own credential in the userinfo of `HTTPS_PROXY`:
+`http://chottag.default.<sid>:<password>@127.0.0.1:47821`. The user names
+the session (`<sid>` is 32 random hex characters, new for every `claude`)
+and the password is `HMAC-SHA256(secret, "chottag-session-v1\n" + user)`,
+so it proves the secret without revealing it and works for that user
+only. The older `http://chottag:<secret>@...` form is still accepted, as an
+unidentified caller.
+Most HTTP clients that inherit `HTTPS_PROXY` send the credential back
 automatically, but not all: Node's own built-in `fetch`, for example,
-ignores `HTTPS_PROXY` entirely. Before handing the secret to `claude`, the
+ignores `HTTPS_PROXY` entirely. Before handing a credential to `claude`, the
 shim also challenges the daemon over its health endpoint and checks a
 fresh `HMAC(secret, port, nonce)` proof, so a process that merely squats
-the port is never trusted.
+the port is never trusted. A daemon from before v0.6.0 proves the secret but
+accepts only the legacy credential; it does not say it understands session
+credentials in that document, so the shim gives its sessions the legacy
+`chottag:<secret>` credential instead.
 
 Without a matching secret, the proxy answers
 `407 Proxy Authentication Required` for:

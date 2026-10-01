@@ -160,7 +160,7 @@ its conversation (don't use a `!` command for this: its output lands in
 the chat):
 
 1. **The status line (recommended).** `chottag statusline` prints
-   `c» <serving account> · 5h … · 7d …` for a session that goes through
+   `c» <this session's account> · 5h … · 7d …` for a session that goes through
    chottag, `c» down` when chottag is not answering, and `c» off` for a
    Home session. It never replaces the user's status line: ask whether
    they have one first.

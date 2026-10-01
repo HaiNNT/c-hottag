@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -32,10 +33,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/HaiNNT/c-hottag/internal/exit"
+	"github.com/HaiNNT/c-hottag/internal/fsutil"
 	"github.com/HaiNNT/c-hottag/internal/shim"
+	"github.com/HaiNNT/c-hottag/internal/status"
+	"github.com/HaiNNT/c-hottag/internal/store"
+	"github.com/HaiNNT/c-hottag/internal/updatecheck"
+	"github.com/HaiNNT/c-hottag/internal/usagepoll"
 )
 
-const updateUsage = "usage: chottag update [--check] [--version vX.Y.Z] [--repo OWNER/NAME] [--restart]"
+const updateUsage = "usage: chottag update [--check] [--version vX.Y.Z] [--repo OWNER/NAME] [--restart | --no-restart]\n       chottag update [--auto-check on|off] [--auto-install on|off] [--auto-restart on|off]"
 
 // versionTagPattern is install.sh's check_version rule (spec §2.2, §2.3): a
 // release tag, with an optional leading v and an optional pre-release or
@@ -62,7 +68,8 @@ func checkVersionTag(tag string) (ver string, ok bool) {
 }
 
 // updateResult is `update --json`'s fields (spec §2.3). Daemon is one of
-// "not-running", "restarted", "deferred", "restart-failed", or
+// "not-running", "restarted", "deferred", "restart-failed",
+// "not-restarted" (--no-restart: the daemon was left alone), or
 // "not-probed" (fix round 1 item 11: a daemonPort/health error after an
 // otherwise-successful install, so the daemon was never reached at all).
 type updateResult struct {
@@ -74,6 +81,8 @@ type updateResult struct {
 	Pruned          []string `json:"pruned,omitempty"`
 	Daemon          string   `json:"daemon,omitempty"`
 	LiveSessions    int      `json:"liveSessions,omitempty"`
+	// Backups lists the files update copied before installing (R123).
+	Backups []string `json:"backups,omitempty"`
 }
 
 // --- seams ------------------------------------------------------------
@@ -96,6 +105,88 @@ var updateGH = func(ctx context.Context, args ...string) ([]byte, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// updateFetch asks GitHub for the repo's latest release: one HTTPS GET, no
+// token, no gh (R124). upstream is the already-resolved upstream proxy (nil
+// dials direct): the daemon passes its own, and `chottag update --check`
+// resolves one with updateUpstream. TestMain installs a panicking default.
+var updateFetch = fetchViaUpstream
+
+// fetchViaUpstream is updateFetch's production body.
+func fetchViaUpstream(ctx context.Context, upstream *url.URL, repo string) (updatecheck.Release, error) {
+	return fetchLatest(ctx, usagepoll.NewClient(upstream), updatecheck.APIBase, repo)
+}
+
+// updateUpstream is the upstream proxy a CLI run of the check uses, resolved
+// as `daemon start` does: the shell's HTTPS_PROXY, unless it is chottag's
+// own address.
+func updateUpstream(h string) (*url.URL, error) {
+	port, err := daemonPort(h)
+	if err != nil {
+		port = 0 // no known port: nothing can be chottag's own
+	}
+	u, err := parseUpstreamProxy(shim.SpawnUpstream(os.Environ(), port))
+	if err != nil {
+		return nil, fmt.Errorf("HTTPS_PROXY: %w", err)
+	}
+	return u, nil
+}
+
+// fetchLatest is updateFetch's request, with a 10 s bound, on c.
+func fetchLatest(ctx context.Context, c *http.Client, apiBase, repo string) (updatecheck.Release, error) {
+	ctx, cancel := context.WithTimeout(ctx, updateFetchTimeout)
+	defer cancel()
+	return updatecheck.Latest(ctx, c, apiBase, repo)
+}
+
+// updateFetchTimeout bounds one update check.
+const updateFetchTimeout = 10 * time.Second
+
+// updateLockName is the file, under <home>/run, an install holds so a
+// person's update and the daemon's never overlap.
+const updateLockName = "update.lock"
+
+// updateRepo is the repo `update` works against for home h: install.json's
+// when it is valid, else the default.
+func updateRepo(h string) string { return resolveUpdateRepo(h, nil) }
+
+func resolveUpdateRepo(h string, r *reporter) string {
+	rec, ok, err := readInstallRecord(h)
+	switch {
+	case err != nil:
+		if r != nil {
+			r.Warn(warnInstallRecord, "chottag: install.json is unreadable; using the default repo: "+err.Error())
+		}
+	case ok && rec.Repo != "":
+		if validRepo(rec.Repo) {
+			return rec.Repo
+		}
+		// Fix round 1 item 4: an invalid repo already sitting in
+		// install.json (hand-edited, or from a version of install.sh
+		// that validated less strictly) must never be used, or written
+		// back — the repo stays defaultRepo, and nothing overwrites
+		// it with rec.Repo again.
+		if r != nil {
+			r.Warn(warnInstallRecord, fmt.Sprintf("chottag: invalid repo %q in install.json; using the default %s", rec.Repo, defaultRepo))
+		}
+	}
+	return defaultRepo
+}
+
+// releaseNewer reports whether candidate is a strictly newer release than
+// current, for `update`'s install path. It is updatecheck.Newer plus one
+// rule: a current version that does not parse (this binary's own unstamped
+// "dev") is older than any release, so a dev build can update to one. A
+// candidate that does not parse is never newer.
+func releaseNewer(current, candidate string) bool {
+	if !updatecheck.Parses(candidate) {
+		return false
+	}
+	if !updatecheck.Parses(current) {
+		return true
+	}
+	return updatecheck.Newer(candidate, current)
 }
 
 // ghError is the error updateGH's production default returns for a
@@ -605,7 +696,7 @@ type versionPrecedence struct {
 // function's own doc comment is the only contract a future caller sees,
 // and it should hold even for a caller that hands it a raw tag. ok is
 // false when even the MAJOR.MINOR.PATCH base fails to parse —
-// semverNewer treats that as always the oldest possible value, the same
+// releaseNewer treats that as always the oldest possible value, the same
 // rule "dev" (this binary's own unstamped default) has always needed.
 //
 // A describe suffix built from a commit AFTER a pre-release tag (e.g.
@@ -782,25 +873,6 @@ func comparePrecedence(a, b versionPrecedence) int {
 	return 0
 }
 
-// semverNewer reports whether b is a strictly newer release than a, by
-// the full ordering above. An a that fails to parse at all (e.g. this
-// binary's dev-build "dev") is always older than any parseable b; a b
-// that fails to parse can never be "newer" — there is nothing sound to
-// compare it against (spec §2.3's R82 ruling, fix round 1 item 13: a bare
-// `chottag update` never installs a release that is not newer than this
-// one).
-func semverNewer(a, b string) bool {
-	pb, bOK := parseVersionPrecedence(b)
-	if !bOK {
-		return false
-	}
-	pa, aOK := parseVersionPrecedence(a)
-	if !aOK {
-		return true
-	}
-	return comparePrecedence(pa, pb) < 0
-}
-
 // --- prune --------------------------------------------------------------
 
 type versionDir struct {
@@ -810,7 +882,7 @@ type versionDir struct {
 }
 
 // sortVersionDirsNewestFirst orders dirs newest first, by the same full
-// version order `update` itself uses for semverNewer (parseVersionPrecedence
+// version order `update` itself uses for releaseNewer (parseVersionPrecedence
 // / comparePrecedence) — never just a MAJOR.MINOR.PATCH comparison, which
 // would treat every "0.3.0-N-g<hex>" describe build as merely equal to the
 // bare 0.3.0 release it was cut from, and to every OTHER describe build on
@@ -960,12 +1032,30 @@ func runUpdate(args []string, r *reporter) int {
 	versionFlag := fs.String("version", "", "install this release tag instead of the latest, e.g. to roll back")
 	repoFlag := fs.String("repo", "", "use this repo instead of install.json's or the default")
 	restart := fs.Bool("restart", false, "restart the daemon even if a claude session is running")
+	noRestart := fs.Bool("no-restart", false, "install, but leave the daemon running")
+	autoCheck := fs.String("auto-check", "", "turn the daemon's daily update check on or off")
+	autoInstall := fs.String("auto-install", "", "turn the daemon's automatic install of a new release on or off")
+	autoRestart := fs.String("auto-restart", "", "turn the daemon's restart onto an installed update, when idle, on or off")
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return r.FlagError(err)
 	}
 	if len(positional) != 0 {
 		return r.Usage(updateUsage)
+	}
+	if *restart && *noRestart {
+		msg := "--restart and --no-restart cannot be combined"
+		fmt.Fprintf(r.Stderr(), "chottag: %s\n%s\n", msg, updateUsage)
+		return r.FailNoText(exit.Usage, codeUsage, msg, nil)
+	}
+	setSwitches := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "auto-check" || f.Name == "auto-install" || f.Name == "auto-restart" {
+			setSwitches = true
+		}
+	})
+	if setSwitches {
+		return runUpdateSwitches(r, *autoCheck, *autoInstall, *autoRestart, *check, *versionFlag != "", *restart, *noRestart, fs)
 	}
 	if *repoFlag != "" && !validRepo(*repoFlag) {
 		msg := fmt.Sprintf("--repo must look like OWNER/NAME, got %q", *repoFlag)
@@ -987,35 +1077,37 @@ func runUpdate(args []string, r *reporter) int {
 		return r.FailErr(err)
 	}
 
-	repo := defaultRepo
-	if rec, ok, err := readInstallRecord(h); err != nil {
-		r.Warn(warnInstallRecord, "chottag: install.json is unreadable; using the default repo: "+err.Error())
-	} else if ok && rec.Repo != "" {
-		if validRepo(rec.Repo) {
-			repo = rec.Repo
-		} else {
-			// Fix round 1 item 4: an invalid repo already sitting in
-			// install.json (hand-edited, or from a version of install.sh
-			// that validated less strictly) must never be used, or written
-			// back — repo below stays defaultRepo, and nothing overwrites
-			// it with rec.Repo again.
-			r.Warn(warnInstallRecord, fmt.Sprintf("chottag: invalid repo %q in install.json; using the default %s", rec.Repo, defaultRepo))
-		}
-	}
+	repo := resolveUpdateRepo(h, r)
 	if *repoFlag != "" {
 		repo = *repoFlag
 	}
 
 	ctx := context.Background()
-	needGH := !(*check && usingExplicitVersion)
-	if needGH {
+	// --check asks GitHub's API directly (updateFetch) and needs no gh;
+	// installing still does, for the download and the attestation.
+	if !*check {
 		if err := ghAuthCheck(ctx); err != nil {
 			return r.Fail(exit.Error, codeUpdateFailed, err.Error(), nil)
 		}
 	}
 
 	tag := *versionFlag
-	if tag == "" {
+	if tag == "" && *check {
+		upstream, err := updateUpstream(h)
+		if err != nil {
+			return r.Fail(exit.Error, codeUpdateFailed, err.Error(), nil)
+		}
+		rel, err := updateFetch(ctx, upstream, repo)
+		// Only the install's own repo goes into the cache the daemon shares:
+		// `--repo X` must not leave another repo's release in it.
+		if repo == updateRepo(h) {
+			recordUpdateCheck(h, rel, err, r)
+		}
+		if err != nil {
+			return r.Fail(exit.Error, codeUpdateFailed, err.Error(), nil)
+		}
+		tag = rel.Tag
+	} else if tag == "" {
 		tag, err = latestTag(ctx, repo)
 		if err != nil {
 			return r.Fail(exit.Error, codeUpdateFailed, err.Error(), nil)
@@ -1025,7 +1117,7 @@ func runUpdate(args []string, r *reporter) int {
 	if !ok {
 		return r.Fail(exit.Error, codeUpdateFailed, fmt.Sprintf("release tag %q from %s does not look like a version", tag, repo), nil)
 	}
-	newer := semverNewer(Version, ver)
+	newer := releaseNewer(Version, ver)
 
 	if *check {
 		if newer {
@@ -1066,6 +1158,20 @@ func runUpdate(args []string, r *reporter) int {
 		return r.OK(updateResult{Repo: repo, Current: Version, Latest: ver, UpdateAvailable: false})
 	}
 
+	// The whole install, from the download through setup, holds the update
+	// lock, so a person's update and the daemon's never overlap (R124).
+	if err := os.MkdirAll(filepath.Join(h, "run"), 0o700); err != nil {
+		return r.FailErr(err)
+	}
+	unlock, locked, err := fsutil.TryLock(filepath.Join(h, "run", updateLockName))
+	if err != nil {
+		return r.FailErr(err)
+	}
+	if !locked {
+		return r.Fail(exit.Error, codeUpdateInProgress, "another chottag update is running", nil)
+	}
+	defer unlock()
+
 	// Download and verify, into a temp dir removed on return: nothing under
 	// CHOTTAG_HOME is touched until the checksum has matched (spec §2.3
 	// "Install" steps 1-3).
@@ -1105,7 +1211,7 @@ func runUpdate(args []string, r *reporter) int {
 			// which is routine while Version itself predates it too, and
 			// stays possible even once past it if Version fails to parse
 			// at all: a "dev" build (this binary's own unstamped
-			// default) never does, so semverNewer("dev", x) is always
+			// default) never does, so releaseNewer("dev", x) is always
 			// true (fix round 2 item 1). Mirror install.sh's own
 			// refusal either way: fail closed on a public repo,
 			// note-and-continue on a private one (which never gets
@@ -1128,6 +1234,24 @@ func runUpdate(args []string, r *reporter) int {
 		r.Text("verified the build attestation of %s (%s)\n", asset, repo)
 	} else {
 		r.Warn(warnAttestationSkipped, fmt.Sprintf("chottag: %s is private: GitHub attests public repositories only, so %s is verified by checksum only", repo, tag))
+	}
+
+	// R123: state.json is backed up before anything is extracted or the new
+	// binary's setup (and any migration it runs) can touch it, but after the
+	// download is verified. A failed backup stops here.
+	var backups []string
+	stateBackup, err := backupFile(h, filepath.Join(h, "state.json"), "state.json")
+	var pe *backupPruneError
+	if errors.As(err, &pe) {
+		r.Warn(warnPruneFailed, "chottag: "+pe.Error())
+		err = nil
+	}
+	if err != nil {
+		return r.Fail(exit.Error, codeUpdateFailed, fmt.Sprintf("could not back up state.json: %s; nothing was installed", err), nil)
+	}
+	if stateBackup != "" {
+		backups = append(backups, stateBackup)
+		r.Text("backed up state.json to %s\n", stateBackup)
 	}
 
 	if err := extractChottag(assetPath, destDir, destBin); err != nil {
@@ -1197,8 +1321,15 @@ func runUpdate(args []string, r *reporter) int {
 	}
 	r.Text("pruned %d old version(s)\n", len(pruned))
 
-	res := updateResult{Repo: repo, Current: Version, Latest: ver, UpdateAvailable: newer, Installed: true, Pruned: pruned}
+	res := updateResult{Repo: repo, Current: Version, Latest: ver, UpdateAvailable: newer, Installed: true, Pruned: pruned, Backups: backups}
 
+	if *noRestart {
+		// --no-restart (R124): the daemon is left alone on every path, a
+		// running one or none, with sessions or without.
+		res.Daemon = "not-restarted"
+		r.Text("daemon not restarted (--no-restart)\n")
+		return r.OK(res)
+	}
 	if portErr != nil {
 		// Fix round 1 item 11: the install itself already succeeded, so
 		// this is a warning, not a failure — nothing here undoes the
@@ -1247,6 +1378,156 @@ func runUpdate(args []string, r *reporter) int {
 	if sessionsUnknown {
 		sessionsText = "session count unknown"
 	}
-	r.TextWarn(warnUpdateDeferred, fmt.Sprintf("chottag: daemon restart deferred: %s running; run: chottag daemon restart", sessionsText))
+	how := "run: chottag daemon restart"
+	if st, err := (store.Store{Dir: h}).Load(); err == nil && st.RestartOn() && daemonRestartsItselfOnto(daemonVer, ver) {
+		// R126: the daemon restarts itself once idle.
+		how = "the daemon restarts itself when idle, or run: chottag daemon restart"
+	}
+	r.TextWarn(warnUpdateDeferred, fmt.Sprintf("chottag: daemon restart deferred: %s running; %s", sessionsText, how))
 	return r.OK(res)
+}
+
+// restartLoopSince is the first release whose daemon restarts itself when idle.
+const restartLoopSince = "0.6.0"
+
+// daemonRestartsItselfOnto is whether a running daemon of version daemonVer
+// will restart itself onto the installed ver: it has the loop (0.6.0 or
+// later; a dev build or an unparseable version has none) and ver is newer.
+func daemonRestartsItselfOnto(daemonVer, ver string) bool {
+	if !updatecheck.Parses(daemonVer) || updatecheck.Newer(restartLoopSince, daemonVer) {
+		return false
+	}
+	return updatecheck.Newer(ver, daemonVer)
+}
+
+// recordUpdateCheck writes the outcome of a check into status.json's
+// `update`, keeping the daemon's own notified and auto fields. On a failed
+// fetch it records the error and keeps the last latest. A cache that cannot
+// be written is a warning, never a reason to fail the check.
+func recordUpdateCheck(h string, rel updatecheck.Release, fetchErr error, r *reporter) {
+	path := status.Path(h)
+	f, err := status.Load(path)
+	if err != nil {
+		r.Warn(warnUpdateCache, "chottag: could not read status.json to record the check: "+err.Error())
+		return
+	}
+	u := status.Update{}
+	if f.Update != nil {
+		u = *f.Update
+	}
+	u.CheckedAt = time.Now().UTC()
+	if fetchErr != nil {
+		u.Error = fetchErr.Error()
+	} else {
+		u.Error = ""
+		u.Latest = rel.Version
+		u.PublishedAt = rel.PublishedAt
+		inst, _ := installedVersion(h) // unknown: only the running version counts
+		u.Available = releaseAvailable(rel, Version, inst)
+	}
+	f.Update = &u
+	b, err := status.Marshal(f)
+	if err == nil {
+		err = status.WriteBytes(path, b)
+	}
+	if err != nil {
+		r.Warn(warnUpdateCache, "chottag: could not record the check in status.json: "+err.Error())
+	}
+}
+
+// parseOnOff parses an `on` or `off` flag value.
+func parseOnOff(v string) (on bool, ok bool) {
+	switch v {
+	case "on":
+		return true, true
+	case "off":
+		return false, true
+	}
+	return false, false
+}
+
+// updateSwitches is the `updates` object of `update --auto-check ...`.
+type updateSwitches struct {
+	Check   bool `json:"check"`
+	Auto    bool `json:"auto"`
+	Restart bool `json:"restart"`
+}
+
+// updateSwitchesOf reads the three switches from st.
+func updateSwitchesOf(st store.State) updateSwitches {
+	return updateSwitches{Check: st.UpdateCheckOn(), Auto: st.AutoUpdateOn(), Restart: st.RestartOn()}
+}
+
+// runUpdateSwitches is `update --auto-check on|off`, `--auto-install on|off`
+// and `--auto-restart on|off`: set the switch in state.json, print both, exit. Auto-install
+// needs the check, so turning the check off turns auto-install off too, and
+// turning auto-install on turns the check on.
+func runUpdateSwitches(r *reporter, autoCheck, autoInstall, autoRestart string, check, explicitVersion, restart, noRestart bool, fs *flag.FlagSet) int {
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	usageErr := func(msg string) int {
+		fmt.Fprintf(r.Stderr(), "chottag: %s\n%s\n", msg, updateUsage)
+		return r.FailNoText(exit.Usage, codeUsage, msg, nil)
+	}
+	if check || explicitVersion || restart || noRestart || given["repo"] {
+		return usageErr("--auto-check, --auto-install and --auto-restart set a switch and exit: they cannot be combined with --check, --version, --repo, --restart or --no-restart")
+	}
+	var checkOn, installOn, haveCheck, haveInstall bool
+	if given["auto-check"] {
+		var ok bool
+		if checkOn, ok = parseOnOff(autoCheck); !ok {
+			return usageErr(fmt.Sprintf("--auto-check takes on or off, got %q", autoCheck))
+		}
+		haveCheck = true
+	}
+	if given["auto-install"] {
+		var ok bool
+		if installOn, ok = parseOnOff(autoInstall); !ok {
+			return usageErr(fmt.Sprintf("--auto-install takes on or off, got %q", autoInstall))
+		}
+		haveInstall = true
+	}
+	var restartOn, haveRestart bool
+	if given["auto-restart"] {
+		var ok bool
+		if restartOn, ok = parseOnOff(autoRestart); !ok {
+			return usageErr(fmt.Sprintf("--auto-restart takes on or off, got %q", autoRestart))
+		}
+		haveRestart = true
+	}
+	if haveCheck && haveInstall && !checkOn && installOn {
+		return usageErr("--auto-check off and --auto-install on contradict each other: auto-install needs the check")
+	}
+	h, err := home()
+	if err != nil {
+		return r.FailErr(err)
+	}
+	st, err := (store.Store{Dir: h}).Update(func(st *store.State) error {
+		if haveCheck {
+			st.SetUpdateCheck(checkOn)
+			if !checkOn {
+				st.SetAutoUpdate(false)
+			}
+		}
+		if haveInstall {
+			st.SetAutoUpdate(installOn)
+		}
+		if haveRestart {
+			st.SetAutoRestart(restartOn)
+		}
+		return nil
+	})
+	if err != nil {
+		return r.FailErr(err)
+	}
+	onWord := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	r.Text("update check: %s; auto-install: %s; auto-restart: %s\n", onWord(st.UpdateCheckOn()), onWord(st.AutoUpdateOn()), onWord(st.RestartOn()))
+	return r.OK(struct {
+		Updates updateSwitches `json:"updates"`
+	}{updateSwitchesOf(st)})
 }

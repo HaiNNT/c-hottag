@@ -32,7 +32,12 @@ the shim:
 1. makes sure the daemon is running, starting it if it is not;
 2. checks the daemon proves it holds this install's own secret (a fresh
    health challenge, not just "something answered on the port");
-3. runs the real `claude` binary with `HTTPS_PROXY=http://chottag:<secret>@127.0.0.1:47821`
+3. runs the real `claude` binary with
+   `HTTPS_PROXY=http://chottag.default.<sid>:<password>@127.0.0.1:47821`, a
+   credential made for this session alone (`<sid>` is a new random id; the
+   password is derived from the install's secret and that user, so the
+   secret itself is not handed out; the older `chottag:<secret>` form still
+   works, as an unidentified caller),
    and `NODE_EXTRA_CA_CERTS` set to chottag's CA certificate — or, if the
    shell already had its own `NODE_EXTRA_CA_CERTS`, a bundle of that file
    plus chottag's CA, so neither trust store is lost.

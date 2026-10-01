@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,7 +32,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +46,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/redact"
 	"github.com/HaiNNT/c-hottag/internal/shim"
+	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 	"github.com/HaiNNT/c-hottag/internal/usagepoll"
 )
 
@@ -211,6 +212,38 @@ func TestMain(m *testing.M) {
 	updateProbe = func(int) (bool, string) {
 		panic("updateProbe reached from internal/cli's test binary: an update test must stub it directly and restore it with t.Cleanup")
 	}
+	// updateFetch (update.go) is the update check's one HTTP request, to
+	// api.github.com: no test may reach it (R124).
+	updateFetch = func(context.Context, *url.URL, string) (updatecheck.Release, error) {
+		panic("updateFetch reached from internal/cli's test binary: a test must stub it with stubFetch")
+	}
+	// The update loop's clock, jitter, timer and child (updateloop.go).
+	updateLoopClock = func() time.Time {
+		panic("updateLoopClock reached from internal/cli's test binary: a test must stub it")
+	}
+	updateJitter = func() time.Duration {
+		panic("updateJitter reached from internal/cli's test binary: a test must stub it")
+	}
+	newUpdateTimer = func(time.Duration) (<-chan time.Time, func()) {
+		panic("newUpdateTimer reached from internal/cli's test binary: a test must stub it")
+	}
+	autoUpdateRun = func(context.Context, string, string) autoRun {
+		panic("autoUpdateRun reached from internal/cli's test binary: a test must stub it")
+	}
+	installedVersion = func(string) (string, error) {
+		panic("installedVersion reached from internal/cli's test binary: a test must stub it")
+	}
+	// The restart loop's spawn and ticker (restartloop.go, R126): a test
+	// must never start a real chottag.
+	restartSpawn = func(string, string, ...string) error {
+		panic("restartSpawn reached from internal/cli's test binary: a test must stub it")
+	}
+	installedViaLink = func(string, string) bool {
+		panic("installedViaLink reached from internal/cli's test binary: a test must stub it")
+	}
+	newRestartTicker = func(time.Duration) (<-chan time.Time, func()) {
+		panic("newRestartTicker reached from internal/cli's test binary: a test must stub it")
+	}
 	// A package-wide safe default for $HOME, installed before any test runs:
 	// setup.go and uninstall.go both read os.Getenv("HOME") for the shell rc
 	// path, and a mutation-testing exercise against login.go or logout.go
@@ -343,6 +376,7 @@ func healthServer(t *testing.T, home string, h proxy.Health) *httptest.Server {
 		doc := h
 		if n := r.URL.Query().Get(proxyauth.NonceParam); proxyauth.ValidNonce(n) {
 			doc.Proof = secret.Proof(identityHealthServerPort(t, r), n)
+			doc.Sessions = true // like a daemon that accepts session credentials
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(doc); err != nil {
@@ -501,12 +535,11 @@ func runLifecycle(t *testing.T, home string) *lifecycleCapture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantProxy := "HTTPS_PROXY=" + secret.ProxyURL("127.0.0.1:"+strconv.Itoa(port))
-	// Never print c.execEnv or wantProxy on failure (fix round 1 item 7):
-	// both may carry the secret, and a test failure's own output is not
-	// exempt from "never print it".
-	if !slices.Contains(c.execEnv, wantProxy) {
-		t.Errorf("shim.Run's execEnv missing the secret URL; HTTPS_PROXY = %s", redact.UpstreamProxy(envValue(c.execEnv, "HTTPS_PROXY")))
+	// Never print c.execEnv or the URL on failure (fix round 1 item 7): both
+	// carry the secret, and a test failure's own output is not exempt from
+	// "never print it". M6: the URL is a per-session one, chottag.default.<sid>.
+	if !isSessionProxyURL(secret, envValue(c.execEnv, "HTTPS_PROXY"), "127.0.0.1:"+strconv.Itoa(port)) {
+		t.Errorf("shim.Run's execEnv missing the session URL; HTTPS_PROXY = %s", redact.UpstreamProxy(envValue(c.execEnv, "HTTPS_PROXY")))
 	}
 
 	if code := runLogout([]string{"--yes", "--force", "--claude", fakeClaude, "A"}, strings.NewReader(""), newReporter(false,
@@ -1007,4 +1040,16 @@ func TestCliRunPassesItsOwnVersionToShim(t *testing.T) {
 	if strings.Contains(errb.String(), "predates proxy authentication") {
 		t.Errorf("stderr %q must not treat a same-version proof-less daemon as legacy", errb.String())
 	}
+}
+
+// isSessionProxyURL reports whether raw is a session proxy URL for hostport
+// that secret accepts as an identified caller.
+func isSessionProxyURL(secret proxyauth.Secret, raw, hostport string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil || u.Host != hostport {
+		return false
+	}
+	pass, _ := u.User.Password()
+	c, ok := secret.Caller("Basic " + base64.StdEncoding.EncodeToString([]byte(u.User.Username()+":"+pass)))
+	return ok && c.Identified()
 }

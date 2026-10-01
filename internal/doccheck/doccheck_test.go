@@ -217,3 +217,19 @@ func TestShapeHiddenFieldsAreNeitherRequiredNorAllowed(t *testing.T) {
 		t.Errorf("a shown hidden field passed: %q", diffs)
 	}
 }
+
+type strictEmbedded struct {
+	E inner `json:"e"`
+}
+
+type shadowOuter struct {
+	strictEmbedded
+	E string `json:"e"`
+}
+
+func TestShapeAnOuterFieldShadowsAPromotedOne(t *testing.T) {
+	doc := decode(t, `{"e":"text"}`)
+	if diffs := Shape(doc, reflect.TypeFor[shadowOuter](), nil); len(diffs) != 0 {
+		t.Errorf("shadowed field was asked for twice: %q", diffs)
+	}
+}

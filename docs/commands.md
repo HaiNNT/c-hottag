@@ -81,6 +81,13 @@ and `bin/claude` symlinks, and a PATH line in your shell's rc file. It then
 runs `chottag adopt` with the same arguments, so any slot that already
 holds a login is registered without a fresh `claude auth login`.
 
+Before `setup` changes a shell rc file that already exists, it copies it to
+`~/.chottag/backups/` (named without the dot, e.g. `zshrc.20261002T150405Z`;
+for a symlinked rc, the file it points to) and reports the path as
+`rcBackup`. A new rc file, or one that needs no change, makes no backup, and
+a failed backup stops `setup` before the rc is touched. The newest 5 backups
+of each name are kept.
+
 | Flag | Meaning |
 |---|---|
 | `--claude PATH` | path to the real `claude` binary, passed through to `adopt` |
@@ -95,6 +102,7 @@ holds a login is registered without a fresh `claude auth login`.
   "installed": "/Users/alice/.chottag",
   "rcUpdated": true,
   "rcPath": "/Users/alice/.zshrc",
+  "rcBackup": "/Users/alice/.chottag/backups/zshrc.20261002T150405Z",
   "adopt": {
     "adopted": [{"dir": "a", "name": "work"}],
     "updated": [{"dir": "b", "name": "personal"}],
@@ -138,12 +146,52 @@ already sitting in a slot chottag manages.
 ### `chottag update`
 
 ```sh
-chottag update [--check] [--version V] [--repo OWNER/NAME] [--restart]
+chottag update [--check] [--version V] [--repo OWNER/NAME] [--restart | --no-restart]
+chottag update [--auto-check on|off] [--auto-install on|off] [--auto-restart on|off]
 ```
 
 Installs the latest release from the repo chottag was installed from.
 `--check` only reports whether a newer release exists; it installs
-nothing.
+nothing. It asks GitHub's API directly (one request, no `gh`, no token) and
+also records the answer in `status.json`'s `update`, the same cache the
+daemon's daily check fills, only for the install's own repo and not for a
+`--repo` that names another (see [Updating](updating.md#the-daily-check)).
+
+The whole install, from the download through `setup`, holds the update lock,
+`run/update.lock`. A second `chottag update` at the same time exits `1` with
+`update_in_progress` ("another chottag update is running"); nothing is
+downloaded.
+
+`--auto-check`, `--auto-install` and `--auto-restart` set a switch in
+`state.json` and exit: they check and install nothing, and cannot be
+combined with `--check`, `--version`, `--repo`, `--restart` or `--no-restart`
+(exit `2`). They print `update check: on; auto-install: off; auto-restart:
+on`, and with `--json`
+`{"updates": {"check": true, "auto": false, "restart": true}}`. `--auto-install on` also turns
+the check on; `--auto-check off` also turns auto-install off, since
+auto-install needs the check, so `--auto-check off --auto-install on` is a
+usage error (exit `2`). `--auto-restart on|off` is independent of the other
+two: it lets the daemon restart itself, once idle, onto a newer chottag that
+is installed but not yet running (on by default; see
+[Updating](updating.md#restarting-onto-an-installed-update)).
+
+Before anything is extracted or the new binary's `setup` runs (and after the
+download is verified), `update` copies `state.json` to
+`backups/state.json.<UTC stamp>` under `$CHOTTAG_HOME` (directory mode 0700,
+file 0600; the newest 5 are kept) and prints a `backed up state.json to ...`
+line. If that copy fails, nothing is installed and `update` fails with
+`update_failed`; if only removing an old backup fails, it warns
+`prune_failed`. `--check` and an already-up-to-date run make no backup.
+`backups` in `--json` lists the `state.json` backup only; the rc backup that
+the child `setup` makes is reported on stderr. This starts with updates run
+by 0.6.0 or later: before the first update to 0.6.0, copy `state.json` by
+hand (`cp ~/.chottag/state.json ~/.chottag/state.json.pre-v0.6.0`).
+
+To undo an update: stop the daemon (`chottag daemon stop`), run `chottag
+update --version vX.Y.Z` to put the older binary back, copy back the
+`state.json` backup that the update being undone printed (it is also listed
+in its `backups`; not the newest file, which the rollback itself just made),
+then start the daemon (`chottag daemon start`).
 
 | Flag | Meaning |
 |---|---|
@@ -151,6 +199,10 @@ nothing.
 | `--version V` | install this release tag instead of the latest, e.g. to roll back |
 | `--repo OWNER/NAME` | use this repo instead of `install.json`'s or the default |
 | `--restart` | restart the daemon even if a claude session is running |
+| `--no-restart` | install, but leave the daemon running (`daemon` is `not-restarted`); the daemon uses the new version after `chottag daemon restart`, or restarts itself when idle (unless `--auto-restart off`; daemons from 0.6.0 on). Not with `--restart` |
+| `--auto-check on\|off` | turn the daemon's daily update check on or off; sets the switch and exits |
+| `--auto-install on\|off` | let the daemon install a new release by itself (opt-in, see [Updating](updating.md#automatic-install)); sets the switch and exits |
+| `--auto-restart on\|off` | let the daemon restart itself, when idle, onto an installed newer version (on by default, see [Updating](updating.md#restarting-onto-an-installed-update)); sets the switch and exits |
 
 ```json
 {
@@ -163,10 +215,18 @@ nothing.
   "updateAvailable": true,
   "installed": true,
   "pruned": ["v0.2.0"],
+  "backups": ["/Users/alice/.chottag/backups/state.json.20261002T150405Z"],
   "daemon": "restarted",
   "liveSessions": 0
 }
 ```
+
+`daemon` says what happened to the daemon after an install: `restarted`,
+`restart-failed`, `deferred` (a session is running: the daemon restarts
+itself once idle, unless `--auto-restart off`, or run `chottag daemon restart`
+yourself), `not-running`, `not-probed` (the daemon could not be
+asked), or `not-restarted` (`--no-restart`). It is left out when nothing was
+installed.
 
 ### `chottag uninstall`
 
@@ -177,7 +237,9 @@ chottag uninstall [--purge]
 Removes the shim: the fenced PATH block in your shell's rc file, the
 `bin/chottag` and `bin/claude` symlinks, and `ca/bundle.pem`. It leaves the
 CA itself and every account's login in place, so a plain `uninstall` alone
-can never destroy a login.
+can never destroy a login. `backups/` (copies of `state.json` and your rc
+file, which can hold secrets you export in it) stays too, unless you use
+`--purge`.
 
 `--purge` additionally deletes the whole `$CHOTTAG_HOME` tree — every
 login included — but only after you type the word `purge` at a prompt;
@@ -500,6 +562,7 @@ the account you chose. Also `chottag ls`. It takes no flags.
     "ownerWriteDrops": 0,
     "notifyErrors": 0,
     "liveSessions": 1,
+    "restartPending": "0.6.0",
     "version": "v0.4.0",
     "versionMismatch": false,
     "identity": "verified"
@@ -507,6 +570,18 @@ the account you chose. Also `chottag ls`. It takes no flags.
   "trace": {
     "lastTraced": {"claudeVersion": "2.1.282", "at": "2026-09-20T00:00:00Z"}
   },
+  "sessions": [
+    {
+      "pid": 4242,
+      "started": "2026-09-28T13:50:00Z",
+      "sid": "3f9c1a2b",
+      "pool": "default",
+      "account": "work",
+      "lastSeen": "2026-09-28T14:00:10Z",
+      "requests": 17,
+      "conversations": 1
+    }
+  ],
   "auto": {
     "mode": "balanced",
     "decision": "holding work (5h 42%, resets in 5h)",
@@ -521,9 +596,51 @@ the account you chose. Also `chottag ls`. It takes no flags.
     },
     "userChosen": false,
     "burnRate": 12.5
+  },
+  "update": {
+    "latest": "0.5.0",
+    "publishedAt": "2026-09-30T09:00:00Z",
+    "checkedAt": "2026-10-01T09:00:00Z",
+    "available": true,
+    "notified": "0.5.0",
+    "error": "",
+    "auto": {
+      "version": "0.5.0",
+      "at": "2026-10-01T09:00:00Z",
+      "ok": false,
+      "error": "refused"
+    }
+  },
+  "updates": {
+    "check": true,
+    "auto": false,
+    "restart": true
   }
 }
 ```
+
+`update` is the daemon's release-check cache. It is left out until a check
+has run (the daemon's, or `chottag update --check`). `latest` is the newest
+release seen, `available` is whether it is newer than the version that ran the check (the daemon, or `update --check`), `notified`
+is the version a notification was last sent for, `error` is the last check's
+failure, and `auto` is the last auto-install attempt. `updates` is the two
+switches from `state.json`, always present: `check` (the daemon's daily check),
+`auto` (its automatic install) and `restart` (its restart when idle); see [`chottag update`](#chottag-update).
+
+The text form adds one line, `update: 0.6.0 available (run: chottag update)`,
+only when the cache says a release newer than this build is available.
+
+`daemon.restartPending` is the installed version the running daemon is not
+yet using: the version `bin/chottag` resolves to under `versions/`, or, if it
+does not, `install.json`'s `version` (the daemon then shows it but never
+restarts itself onto it, since the restart would run `bin/chottag`), when it
+is newer than the daemon's own. The daemon stamps it every minute; it is left out when nothing
+is pending or the daemon is not running. The text form then prints `daemon:
+running 0.6.0, installed 0.6.1 (restarts when idle, or run: chottag daemon
+restart)`, or, with `--auto-restart off`, `(run: chottag daemon restart)`. The
+daemon restarts itself only from 0.6.0 on: an older daemon never stamps
+`restartPending`, so after an update from 0.5.x it needs one manual
+`chottag daemon restart`.
 
 `label` is the install's label (`chottag setup --label`); it is omitted when
 none is set, and the text form shows it as `(NAME)` on the first line.
@@ -533,9 +650,26 @@ clears it from every account before reporting.
 
 `daemon.liveSessions` counts the `claude` sessions chottag launched that are
 still alive, from the same session registry `daemon stop` reads. The text
-form prints it as `live sessions: N` next to the daemon lines. It is `0`
-when none is alive, and is present whenever a daemon object is reported or a
-session is alive.
+form prints it as `live sessions: N` next to the daemon lines, with the
+count per account when there are any: `live sessions: 3 (A 2, B 1)`. Accounts
+come in name order; a session with no account yet, and an old shim's
+unidentified one, count under `–`. It is `0` when none is alive, and is
+present whenever a daemon object is reported or a session is alive.
+
+`sessions` lists the same live sessions, one per `claude` chottag launched
+that is still alive, ordered by `started`. It is left out when none is alive.
+
+- `pid` and `started` are always there.
+- `sid` is the first 8 characters of the session's id, enough to tell
+  sessions apart and no more; `pool` is `default`. Both are left out for a
+  session an older shim started, which chottag cannot identify.
+- `account` is the account the session's last inference request used. It is
+  left out until the session has made one.
+- `lastSeen`, `requests` and `conversations` come from the daemon's activity
+  record for the session: when it last made any request, how many requests
+  chottag routed for it (each account choice counts, so a 429 retry counts
+  twice), and how many times its conversation changed. They are left out
+  until the daemon has seen the session.
 
 ### `chottag statusline`
 
@@ -544,8 +678,8 @@ chottag statusline [--json] [--cmux]
 ```
 
 Prints one line for Claude Code's status line: whether the Claude Code
-session that runs it goes through chottag, which account serves it, its
-usage, its next reset and the pool's health. It never reads stdin, and
+session that runs it goes through chottag, which account this session uses,
+its usage, its next reset and the pool's health. It never reads stdin, and
 always exits `0` (a bad argument is still exit `2`). It prints nothing
 secret: no token, email, path or proxy secret.
 
@@ -577,12 +711,21 @@ redraw.
 
 A session counts as routed when either holds: one of its first 8 ancestor
 processes is a live `claude` session chottag launched, or `HTTPS_PROXY` is
-`http://chottag:...@127.0.0.1:<port>` for this home's port. Then the daemon
-is asked, for at most 300 ms, whether it answers.
+`http://chottag...@127.0.0.1:<port>` for this home's port (a user of
+`chottag` or `chottag.<pool>.<sid>`). Then the daemon is asked, for at most
+300 ms, whether it answers.
+
+The session is found first by `HTTPS_PROXY`: its user name, `chottag.default.<sid>`,
+gives the session id. Only the user name is read; the password is never
+read into anything it prints. Without one, the ancestor walk's registry
+entry names the session. The account shown is that session's own, once the
+daemon has seen it make an inference request. Before that, for a session
+chottag cannot identify, and for the legacy `chottag:<secret>` credential, it
+is the serving account. It never changes anything.
 
 | Line | Meaning |
 |---|---|
-| `c» work · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok` | routed, the daemon answers; `work` is the serving account |
+| `c» work · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok` | routed, the daemon answers; `work` is the account this session uses |
 | `c» up` | routed, the daemon answers, but no account is serving |
 | `c» down` | routed, but the daemon does not answer |
 | `c» off` | not routed, chottag is not set up, or anything went wrong |
@@ -590,13 +733,16 @@ is asked, for at most 300 ms, whether it answers.
 With an install label (`chottag setup --label dev`), the label follows the
 mark in every state: `c» dev off`, `c» dev · work · 5h 3% · …`.
 
-- `5h NN%` and `7d NN%` are the serving account's usage, rounded; an unknown
+- `5h NN%` and `7d NN%` are this session's account's usage, rounded; an unknown
   or stale value prints `–`.
 - `↻ HH:MM` is its next reset: the 5 h reset when the 5 h use is at or above
   80 %, otherwise the earlier of the two known resets. Local time, or
   `Mon 18:00` when more than 24 hours away. Left out when unknown.
 - `n/m ok` is the accounts in rotation that are not limited, out of all
   accounts in rotation. Left out when none is in rotation.
+- `↑0.6.0` is last, only when the update check found a newer release
+  (`chottag update` installs it). It takes no colour, and the `off`, `down`
+  and `up` lines never show it. The cmux pill carries it too.
 - The figures come from the status cache the daemon keeps; the statusline
   asks the daemon nothing beyond the health probe.
 - Colour: the mark and the label are bold blue (amber with a label); a
@@ -620,20 +766,30 @@ failure is ignored. `--cmux` combines with `--json`.
   "session": "routed",
   "daemon": "up",
   "serving": "work",
+  "account": "work",
   "label": "dev",
   "fiveHourPct": 41.6,
   "sevenDayPct": 18.2,
   "resetsAt": "2026-10-01T19:00:00+07:00",
   "okAccounts": 2,
-  "rotationAccounts": 3
+  "rotationAccounts": 3,
+  "updateAvailable": "0.6.0",
+  "restartPending": "0.6.0"
 }
 ```
 
 `session` is `routed` or `home`. `daemon` is `up`, `down` or `unknown`
 (`unknown` when the session is not routed: the daemon is not asked).
 `serving` is empty unless the session is routed and the daemon is up.
+`account` is the account this session uses (see above), present when
+`serving` is; `serving` keeps its meaning, the install's serving account.
 `label`, `fiveHourPct`, `sevenDayPct`, `resetsAt` (RFC 3339), `okAccounts`
-and `rotationAccounts` are left out when unknown.
+and `rotationAccounts` are left out when unknown. `updateAvailable` is the
+release the update check found (newer than this build), and is left out
+otherwise. `restartPending` is the installed version the daemon is not yet
+running (`daemon.restartPending` in `status`); the text form shows it as
+` · ⟳0.6.1` after the update suffix. Both are shown only while the session is
+routed and the daemon is up.
 
 ### `chottag doctor`
 
@@ -660,7 +816,7 @@ Its checks, in the order they run:
 | `ca` | the local CA (`ca/ca.pem`, `ca/ca.key`) exists, loads and is safe | `--fix` creates a missing pair, or fixes an owned key's permissions, while no daemon runs |
 | `proxy-secret` | `ca/proxy.secret` exists, is 0600 and well formed | `--fix` regenerates a missing or unusable one, while no daemon runs |
 | `bin` | `bin/chottag` and `bin/claude` point at this binary | `--fix` relinks them, unless one already points at another working chottag |
-| `rc-block` | your shell's rc file has the chottag PATH block | `--fix` writes it |
+| `rc-block` | your shell's rc file has the chottag PATH block | `--fix` writes it, copying the existing file to `backups/` first and printing the path on stderr |
 | `path` | this process's PATH already finds `claude` in `bin/` | open a new shell |
 | `roles` | the serving and remote roles name a registered account | `--fix` gives a dangling role to the first registered account |
 | `real-claude` | the cached real `claude` path is still what PATH resolves | `--fix` re-resolves and re-caches it |
@@ -1065,7 +1221,8 @@ does not support `--json`.
 | `session_registry_unreadable` | 1 | the live-session registry could not be read |
 | `name_taken` | 2 | the account name given is already in use |
 | `doctor_problems` | 3 | `doctor` found one or more problems; `error.checks` and `error.problems` carry every row and the count |
-| `update_failed` | 1 | `chottag update` could not install the release |
+| `update_failed` | 1 | `chottag update` could not install the release (or back up `state.json` first), or `--check` could not reach GitHub |
+| `update_in_progress` | 1 | another `chottag update` holds the update lock (`run/update.lock`) |
 
 ## Warning codes
 
@@ -1088,7 +1245,8 @@ does not support `--json`.
 | `adopt_failed` | the inner `adopt` step (run by `setup`) failed |
 | `update_deferred` | an available update was not installed |
 | `restart_failed` | the daemon did not restart after an update |
-| `prune_failed` | an old release could not be pruned |
+| `prune_failed` | an old release or backup could not be pruned |
 | `install_record` | the install record could not be read or written |
 | `attestation_skipped` | release attestation verification was skipped |
 | `pre_attestation` | the release predates attestation and was installed without verifying one |
+| `update_cache` | `update --check` could not record its result in `status.json` |

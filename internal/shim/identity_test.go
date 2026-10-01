@@ -2,12 +2,14 @@ package shim
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,6 +50,21 @@ func portFromRequest(t *testing.T, r *http.Request) int {
 // secret for the request's nonce and the port this fake server is itself
 // listening on (Ruling 32), or none when secret is zero (legacy).
 func provingHealthServer(t *testing.T, secret proxyauth.Secret, h proxy.Health) *httptest.Server {
+	t.Helper()
+	h.Sessions = !secret.IsZero()
+	return healthServerAsIs(t, secret, h)
+}
+
+// preSessionHealthServer answers like a v0.4.0-v0.5.x daemon: it proves the
+// secret but its document has no sessions field, because it accepts only
+// the legacy chottag:<secret> credential.
+func preSessionHealthServer(t *testing.T, secret proxyauth.Secret, h proxy.Health) *httptest.Server {
+	t.Helper()
+	h.Sessions = false
+	return healthServerAsIs(t, secret, h)
+}
+
+func healthServerAsIs(t *testing.T, secret proxyauth.Secret, h proxy.Health) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != proxy.HealthPath {
@@ -355,18 +372,42 @@ func TestRunHandsClaudeTheSecretURL(t *testing.T) {
 	if code := Run(nil, home, []string{"PATH=" + filepath.Dir(fakeClaude(t))}, ownVersion, io.Discard, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	if v := envGet(got.env, "HTTPS_PROXY"); v != s.ProxyURL("127.0.0.1:"+strconv.Itoa(port)) {
-		t.Fatalf("HTTPS_PROXY = %s, want the secret URL", redact.UpstreamProxy(v))
-	}
+	sessionSID(t, s, got.env, port)
 	if strings.Contains(errb.String(), rawSecret(t, home)) {
 		t.Fatal("the secret reached stderr")
 	}
 }
 
 // The shell already holds our own URL WITH userinfo (a nested claude): not
-// an upstream conflict, and HTTPS_PROXY is rewritten to the same.
+// an upstream conflict, and HTTPS_PROXY is replaced by a fresh session URL.
 // TestFailsClosedOnUpstreamMismatch (shim_test.go) pins the other
 // direction: a genuinely different upstream still fails.
+// A daemon that proves the secret but predates session credentials would
+// answer every session credential with a 407, so the shim hands claude the
+// legacy credential and records no sid or pool (F255).
+func TestRunProvingDaemonWithoutSessionsGetsTheLegacyCredential(t *testing.T) {
+	home := t.TempDir()
+	s, _ := proxyauth.LoadOrCreate(home)
+	srv := preSessionHealthServer(t, s, proxy.Health{Chottag: true, Version: "0.5.1", PID: os.Getpid()})
+	port := mustPort(t, srv.URL)
+	writeStateWithPort(t, home, port)
+	var got execCall
+	defer swapExec(home, &got)()
+	var errb bytes.Buffer
+	if code := Run(nil, home, []string{"PATH=" + filepath.Dir(fakeClaude(t))}, ownVersion, io.Discard, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if want := s.ProxyURL("127.0.0.1:" + strconv.Itoa(port)); envGet(got.env, "HTTPS_PROXY") != want {
+		t.Fatal("HTTPS_PROXY is not the legacy chottag:<secret> URL")
+	}
+	if len(got.live) != 1 || got.live[0].SID != "" || got.live[0].Pool != "" {
+		t.Fatalf("registry = %+v, want one entry without sid or pool", got.live)
+	}
+	if strings.Contains(errb.String(), rawSecret(t, home)) {
+		t.Fatal("the secret reached stderr")
+	}
+}
+
 func TestRunNestedClaudeWithOurSecretURLIsNotAConflict(t *testing.T) {
 	home := t.TempDir()
 	s, _ := proxyauth.LoadOrCreate(home)
@@ -384,8 +425,110 @@ func TestRunNestedClaudeWithOurSecretURLIsNotAConflict(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run = %d, want 0: HTTPS_PROXY already naming our own secret URL must not read as a conflict", code)
 	}
-	if v := envGet(got.env, "HTTPS_PROXY"); v != s.ProxyURL(hostport) {
-		t.Fatalf("HTTPS_PROXY = %s, want it rewritten to the same secret URL", redact.UpstreamProxy(v))
+	sessionSID(t, s, got.env, port)
+}
+
+// A nested claude inherits its parent's session URL; it is this daemon's
+// own, not an upstream conflict, and is replaced with a NEW sid.
+func TestRunNestedClaudeWithInheritedSessionURLGetsAFreshSID(t *testing.T) {
+	home := t.TempDir()
+	s, _ := proxyauth.LoadOrCreate(home)
+	srv := provingHealthServer(t, s, proxy.Health{Chottag: true, Version: "t", PID: os.Getpid()})
+	port := mustPort(t, srv.URL)
+	writeStateWithPort(t, home, port)
+	hostport := "127.0.0.1:" + strconv.Itoa(port)
+	parent := proxyauth.NewSID()
+
+	var got execCall
+	defer swapExec(home, &got)()
+	var errb bytes.Buffer
+	code := Run(nil, home,
+		[]string{"PATH=" + filepath.Dir(fakeClaude(t)), "HTTPS_PROXY=" + s.SessionProxyURL(hostport, proxyauth.DefaultPool, parent)},
+		ownVersion, io.Discard, &errb)
+	if code != 0 {
+		t.Fatalf("Run = %d, want 0 (an inherited session URL is not a conflict): %s", code, errb.String())
+	}
+	if sid := sessionSID(t, s, got.env, port); sid == parent {
+		t.Fatal("the nested claude reused its parent's sid")
+	}
+}
+
+// sessionSID asserts env's HTTPS_PROXY is a session URL for this daemon that
+// the secret accepts as chottag.default.<sid>, and returns the sid. It never
+// prints the URL.
+func sessionSID(t *testing.T, s proxyauth.Secret, env []string, port int) string {
+	t.Helper()
+	u, err := url.Parse(envGet(env, "HTTPS_PROXY"))
+	if err != nil || u.User == nil {
+		t.Fatal("HTTPS_PROXY is not a URL with userinfo")
+	}
+	if u.Host != "127.0.0.1:"+strconv.Itoa(port) {
+		t.Fatalf("HTTPS_PROXY host = %s", u.Host)
+	}
+	pass, _ := u.User.Password()
+	hdr := "Basic " + base64.StdEncoding.EncodeToString([]byte(u.User.Username()+":"+pass))
+	c, ok := s.Caller(hdr)
+	if !ok || !c.Identified() || c.Pool != proxyauth.DefaultPool {
+		t.Fatalf("Caller = %+v, %v: want an identified default-pool session", c, ok)
+	}
+	if u.User.Username() != "chottag."+proxyauth.DefaultPool+"."+c.SID {
+		t.Fatal("user is not chottag.default.<sid>")
+	}
+	return c.SID
+}
+
+func TestRunTwoLaunchesGetTwoSIDsAndTheRegistryRecordsIt(t *testing.T) {
+	home := t.TempDir()
+	s, _ := proxyauth.LoadOrCreate(home)
+	srv := provingHealthServer(t, s, proxy.Health{Chottag: true, Version: "t", PID: os.Getpid()})
+	port := mustPort(t, srv.URL)
+	writeStateWithPort(t, home, port)
+	env := []string{"PATH=" + filepath.Dir(fakeClaude(t))}
+
+	var a, b execCall
+	before := time.Now().Add(-time.Second)
+	restore := swapExec(home, &a)
+	if code := Run(nil, home, env, ownVersion, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("Run = %d", code)
+	}
+	restore()
+	sidA := sessionSID(t, s, a.env, port)
+	if len(a.live) != 1 {
+		t.Fatalf("registry = %v, want one entry", a.live)
+	}
+	e := a.live[0]
+	if e.SID != sidA || e.Pool != proxyauth.DefaultPool || e.Port != port || e.PID != os.Getpid() || e.Started.Before(before) {
+		t.Fatalf("registry entry = %+v, want sid %s, pool default, this pid, port %d, started now", e, sidA, port)
+	}
+
+	defer swapExec(home, &b)()
+	if code := Run(nil, home, env, ownVersion, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("Run = %d", code)
+	}
+	if sidB := sessionSID(t, s, b.env, port); sidB == sidA {
+		t.Fatal("two launches shared a sid")
+	}
+}
+
+func TestRunRefusesWhenTheSessionCredentialCannotBeBuilt(t *testing.T) {
+	home := t.TempDir()
+	s, _ := proxyauth.LoadOrCreate(home)
+	srv := provingHealthServer(t, s, proxy.Health{Chottag: true, Version: "t", PID: os.Getpid()})
+	writeStateWithPort(t, home, mustPort(t, srv.URL))
+	orig := newSID
+	newSID = func() string { return "not-a-valid-sid" }
+	defer func() { newSID = orig }()
+	var got execCall
+	defer swapExec(home, &got)()
+	var errb bytes.Buffer
+	if code := Run(nil, home, []string{"PATH=" + filepath.Dir(fakeClaude(t))}, ownVersion, io.Discard, &errb); code == 0 {
+		t.Fatal("Run = 0, want a refusal")
+	}
+	if got.bin != "" {
+		t.Fatal("claude was exec'd without a session credential")
+	}
+	if !strings.Contains(errb.String(), "could not build this session's proxy credential") || strings.Contains(errb.String(), "not-a-valid-sid") || strings.Contains(errb.String(), rawSecret(t, home)) {
+		t.Fatalf("stderr = %q", errb.String())
 	}
 }
 
@@ -410,6 +553,9 @@ func TestRunLegacyDaemonHoldingTheLockStartsWithoutTheSecret(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "chottag daemon restart") {
 		t.Errorf("want the restart warning, got %q", errb.String())
+	}
+	if len(got.live) != 1 || got.live[0].SID != "" || got.live[0].Pool != "" {
+		t.Errorf("legacy registry entry = %+v, want one entry with no sid or pool", got.live)
 	}
 }
 

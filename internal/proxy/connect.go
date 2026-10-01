@@ -17,22 +17,31 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/router"
 	"github.com/HaiNNT/c-hottag/internal/tracelog"
 )
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	hostport := r.Host
+	// The caller is read once per CONNECT and handed on: the tunnel keeps it
+	// for its whole life, so a state change never reaches an open tunnel
+	// (M6 spec 4.1).
+	var caller proxyauth.Caller
+	callerOK := true
+	if s.gated() {
+		caller, callerOK = s.caller(r)
+	}
 	// intercepted is computed once and decides both "does this CONNECT need
 	// caller auth" and "mitm or blind" (fix round 1 item 3): ServeHTTP used
 	// to compute it a second time just for the gate, which could drift from
 	// this one.
 	if intercepted := s.cfg.Intercept != nil && s.cfg.Intercept(router.HostOnly(hostport)); intercepted {
-		if s.gated() && !s.authorized(r) {
+		if s.gated() && !callerOK {
 			s.requireAuth(w, tracelog.Record{Kind: "tunnel", Form: "mitm", Host: hostport})
 			return
 		}
-		s.mitm(w, hostport)
+		s.mitm(w, hostport, caller)
 		return
 	}
 	// A blind tunnel chained through an upstream proxy that carries its own
@@ -43,11 +52,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// so a zero secret means auth off everywhere, this one included, not a
 	// permanently-refused blind tunnel (fix round 2, N1). chained is
 	// likewise computed once and used for that single decision.
-	if chained := s.chainedWithCredentials(); s.gated() && chained && !s.authorized(r) {
+	if chained := s.chainedWithCredentials(); s.gated() && chained && !callerOK {
 		s.requireAuth(w, tracelog.Record{Kind: "tunnel", Form: "blind", Host: hostport})
 		return
 	}
-	s.blind(w, r, hostport)
+	s.blind(w, r, hostport, caller, s.tracing())
 }
 
 // chainedWithCredentials reports whether cfg.UpstreamProxy carries its own
@@ -58,14 +67,14 @@ func (s *Server) chainedWithCredentials() bool {
 
 // blind dials upstream before accepting the tunnel, so an unreachable host
 // looks to the client like a failed connection, not a dead tunnel.
-func (s *Server) blind(w http.ResponseWriter, r *http.Request, hostport string) {
+func (s *Server) blind(w http.ResponseWriter, r *http.Request, hostport string, caller proxyauth.Caller, traced bool) {
 	start := time.Now()
 	// A blind tunnel's one record is written when it closes, which may be
-	// hours later: the switch is read now, at its start (M2c spec §3).
-	traced := s.tracing()
+	// hours later: traced was read at its start (M2c spec §3).
+	sid := shortSID(caller)
 	up, err := s.dialUpstream(r.Context(), hostport)
 	if err != nil {
-		s.emit(tracelog.Record{T: start.UTC(), Kind: "tunnel", Form: "blind", Host: hostport, Status: http.StatusBadGateway, Err: err.Error()}, traced)
+		s.emit(tracelog.Record{T: start.UTC(), SID: sid, Kind: "tunnel", Form: "blind", Host: hostport, Status: http.StatusBadGateway, Err: err.Error()}, traced)
 		http.Error(w, "chottag: upstream unreachable", http.StatusBadGateway)
 		return
 	}
@@ -75,7 +84,7 @@ func (s *Server) blind(w http.ResponseWriter, r *http.Request, hostport string) 
 		return
 	}
 	pipe(client, up)
-	s.emit(tracelog.Record{T: start.UTC(), Kind: "tunnel", Form: "blind", Host: hostport, Status: http.StatusOK, Millis: time.Since(start).Milliseconds()}, traced)
+	s.emit(tracelog.Record{T: start.UTC(), SID: sid, Kind: "tunnel", Form: "blind", Host: hostport, Status: http.StatusOK, Millis: time.Since(start).Milliseconds()}, traced)
 }
 
 // dialThroughProxy opens a tunnel to hostport via an upstream HTTP proxy,
@@ -162,8 +171,9 @@ func proxyHostPort(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), "80")
 }
 
-func (s *Server) mitm(w http.ResponseWriter, hostport string) {
+func (s *Server) mitm(w http.ResponseWriter, hostport string, caller proxyauth.Caller) {
 	start := time.Now()
+	sid := shortSID(caller)
 	client, err := hijack(w)
 	if err != nil {
 		return
@@ -173,7 +183,7 @@ func (s *Server) mitm(w http.ResponseWriter, hostport string) {
 	err = tlsConn.HandshakeContext(ctx)
 	cancel()
 	if err != nil {
-		s.emit(tracelog.Record{T: start.UTC(), Kind: "tunnel", Form: "mitm", Host: hostport, Err: "client TLS handshake: " + err.Error()}, s.tracing())
+		s.emit(tracelog.Record{T: start.UTC(), SID: sid, Kind: "tunnel", Form: "mitm", Host: hostport, Err: "client TLS handshake: " + err.Error()}, s.tracing())
 		tlsConn.Close()
 		return
 	}
@@ -198,7 +208,7 @@ func (s *Server) mitm(w http.ResponseWriter, hostport string) {
 			// name the host the tunnel was opened to, or a swapped token
 			// could ride a Host the edge routes elsewhere.
 			if !sameTunnelHost(in.Host, hostport) {
-				s.emit(tracelog.Record{T: time.Now().UTC(), Kind: "req", Form: "mitm", Method: in.Method,
+				s.emit(tracelog.Record{T: time.Now().UTC(), SID: sid, Kind: "req", Form: "mitm", Method: in.Method,
 					Host: router.HostOnly(hostport), Status: http.StatusMisdirectedRequest,
 					Err: "Host differs from the tunnel's CONNECT target"}, s.tracing())
 				http.Error(w, "chottag: Host does not match this tunnel", http.StatusMisdirectedRequest)
@@ -207,7 +217,7 @@ func (s *Server) mitm(w http.ResponseWriter, hostport string) {
 			in.Host = hostport
 			in.URL.Scheme = "https"
 			in.URL.Host = hostport
-			s.forward(w, in, "mitm")
+			s.forward(w, withIdentity(in, caller, router.HostOnly(hostport), true), "mitm")
 		}),
 		ErrorLog: log.New(io.Discard, "", 0),
 		ConnState: func(_ net.Conn, st http.ConnState) {
