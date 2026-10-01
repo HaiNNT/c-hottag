@@ -93,6 +93,24 @@ an auto-switch.
 }
 ```
 
+With a pool other than `default` (see [Pools](how-it-works.md#pools)), the
+file is `"version": 2`, each account may carry `"pools"`, and there is a
+top-level `"pools"` object:
+
+```json
+{
+  "version": 2,
+  "accounts": [
+    {"name": "A", "dir": "/Users/alice/.chottag/accounts/A", "pools": ["work"]},
+    {"name": "B", "dir": "/Users/alice/.chottag/accounts/B", "pools": ["work", "personal"]}
+  ],
+  "pools": {
+    "work": {"serving": "A", "remote": "A"},
+    "personal": {"serving": "B", "remote": "B", "policy": "spread", "pin": "B"}
+  }
+}
+```
+
 - `version` — the file format version; chottag refuses to read a file newer
   than it understands.
 - `accounts` — the registered accounts, in registration order (this is also
@@ -110,9 +128,13 @@ an auto-switch.
     is logged in, or `chottag adopt` last found its slot's email or org
     changed. Re-running adopt (or `update`) on an unchanged slot leaves it
     alone, so it never clears a real needs-login.
-- `serving` — the account currently answering requests.
+  - `pools` — the pools the account is in (see below). Absent means only
+    `default`; an account is in at least one pool.
+- `serving` — the account currently answering requests, in the `default`
+  pool.
 - `remote` — the account that owns new claude.ai objects created from here
-  on: remote-control sessions, environments, artifacts and connectors.
+  on: remote-control sessions, environments, artifacts and connectors, in the
+  `default` pool.
 - `port` — the daemon's port, when it is not the default.
 - `realClaude` — an explicit path to the real Claude Code binary, when
   chottag should not resolve it from `PATH` on its own.
@@ -126,6 +148,15 @@ an auto-switch.
   account. Set it with `chottag policy`.
 - `pin` — the account `chottag tag NAME` pins new sessions to under
   `spread`; it has no effect under `serial`. Absent means unpinned.
+- `pools` — every pool other than `default`, by name (`a-z`, `0-9` and `-`,
+  1 to 16 characters), each with its own `serving`, `remote`, `policy` and
+  `pin`. The top-level `serving`, `remote`, `policy` and `pin` are the
+  `default` pool's, so a file with no extra pool is exactly as before.
+  Change them with `chottag pool` and the commands that take `--pool`.
+  `version` is `2` while at least one extra pool exists and `1` otherwise: a
+  chottag older than 0.8.0 refuses a version 2 file rather than serving every
+  account from `default`. Remove the extra pools (`chottag pool rm`) before
+  rolling back below 0.8.0; `chottag update --version` refuses until you do.
 - `label` — a short name for this install (`chottag setup --label NAME`),
   shown in `chottag status` and in notification titles. Absent means none.
 - `updates` — the update-check settings. `check` turns the daemon's release
@@ -146,6 +177,7 @@ corrupt `state.json` on the next read.
 | --- | --- | --- |
 | `CHOTTAG_HOME` | You, before running `chottag` or `claude`. | Overrides the chottag home from its default of `~/.chottag`. |
 | `CHOTTAG_BYPASS` | You, for one invocation. | `CHOTTAG_BYPASS=1 claude` skips the shim entirely and runs the real Claude Code directly, unmanaged. Inside a chottag session, the inherited `HTTPS_PROXY` still routes it through chottag, counted as that session; unset `HTTPS_PROXY` as well to leave chottag entirely. |
+| `CHOTTAG_POOL` | You, before running `claude`. | Picks the pool this session runs in, e.g. `CHOTTAG_POOL=work claude`; the session's proxy credential carries it (`chottag.work.<sid>`). Unset or empty means `default`. A name that is not a pool is refused with `chottag: no pool named "x" (chottag pool lists them)`, exit 2, and Claude Code is not started; it never falls back to `default`. An alias keeps the choice: `alias cwork='CHOTTAG_POOL=work claude'`. A running daemon older than 0.8.0 cannot read a version 2 `state.json` (its requests would go out on Home's own login), so once an extra pool exists the shim refuses to start any session against it, `default` included: `chottag: the running daemon (0.7.1) predates pools, so a "work" session would not stay in its pool; run: chottag daemon restart`, exit 2. With no extra pool nothing changes. |
 | `HTTPS_PROXY` | The `claude` shim, on every `claude` invocation it manages. | Points Claude Code's HTTPS traffic at chottag's local proxy; the URL also carries this session's proxy credential (`chottag.default.<sid>` and a password derived from the install's secret). |
 | `NODE_EXTRA_CA_CERTS` | The `claude` shim. | Points Node (and so Claude Code) at chottag's CA certificate, so the proxy's intercepted HTTPS connections validate. If you already had this set, the shim merges your CA into `ca/bundle.pem` and points there instead. |
 | `CHOTTAG_UPSTREAM_PROXY` | The `claude` shim, internally, to hand the daemon its upstream. | Not for you to set directly — see [An existing HTTPS_PROXY](#an-existing-https_proxy) and `daemon run --upstream-proxy`. |

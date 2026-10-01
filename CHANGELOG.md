@@ -7,6 +7,24 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.8.0] - 2026-10-01
+
+### Added
+
+- Pools: `chottag pool` (list), `pool add`, `pool join`, `pool leave` and `pool rm`. A pool is a set of accounts with its own serving account, remote account, policy and pin; an account can be in several. A session picks its pool with `CHOTTAG_POOL=work claude` (an unknown name exits 2 and never falls back to `default`), and is served only by that pool's accounts. `login --pool`, `tag`, `next`, `remote` and `policy` take `--pool`.
+- A pool that cannot serve a request fails closed: with more than one pool, chottag answers it with a 503 naming the pool instead of sending it on Home's own login.
+- `shared_account` warns when an account is in more than one pool: they share its usage limit. Pools need a 0.8.0 daemon: `pool add` refuses (`daemon_predates_pools`, exit 2) while an older one runs, `pool join` warns, and once a pool exists the shim refuses every session against such a daemon until `chottag daemon restart`.
+- `status` shows a `POOLS` column and a line per pool (`pools[]`, `shared` and `auto.pools` in `--json`), `statusline` shows `[work]` (`pool` in `--json`), notices name the pool, and `doctor`'s `roles` row checks every pool.
+- The README comparison table gains a "Separate account pools" column and a "Spreads parallel sessions over accounts" column, sourced in `docs/comparison.md`.
+- The agent install guide's setup question 7, "Do you keep work and personal accounts apart?".
+  See [release notes](docs/release-notes/v0.8.0.md).
+
+### Changed
+
+- `state.json` is `"version": 2` while a pool other than `default` exists; `chottag update --version` below 0.8.0 is refused then (`pools_block_rollback`).
+- The README recommends letting Claude Code install and set up chottag.
+  See [release notes](docs/release-notes/v0.8.0.md).
+
 ## [0.7.1] - 2026-10-01
 
 ### Changed
@@ -252,6 +270,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.8.0]: docs/release-notes/v0.8.0.md
 [0.7.1]: docs/release-notes/v0.7.1.md
 [0.7.0]: docs/release-notes/v0.7.0.md
 [0.6.0]: docs/release-notes/v0.6.0.md

@@ -39,6 +39,18 @@ type Chooser interface {
 	Refresh(ctx context.Context, account string) (token string, ok bool)
 }
 
+// PoolGuard is optionally implemented by a Chooser that enforces the pool
+// boundary (M8). With more than one pool, a request that no account of the
+// session's pool can serve must not go out on the client's own login (Home's,
+// which may belong to another pool or to none): ChooseGuarded then returns a
+// non-empty refusal message, and the proxy answers 503 locally. Guarded
+// reports that boundary is on, so the safety net never resends on the
+// client's own login.
+type PoolGuard interface {
+	ChooseGuarded(ctx context.Context, d router.Decision, bodyID string) (account, token string, owner, ok bool, refusal string)
+	Guarded() bool
+}
+
 type Config struct {
 	CA        *ca.Authority
 	Intercept func(host string) bool // host without port; nil = intercept nothing

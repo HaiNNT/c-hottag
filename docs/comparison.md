@@ -1,6 +1,6 @@
 # c-hottag compared
 
-Last verified: 2026-09-29.
+Last verified: 2026-09-29; the spread and pools comparisons 2026-10-01.
 
 Other projects change quickly: releases ship, stars move, a README's wording
 changes. Every claim below is dated and cites the source it came from, so
@@ -88,6 +88,31 @@ keeps following cswap's account swap" — the same idea as chottag's `remote` ac
 has built in. claude-swap itself does not ship it: [PR #210](https://github.com/realiti4/claude-swap/pull/210),
 which would add it as an optional extra, is still open (checked 2026-09-29).
 
+**Spreading parallel sessions over accounts** (checked 2026-10-01). chottag's `chottag policy
+spread` places each new Claude Code session on the account with the most room before its switch
+point, divided by the sessions already on it, and keeps it there so its prompt cache stays warm;
+it moves a session only at a switch point, a limit, or when its cache is already cold. claude-swap
+can run accounts in parallel by hand: its session mode launches "Claude Code as a specific account
+in the current terminal only", and `cswap map` binds a directory to an account
+([README](https://github.com/realiti4/claude-swap)).
+clauth's `clauth start` runs "several accounts at once in isolated config dirs", one profile per
+session, chosen by the user ([README](https://github.com/uwuclxdy/clauth)). caam runs accounts in
+parallel through isolated and shallow profiles, and `caam limits --rank earliest-reset-headroom`
+ranks the seats to hand "a brand-new session"; launching the session on that seat is up to the user
+or an orchestrator ([README](https://github.com/Dicklesworthstone/coding_agent_account_manager)).
+CCSwitcher swaps one login for the whole machine, so "New `claude` invocations immediately use the
+newly-selected account" ([README](https://github.com/XueshiQiao/CCSwitcher)). None of the four
+states placing sessions automatically by remaining usage.
+
+**Separate account pools** (checked 2026-10-01). chottag's pools are named sets of accounts: a
+session started with `CHOTTAG_POOL=work claude` is served only by accounts in the `work` pool, each
+pool has its own remote account, serving account and policy, and one account can be in several
+pools. claude-swap has the nearest thing: `cswap map` will "Bind a directory to an account, and a
+bare `cswap run` there launches that account in session mode"
+([README](https://github.com/realiti4/claude-swap)), which ties a directory to one account rather
+than grouping accounts. The READMEs of clauth, caam and CCSwitcher state nothing about separate
+groups of accounts (checked 2026-10-01).
+
 ## Proxies and gateways
 
 These point Claude Code at a different API endpoint entirely — a model
@@ -130,16 +155,16 @@ relay that shares access to accounts across people.
 
 ## Sources
 
-- claude-swap: [realiti4/claude-swap](https://github.com/realiti4/claude-swap) (accessed 2026-09-29)
+- claude-swap: [realiti4/claude-swap](https://github.com/realiti4/claude-swap) (accessed 2026-10-01)
 - cswap-pin: [codeslake/cswap-pin](https://github.com/codeslake/cswap-pin) (accessed 2026-09-29)
 - claude-swap PR #210, open: [realiti4/claude-swap#210](https://github.com/realiti4/claude-swap/pull/210) (accessed 2026-09-29)
 - swapdex: [youdie006/swapdex](https://github.com/youdie006/swapdex) (accessed 2026-09-28)
-- clauth: [uwuclxdy/clauth](https://github.com/uwuclxdy/clauth) (accessed 2026-09-29)
+- clauth: [uwuclxdy/clauth](https://github.com/uwuclxdy/clauth) (accessed 2026-10-01)
 - claude-account: [hamzarehmandeveloper/claude-account](https://github.com/hamzarehmandeveloper/claude-account) (accessed 2026-09-28)
-- CCSwitcher: [XueshiQiao/CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) (accessed 2026-09-29)
+- CCSwitcher: [XueshiQiao/CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) (accessed 2026-10-01)
 - Claude Account Switcher: [Symbioose/claude-account-switcher](https://github.com/Symbioose/claude-account-switcher) (accessed 2026-09-28)
 - aisw: [burakdede/aisw](https://github.com/burakdede/aisw) (accessed 2026-09-28)
-- caam: [Dicklesworthstone/coding_agent_account_manager](https://github.com/Dicklesworthstone/coding_agent_account_manager) (accessed 2026-09-29)
+- caam: [Dicklesworthstone/coding_agent_account_manager](https://github.com/Dicklesworthstone/coding_agent_account_manager) (accessed 2026-10-01)
 - Claude Code Router: [musistudio/claude-code-router](https://github.com/musistudio/claude-code-router) (accessed 2026-09-28)
 - CC Switch: [farion1231/cc-switch](https://github.com/farion1231/cc-switch) (accessed 2026-09-28)
 - claude-code-proxy: [1rgs/claude-code-proxy](https://github.com/1rgs/claude-code-proxy) (accessed 2026-09-28)

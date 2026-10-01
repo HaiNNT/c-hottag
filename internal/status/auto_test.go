@@ -80,3 +80,44 @@ func TestAutoRoundTripsWithTheSpecKeys(t *testing.T) {
 		t.Fatalf("round trip = %+v", got.Auto)
 	}
 }
+
+// Each non-default pool has its own decision and last switch (M8); the
+// top-level fields stay the default pool's, so a default-only document is
+// unchanged.
+func TestAutoCarriesPerPoolDecisions(t *testing.T) {
+	var f File
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	a := Auto{Mode: "balanced", Decision: "holding A", Pools: map[string]PoolAuto{
+		"work": {Decision: "holding C", UserChosen: true, LastSwitch: &AutoSwitch{From: "B", To: "C", Trigger: "limit", At: at}},
+	}}
+	if !f.SetAuto(a) {
+		t.Fatal("first SetAuto reported no change")
+	}
+	a.Pools["work"].LastSwitch.Retried = true // the caller's value: SetAuto kept a copy
+	if f.Auto.Pools["work"].LastSwitch.Retried {
+		t.Fatal("SetAuto stored the caller's pool LastSwitch pointer")
+	}
+	if !f.SetAuto(a) {
+		t.Fatal("a changed pool lastSwitch reported no change")
+	}
+	a.Pools = map[string]PoolAuto{"work": {Decision: "staying on C", UserChosen: true, LastSwitch: a.Pools["work"].LastSwitch}}
+	if !f.SetAuto(a) {
+		t.Fatal("a changed pool decision reported no change")
+	}
+	if f.SetAuto(a) {
+		t.Fatal("an identical document reported a change")
+	}
+	b, err := Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"pools"`) || !strings.Contains(string(b), `"staying on C"`) {
+		t.Fatalf("pools missing:\n%s", b)
+	}
+	var g File
+	g.SetAuto(Auto{Mode: "balanced", Decision: "holding A"})
+	b, _ = Marshal(g)
+	if strings.Contains(string(b), `"pools"`) {
+		t.Fatalf("a default-only auto carries pools:\n%s", b)
+	}
+}

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -69,8 +70,11 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 	// connector (mcpProxyRules). An owner-mapped object on api.anthropic.com
 	// (e.g. an artifact) keeps today's safety net unchanged.
 	ownerAnswer := false
+	refusal := ""
 	if s.cfg.Choose != nil && d.Class != router.Untouched && r.URL.Scheme == "https" && rec.Auth == "oauth-access" {
-		if acct, tok, owner, ok := s.cfg.Choose.Choose(r.Context(), d, bodyID); ok {
+		acct, tok, owner, ok, why := s.choose(r.Context(), d, bodyID)
+		refusal = why
+		if ok {
 			r.Header.Set("Authorization", "Bearer "+tok)
 			r.Header.Del("X-Api-Key")
 			rec.Swapped, rec.Account, account = true, acct, acct
@@ -124,6 +128,14 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			panic(p)
 		}
 	}()
+
+	if refusal != "" {
+		// The pool boundary: nothing in the session's pool can serve this,
+		// and the client's own login must not (M8). Answered here.
+		rec.Status, rec.Err = http.StatusServiceUnavailable, "pool refused"
+		writePoolRefusal(w, refusal)
+		return
+	}
 
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -390,6 +402,28 @@ func (c *capture) Read(p []byte) (int, error) {
 
 func (c *capture) Close() error { return c.rc.Close() }
 
+// choose is Chooser.Choose, through ChooseGuarded when the chooser enforces
+// the pool boundary.
+func (s *Server) choose(ctx context.Context, d router.Decision, bodyID string) (account, token string, owner, ok bool, refusal string) {
+	if g, isG := s.cfg.Choose.(PoolGuard); isG {
+		return g.ChooseGuarded(ctx, d, bodyID)
+	}
+	account, token, owner, ok = s.cfg.Choose.Choose(ctx, d, bodyID)
+	return account, token, owner, ok, ""
+}
+
+// writePoolRefusal answers 503 with an Anthropic-shaped error: Claude Code
+// retries a 5xx with backoff, so a racing `pool leave` recovers on its own.
+func writePoolRefusal(w http.ResponseWriter, msg string) {
+	body, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]string{"type": "api_error", "message": msg},
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write(body)
+}
+
 // transportFor wraps the shared transport in the safety net when the request
 // was swapped; an unswapped request uses the transport directly. A swapped
 // serving-class request with no object owner is also armed for the wall
@@ -409,6 +443,9 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 			rec.Unreplayable = true
 			rec.UnreplayableBytes = n
 		},
+	}
+	if g, ok := s.cfg.Choose.(PoolGuard); ok && g.Guarded() {
+		sn.noOriginal = true
 	}
 	if s.cfg.WallRetry != nil && d.Class == router.Serving && d.Object == "" {
 		sn.wallRetry, sn.maxBody = s.cfg.WallRetry, maxWallRetryBody

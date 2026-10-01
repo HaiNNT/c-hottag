@@ -58,7 +58,7 @@ func nextCandidate(st *store.State, f *status.File, now time.Time, force bool) (
 	var order []store.Account // the walk after serving, in registration order (wrapping)
 	cur := st.Serving
 	for i := 0; i < len(st.Accounts); i++ {
-		a, err := st.Next(cur)
+		a, err := nextInView(st, cur)
 		if err != nil {
 			return store.Account{}, skips, false, err
 		}
@@ -180,4 +180,20 @@ func knownLimit(f *status.File, account string, now time.Time) (time.Time, bool)
 		return time.Time{}, true
 	}
 	return time.Time{}, false
+}
+
+// nextInView is the account after cur in the view's own account list,
+// wrapping; an empty or unknown cur yields the first. The view is already
+// scoped to one pool (poolView), so this does not use store.Next, which
+// walks the default pool only.
+func nextInView(st *store.State, cur string) (store.Account, error) {
+	if len(st.Accounts) == 0 {
+		return store.Account{}, store.ErrNoAccounts
+	}
+	for i, a := range st.Accounts {
+		if strings.EqualFold(a.Name, cur) {
+			return st.Accounts[(i+1)%len(st.Accounts)], nil
+		}
+	}
+	return st.Accounts[0], nil
 }

@@ -22,13 +22,18 @@ commands:
   setup [--label NAME]          install the shim: tree, CA, symlinks, PATH; then adopt
   uninstall [--purge]           remove the shim and restore the shell rc; --purge also deletes every login
   adopt [--claude PATH]         register the account slots that already hold a login
-  login NAME [--claude PATH]    log a slot in (browser) and register it
+  login NAME [--pool P] [--claude PATH]  log a slot in (browser) and register it, in pool P (default: default)
   logout NAME [--force] [--yes] revoke a slot's login and remove it
-  tag [NAME] [--force]          set the serving account (no NAME: next in rotation); under spread, also pin new sessions to NAME
-  tag --unpin                   under spread, clear the pin
-  next [--force]                serving account -> next in rotation (refused under spread)
-  policy [serial|spread]        show or set how new sessions are placed: one serving account, or spread over accounts
-  remote [NAME]                 set or show the account that owns claude.ai objects
+  tag [NAME] [--force] [--pool P] set the serving account (no NAME: next in rotation); under spread, also pin new sessions to NAME
+  tag --unpin [--pool P]        under spread, clear the pin
+  next [--force] [--pool P]     serving account -> next in rotation (refused under spread)
+  policy [serial|spread] [--pool P]  show or set how new sessions are placed: one serving account, or spread over accounts
+  remote [NAME] [--pool P]      set or show the account that owns claude.ai objects
+  pool                          list the pools: accounts, serving, remote, policy
+  pool add NAME                 create an empty pool
+  pool join ACCOUNT POOL        add ACCOUNT to POOL (it stays in its other pools)
+  pool leave ACCOUNT POOL       remove ACCOUNT from POOL (it must stay in one pool)
+  pool rm NAME                  remove an empty pool
   own KIND ID [ACCOUNT]         re-attribute one claude.ai object, or print its owner
   rotate NAME [on|off]          include or exclude NAME from next rotation
   rename OLD NEW                rename an account (display name only; the slot and its login stay)
@@ -236,6 +241,8 @@ func dispatch(args []string, r *reporter) int {
 		return runRemote(args[1:], r)
 	case "policy":
 		return runPolicy(args[1:], r)
+	case "pool":
+		return runPool(args[1:], r)
 	case "rotate":
 		return runRotate(args[1:], r)
 	case "rename":

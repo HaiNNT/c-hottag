@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"flag"
 	"fmt"
 
 	"github.com/HaiNNT/c-hottag/internal/exit"
@@ -8,7 +9,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 )
 
-const policyUsage = "usage: chottag policy [serial|spread]"
+const policyUsage = "usage: chottag policy [serial|spread] [--pool POOL]"
 
 // spreadNextMessage is `next`'s refusal under spread (M7 spec §5): a
 // machine-wide "next" has no meaning when sessions sit on different accounts.
@@ -19,6 +20,8 @@ const spreadNextMessage = "under spread, chottag places sessions itself: `chotta
 type policyResult struct {
 	Policy string `json:"policy"`
 	Pin    string `json:"pin"`
+	// Pool is the pool acted in; absent for default (M8).
+	Pool string `json:"pool,omitempty"`
 }
 
 func policyName(st store.State) string {
@@ -28,14 +31,18 @@ func policyName(st store.State) string {
 	return store.PolicySerial
 }
 
-// runPolicy shows or sets how new sessions are placed. It takes no flags.
-// Switching policy changes nothing about rotation or the stored pin.
+// runPolicy shows or sets how new sessions are placed, in one pool (--pool,
+// default without it). Its only flag is --pool. Switching policy changes
+// nothing about rotation or the stored pin.
 func runPolicy(args []string, r *reporter) int {
-	args, err := positionals(args)
+	fs := flag.NewFlagSet("policy", flag.ContinueOnError)
+	fs.SetOutput(r.Stderr())
+	poolArg := fs.String("pool", "", "the pool whose policy to show or set (default: default)")
+	args, err := parseInterspersed(fs, args)
 	if err != nil {
-		fmt.Fprintf(r.Stderr(), "chottag: %v\n%s\n", err, policyUsage)
-		return r.FailNoText(exit.Usage, codeUsage, err.Error(), nil)
+		return r.FlagError(err)
 	}
+	poolFlag := *poolArg
 	if len(args) > 1 {
 		return r.Usage(policyUsage)
 	}
@@ -48,22 +55,29 @@ func runPolicy(args []string, r *reporter) int {
 		return r.FailErr(err)
 	}
 	s := store.Store{Dir: h}
-	var st store.State
+	pool := poolOrDefault(poolFlag)
+	var all store.State
 	if len(args) == 0 {
-		st, err = s.Load()
+		all, err = s.Load()
+		if err == nil {
+			err = checkPool(all, pool)
+		}
 	} else {
-		st, err = s.Update(func(st *store.State) error {
-			st.SetPolicy(args[0])
-			return nil
+		all, err = s.Update(func(st *store.State) error {
+			return st.SetPoolPolicy(pool, args[0])
 		})
 	}
 	if err != nil {
-		return r.FailErr(err)
+		return failPool(r, err)
 	}
+	st := poolView(all, pool)
 	if len(args) == 1 && st.PolicySpread() {
-		warnIfDaemonPredatesSpread(st, r)
+		warnIfDaemonPredatesSpread(all, r)
+		for _, a := range st.Accounts {
+			warnShared(all, a, r)
+		}
 	}
-	r.Text("policy: %s\n", policyName(st))
+	r.Text("policy: %s%s\n", policyName(st), poolLabel(pool))
 	// The pin has an effect only under spread, so a stored pin is shown
 	// only then.
 	pin := ""
@@ -73,7 +87,7 @@ func runPolicy(args []string, r *reporter) int {
 			r.Text("pin: %s\n", pin)
 		}
 	}
-	return r.OK(policyResult{Policy: policyName(st), Pin: pin})
+	return r.OK(policyResult{Policy: policyName(st), Pin: pin, Pool: poolField(pool)})
 }
 
 // spreadSince is the first release whose daemon places sessions under spread.

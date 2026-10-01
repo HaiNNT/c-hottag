@@ -31,6 +31,8 @@ type tagResult struct {
 	// Pin is the account new sessions are pinned to, set by `tag NAME` under
 	// spread (also when NAME has rotation off: it is stored, not used).
 	Pin string `json:"pin,omitempty"`
+	// Pool is the pool acted in; absent for default (M8).
+	Pool string `json:"pool,omitempty"`
 }
 
 // nextResult is `tag` / `next --json`'s fields. skipped is always an array
@@ -43,6 +45,8 @@ type nextResult struct {
 	// own switch point, with no account below its (item 2, review round
 	// 3). Additive: absent (false) on every other outcome.
 	Fallback bool `json:"fallback,omitempty"`
+	// Pool is the pool acted in; absent for default (M8).
+	Pool string `json:"pool,omitempty"`
 }
 
 // skipEntry is one passed-over account on the wire: reason is a token
@@ -101,12 +105,13 @@ func runTag(args []string, r *reporter) int {
 	fs.SetOutput(r.Stderr())
 	force := fs.Bool("force", false, "switch even past a limit, a switch point or a needs-login state (never past rotation)")
 	unpin := fs.Bool("unpin", false, "under spread, clear the pin")
+	poolFlag := fs.String("pool", "", "the pool to act in (default: NAME's pool, or default)")
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return r.FlagError(err)
 	}
 	if len(positional) > 1 {
-		return r.Usage("usage: chottag tag [NAME] [--force] | chottag tag --unpin")
+		return r.Usage("usage: chottag tag [NAME] [--force] [--pool POOL] | chottag tag --unpin [--pool POOL]")
 	}
 	if *unpin && (len(positional) != 0 || *force) {
 		return r.Usage("usage: chottag tag --unpin (takes no NAME and no --force)")
@@ -116,68 +121,75 @@ func runTag(args []string, r *reporter) int {
 		return r.FailErr(err)
 	}
 	if *unpin {
-		return runUnpin(s, r)
+		return runUnpin(s, poolOrDefault(*poolFlag), r)
 	}
 	if len(positional) == 0 {
-		return runNextSerial(s, &f, now, *force, r)
+		return runNextSerial(s, &f, now, *force, poolOrDefault(*poolFlag), r)
 	}
 
 	// positional[0] is what the user typed at the prompt: Find's unique
 	// name/email/prefix resolution is the intended convenience here,
 	// not an identity check — do not replace with an exact-only match.
 	name := positional[0]
-	var previous string
+	var previous, pool string
 	st, err := s.Update(func(st *store.State) error {
 		a, err := st.Find(name)
 		if err != nil {
 			return err
 		}
-		previous = st.Serving
-		st.Serving = a.Name
-		if st.PolicySpread() {
-			st.SetPin(a.Name)
+		if pool, err = accountPool(*st, *a, *poolFlag); err != nil {
+			return err
+		}
+		previous = st.PoolOf(pool).Serving
+		if err := st.SetPoolServing(pool, a.Name); err != nil {
+			return err
+		}
+		if poolSpread(*st, pool) {
+			return st.SetPoolPin(pool, a.Name)
 		}
 		return nil
 	})
 	if err != nil {
-		return r.FailErr(err)
+		return failPool(r, err)
 	}
-	r.Text("serving: %s\n", st.Serving)
-	if st.PolicySpread() {
+	spread := poolSpread(st, pool)
+	serving := st.PoolOf(pool).Serving
+	r.Text("serving: %s%s\n", serving, poolLabel(pool))
+	if spread {
 		warnIfDaemonPredatesSpread(st, r)
 	}
 
 	// tag WARNS, it does not refuse (spec §5): an explicit tag is a
 	// deliberate override, and refusing it would take away the escape
 	// hatch `next --force` exists for.
-	if until, limited := knownLimit(&f, st.Serving, now); limited {
+	if until, limited := knownLimit(&f, serving, now); limited {
 		if until.IsZero() {
-			r.Warn(warnLimited, fmt.Sprintf("chottag: warning: %s is limited", st.Serving))
+			r.Warn(warnLimited, fmt.Sprintf("chottag: warning: %s is limited", serving))
 		} else {
-			r.Warn(warnLimited, fmt.Sprintf("chottag: warning: %s is limited until %s", st.Serving, untilText(until, now)))
+			r.Warn(warnLimited, fmt.Sprintf("chottag: warning: %s is limited until %s", serving, untilText(until, now)))
 		}
 	}
-	if a, err := st.Find(st.Serving); err == nil && !a.Rotates() {
+	if a, err := st.Find(serving); err == nil && !a.Rotates() {
 		skips := "`chottag next` will skip it"
-		if st.PolicySpread() {
+		if spread {
 			skips = "spread places no session on it"
 		}
-		r.Warn(warnOutOfRotation, fmt.Sprintf("chottag: warning: %s is out of rotation; %s", st.Serving, skips))
+		r.Warn(warnOutOfRotation, fmt.Sprintf("chottag: warning: %s is out of rotation; %s", serving, skips))
 	}
-	if st.PolicySpread() {
+	if spread {
 		// R90: the pin is stored either way, but placement never uses a
 		// pin on an account that is out of rotation.
-		if a, err := st.Find(st.Serving); err == nil && !a.Rotates() {
-			r.Text("new sessions won't be pinned to %s while its rotation is off\n", st.Serving)
+		if a, err := st.Find(serving); err == nil && !a.Rotates() {
+			r.Text("new sessions won't be pinned to %s while its rotation is off\n", serving)
 		} else {
-			r.Text("new sessions are pinned to %s\n", st.Serving)
+			r.Text("new sessions are pinned to %s\n", serving)
 		}
 	}
 	pin := ""
-	if st.PolicySpread() {
-		pin = st.Pin
+	if spread {
+		pin = st.PoolOf(pool).Pin
 	}
-	return r.OK(tagResult{Serving: st.Serving, Previous: previous, Pin: pin})
+	return r.OK(tagResult{Serving: serving, Previous: previous, Pin: pin, Pool: poolField(pool)})
 }
 
 // runNextCmd is `chottag next [--force]`. Its only flag is --force, in any
@@ -187,53 +199,59 @@ func runNextCmd(args []string, r *reporter) int {
 	fs := flag.NewFlagSet("next", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
 	force := fs.Bool("force", false, "switch even past a limit, a switch point or a needs-login state (never past rotation)")
+	poolFlag := fs.String("pool", "", "the pool whose serving account moves (default: default)")
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return r.FlagError(err)
 	}
 	if len(positional) != 0 {
-		return r.Fail(exit.Usage, codeUsage, "next takes no arguments (except --force)", nil)
+		return r.Fail(exit.Usage, codeUsage, "next takes no arguments (except --force and --pool)", nil)
 	}
 	s, f, now, err := tagState()
 	if err != nil {
 		return r.FailErr(err)
 	}
-	return runNextSerial(s, &f, now, *force, r)
+	return runNextSerial(s, &f, now, *force, poolOrDefault(*poolFlag), r)
 }
 
 // runNextSerial is `next` (and a bare `tag`): refused under spread, where
 // sessions sit on different accounts and a machine-wide "next" has no
 // meaning (M7 spec §5), and runNext otherwise.
-func runNextSerial(s store.Store, f *status.File, now time.Time, force bool, r *reporter) int {
+func runNextSerial(s store.Store, f *status.File, now time.Time, force bool, pool string, r *reporter) int {
 	st, err := s.Load()
 	if err != nil {
 		return r.FailErr(err)
 	}
-	if st.PolicySpread() {
+	if err := checkPool(st, pool); err != nil {
+		return failPool(r, err)
+	}
+	if poolSpread(st, pool) {
 		return r.Fail(exit.Usage, codeSpreadNext, spreadNextMessage, nil)
 	}
-	return runNext(s, f, now, force, r)
+	return runNext(s, f, now, force, pool, r)
 }
 
 // runUnpin is `tag --unpin`: it clears the pin, and only under spread,
 // the one policy where a pin has any effect.
-func runUnpin(s store.Store, r *reporter) int {
+func runUnpin(s store.Store, pool string, r *reporter) int {
 	cur, err := s.Load()
 	if err != nil {
 		return r.FailErr(err)
 	}
-	if !cur.PolicySpread() {
+	if err := checkPool(cur, pool); err != nil {
+		return failPool(r, err)
+	}
+	if !poolSpread(cur, pool) {
 		return r.Fail(exit.Usage, codeUsage, "pins apply only under `chottag policy spread`", nil)
 	}
 	st, err := s.Update(func(st *store.State) error {
-		st.SetPin("")
-		return nil
+		return st.SetPoolPin(pool, "")
 	})
 	if err != nil {
-		return r.FailErr(err)
+		return failPool(r, err)
 	}
 	r.Text("unpinned\n")
-	return r.OK(tagResult{Serving: st.Serving})
+	return r.OK(tagResult{Serving: st.PoolOf(pool).Serving, Pool: poolField(pool)})
 }
 
 // runNext moves the serving role to the next eligible account in
@@ -247,19 +265,20 @@ func runUnpin(s store.Store, r *reporter) int {
 // a skip. --force overrides a limit, a switch point and a needs-login
 // state, but never rotation: an account the user deliberately excluded is
 // not a fallback target either.
-func runNext(s store.Store, f *status.File, now time.Time, force bool, r *reporter) int {
+func runNext(s store.Store, f *status.File, now time.Time, force bool, pool string, r *reporter) int {
 	var skips []skip
 	var fellBack bool
 	var previous string
 	st, err := s.Update(func(st *store.State) error {
-		previous = st.Serving
-		a, sk, fb, err := nextCandidate(st, f, now, force)
+		// The walk runs over the pool's members and its serving account.
+		view := poolView(*st, pool)
+		previous = view.Serving
+		a, sk, fb, err := nextCandidate(&view, f, now, force)
 		skips, fellBack = sk, fb
 		if err != nil {
 			return err
 		}
-		st.Serving = a.Name
-		return nil
+		return st.SetPoolServing(pool, a.Name)
 	})
 	if err != nil {
 		if errors.Is(err, ErrNoCandidate) {
@@ -277,6 +296,7 @@ func runNext(s store.Store, f *status.File, now time.Time, force bool, r *report
 		}
 		return r.FailErr(err)
 	}
+	serving := st.PoolOf(pool).Serving
 	if len(skips) > 0 {
 		// Spec §5: one comma-joined line, reason per account, carrying the
 		// reset time for a limited skip ("skipped B (out of rotation), D
@@ -297,10 +317,10 @@ func runNext(s store.Store, f *status.File, now time.Time, force bool, r *report
 		// just the least-bad account, not literally eligible — so say so
 		// instead of leaving the "serving" line looking like an ordinary
 		// switch (item 2, review round 3).
-		r.Text("%s is above its switch point; no account was below its own\n", st.Serving)
+		r.Text("%s is above its switch point; no account was below its own\n", serving)
 	}
-	r.Text("serving: %s\n", st.Serving)
-	return r.OK(nextResult{Serving: st.Serving, Previous: previous, Skipped: skipEntries(skips), Fallback: fellBack})
+	r.Text("serving: %s%s\n", serving, poolLabel(pool))
+	return r.OK(nextResult{Serving: serving, Previous: previous, Skipped: skipEntries(skips), Fallback: fellBack, Pool: poolField(pool)})
 }
 
 // remoteResult is `remote --json`'s fields (spec §5.3). Remote is omitempty
@@ -310,18 +330,25 @@ func runNext(s store.Store, f *status.File, now time.Time, force bool, r *report
 type remoteResult struct {
 	Remote  string `json:"remote,omitempty"`
 	Changed bool   `json:"changed"`
+	// Pool is the pool acted in; absent for default (M8).
+	Pool string `json:"pool,omitempty"`
 }
 
-// runRemote sets or shows the account that owns claude.ai objects. It takes
-// no flags: a stray one is exit 2, never an account name (spec §5.3).
+// runRemote sets or shows the account that owns claude.ai objects, in a pool.
+// Its only flag is --pool: any other is exit 2, never an account name (spec
+// §5.3). `remote NAME` acts in NAME's pool (--pool when it is in several); a
+// bare `remote` shows the --pool pool's, default without it.
 func runRemote(args []string, r *reporter) int {
-	args, err := positionals(args)
+	fs := flag.NewFlagSet("remote", flag.ContinueOnError)
+	fs.SetOutput(r.Stderr())
+	pool := fs.String("pool", "", "the pool to act in (default: NAME's pool, or default)")
+	args, err := parseInterspersed(fs, args)
 	if err != nil {
-		fmt.Fprintf(r.Stderr(), "chottag: %v\nusage: chottag remote [NAME]\n", err)
-		return r.FailNoText(exit.Usage, codeUsage, err.Error(), nil)
+		return r.FlagError(err)
 	}
+	poolFlag := *pool
 	if len(args) > 1 {
-		return r.Usage("usage: chottag remote [NAME]")
+		return r.Usage("usage: chottag remote [NAME] [--pool POOL]")
 	}
 	h, err := home()
 	if err != nil {
@@ -333,10 +360,15 @@ func runRemote(args []string, r *reporter) int {
 		if err != nil {
 			return r.FailErr(err)
 		}
-		r.Text("remote: %s\n", st.Remote)
-		return r.OK(remoteResult{Remote: st.Remote})
+		showPool := poolOrDefault(poolFlag)
+		if err := checkPool(st, showPool); err != nil {
+			return failPool(r, err)
+		}
+		remote := st.PoolOf(showPool).Remote
+		r.Text("remote: %s%s\n", remote, poolLabel(showPool))
+		return r.OK(remoteResult{Remote: remote, Pool: poolField(showPool)})
 	}
-	var previous string
+	var previous, actPool string
 	st, err := s.Update(func(st *store.State) error {
 		// args[0] is what the user typed at the prompt: Find's unique
 		// name/email/prefix resolution is the intended convenience here,
@@ -345,15 +377,18 @@ func runRemote(args []string, r *reporter) int {
 		if err != nil {
 			return err
 		}
-		previous = st.Remote
-		st.Remote = a.Name
-		return nil
+		if actPool, err = accountPool(*st, *a, poolFlag); err != nil {
+			return err
+		}
+		previous = st.PoolOf(actPool).Remote
+		return st.SetPoolRemote(actPool, a.Name)
 	})
 	if err != nil {
-		return r.FailErr(err)
+		return failPool(r, err)
 	}
-	r.Text("remote: %s\n", st.Remote)
-	return r.OK(remoteResult{Remote: st.Remote, Changed: previous != st.Remote})
+	remote := st.PoolOf(actPool).Remote
+	r.Text("remote: %s%s\n", remote, poolLabel(actPool))
+	return r.OK(remoteResult{Remote: remote, Changed: previous != remote, Pool: poolField(actPool)})
 }
 
 // adoptEntry and adoptSkip are `adopt --json`'s array elements (spec §5.3).

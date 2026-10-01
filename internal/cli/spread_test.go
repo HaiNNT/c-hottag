@@ -568,13 +568,13 @@ func TestSpreadSavesDebouncedToOnceASecond(t *testing.T) {
 
 type failingPlacer struct{ t *testing.T }
 
-func (f failingPlacer) accountFor(string, string, time.Time) (string, bool) {
+func (f failingPlacer) accountFor(string, string, string, time.Time) (string, bool) {
 	f.t.Helper()
 	f.t.Error("the chooser asked the spread engine")
 	return "", false
 }
 
-func (f failingPlacer) fallback(time.Time) (string, bool) {
+func (f failingPlacer) fallbackExcluding(string, map[string]bool, time.Time) (string, bool) {
 	f.t.Helper()
 	f.t.Error("the chooser asked the spread engine for a fallback")
 	return "", false

@@ -13,6 +13,13 @@ been used for real), on amd64 or arm64. Claude Code installed. And either
 
 ## Install
 
+**Recommended: let Claude Code do it.** In any Claude Code session, ask:
+*"Install and set up chottag for me: https://github.com/HaiNNT/c-hottag"*.
+It follows [Install and manage chottag for a user](for-claude-code.md):
+it installs the binary and the plugin, asks which accounts, plans and options
+you want, logs each account in with you, and checks the result. The rest of
+this section is the manual way.
+
 From a clone:
 
 ```sh

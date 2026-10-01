@@ -228,3 +228,159 @@ func TestStateChecksLeaveALiveDaemonAlone(t *testing.T) {
 	}
 	assertChangedOnly(t, before, ti.snapshot())
 }
+
+// poolsInstall adds pool work holding B (rotating) to the healthy install, which
+// keeps A in default.
+func poolsInstall(t *testing.T) *testInstall {
+	t.Helper()
+	ti := newTestInstall(t)
+	ti.update(func(st *store.State) error {
+		if err := st.AddPool("work"); err != nil {
+			return err
+		}
+		return st.Add(store.Account{Name: "B", Dir: filepath.Join(ti.home, "accounts", "B"), PoolList: []string{"work"}})
+	})
+	return ti
+}
+
+func TestRolesWithPoolsNamesEachPoolsRoles(t *testing.T) {
+	ti := poolsInstall(t)
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "roles")
+	if r.Status != StatusOK || r.Detail != "default: serving A, remote A; work: serving B, remote B" {
+		t.Fatalf("roles = %+v", r)
+	}
+}
+
+// default may have no members; its roles are then empty and that is healthy.
+func TestRolesAnEmptyDefaultPoolIsHealthy(t *testing.T) {
+	ti := poolsInstall(t)
+	ti.update(func(st *store.State) error {
+		st.Accounts[0].PoolList = []string{"work"}
+		st.Serving, st.Remote = "", ""
+		return nil
+	})
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "roles")
+	if r.Status != StatusOK || r.Detail != "default: serving none, remote none; work: serving A, remote A" && r.Detail != "default: serving none, remote none; work: serving B, remote B" {
+		t.Fatalf("roles = %+v", r)
+	}
+}
+
+// A pool's serving account outside the pool, or no remote at all, is a
+// problem, and --fix hands the role to a member.
+func TestRolesPoolBreakThenRepair(t *testing.T) {
+	ti := poolsInstall(t)
+	breakThenRepair(t, ti, StateChecks(), "roles", func() {
+		ti.update(func(st *store.State) error {
+			st.Pools["work"] = store.Pool{Serving: "A"} // A is in default only; no remote
+			return nil
+		})
+	}, "home:state.json")
+	r := ti.env
+	st, err := r.State()
+	must(t, err)
+	if p := st.Pools["work"]; p.Serving != "B" || p.Remote != "B" {
+		t.Fatalf("work = %+v, want B in both roles", p)
+	}
+	if st.Serving != "A" || st.Remote != "A" {
+		t.Fatalf("default roles = %s/%s moved", st.Serving, st.Remote)
+	}
+}
+
+func TestRolesProblemNamesThePool(t *testing.T) {
+	ti := poolsInstall(t)
+	ti.update(func(st *store.State) error { st.Pools["work"] = store.Pool{Serving: "A", Remote: "B"}; return nil })
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "roles")
+	if r.Status != StatusProblem || !strings.Contains(r.Detail, `work serving "A"`) || strings.Contains(r.Detail, "remote") {
+		t.Fatalf("roles = %+v", r)
+	}
+}
+
+// A pool whose members are all out of rotation serves nothing: its sessions
+// get a 503. That is a warning (info), not a problem; the default pool's own
+// all-out-of-rotation case is unchanged.
+func TestRolesWarnsOfAPoolWithNoAccountInRotation(t *testing.T) {
+	ti := poolsInstall(t)
+	ti.update(func(st *store.State) error {
+		st.Accounts[1].NoRotate = true
+		p := st.Pools["work"]
+		p.Serving = ""
+		st.Pools["work"] = p
+		return nil
+	})
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "roles")
+	if r.Status != StatusInfo || !strings.Contains(r.Detail, "warning: pool work has no account in rotation") || r.Hint != "chottag rotate B on" {
+		t.Fatalf("roles = %+v", r)
+	}
+}
+
+// The text names what --fix really does: serving goes to a member in
+// rotation (R90), not necessarily the first registered account.
+func TestRolesDetailNamesTheRealFixTargets(t *testing.T) {
+	ti := newTestInstall(t)
+	ti.update(func(st *store.State) error {
+		st.Accounts[0].NoRotate = true
+		return st.Add(store.Account{Name: "B", Dir: filepath.Join(ti.home, "accounts", "B")})
+	})
+	ti.update(func(st *store.State) error { st.Serving = "Gone"; return nil })
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "roles")
+	if r.Status != StatusProblem || r.Detail != `serving "Gone" names no registered account; the fix gives it to B` {
+		t.Fatalf("roles = %+v", r)
+	}
+	rowByID(t, mustRun(t, ti.env, StateChecks(), true), "roles")
+	st, _ := ti.env.State()
+	if st.Serving != "B" || st.Remote != "A" {
+		t.Fatalf("roles = %s/%s", st.Serving, st.Remote)
+	}
+}
+
+func TestRolesMultiPoolSaysNotAMemberForARegisteredNonMember(t *testing.T) {
+	ti := poolsInstall(t)
+	ti.update(func(st *store.State) error { st.Pools["work"] = store.Pool{Serving: "A", Remote: "B"}; return nil })
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "roles")
+	if want := `work serving "A" names no member of its pool; the fix gives it to B`; r.Detail != want {
+		t.Fatalf("detail = %q, want %q", r.Detail, want)
+	}
+}
+
+// R90 in a non-default pool: with no member in rotation, --fix leaves serving
+// empty rather than naming a rotation-off account.
+func TestRolesFixNeverServesFromARotationOffMemberOfANonDefaultPool(t *testing.T) {
+	ti := poolsInstall(t)
+	ti.update(func(st *store.State) error {
+		st.Accounts[1].NoRotate = true
+		st.Pools["work"] = store.Pool{Serving: "Gone", Remote: "B"}
+		return nil
+	})
+	mustRun(t, ti.env, StateChecks(), true)
+	st, _ := ti.env.State()
+	if p := st.Pools["work"]; p.Serving != "" || p.Remote != "B" {
+		t.Fatalf("work = %+v, want empty serving and remote B", p)
+	}
+}
+
+// With two pools to warn about, the hint names the first one's member.
+func TestRolesWarningHintNamesTheFirstWarnedPool(t *testing.T) {
+	ti := poolsInstall(t)
+	ti.update(func(st *store.State) error {
+		if err := st.AddPool("alpha"); err != nil {
+			return err
+		}
+		if err := st.Add(store.Account{Name: "Z", Dir: filepath.Join(ti.home, "accounts", "Z"), PoolList: []string{"alpha"}, NoRotate: true}); err != nil {
+			return err
+		}
+		st.Accounts[1].NoRotate = true // B, in work
+		for _, p := range []string{"alpha", "work"} {
+			v := st.Pools[p]
+			v.Serving = ""
+			st.Pools[p] = v
+		}
+		return nil
+	})
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "roles")
+	if r.Status != StatusInfo || r.Hint != "chottag rotate Z on" {
+		t.Fatalf("roles = %+v", r)
+	}
+	if !strings.Contains(r.Detail, "pool work has no account") || !strings.Contains(r.Detail, "pool alpha has no account") {
+		t.Fatalf("detail = %q", r.Detail)
+	}
+}

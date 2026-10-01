@@ -120,6 +120,12 @@ type Account struct {
 	// spec §7): a report overlay from state.json, like Email and Org,
 	// never written by the daemon.
 	Plan string `json:"plan,omitempty"`
+	// Pools and Shared are report overlays from state.json (M8), set by
+	// `status` only while the install has more than one pool: the pools the
+	// account is in, and whether that is several (they then share its usage
+	// limit, R133). Never written by the daemon.
+	Pools  []string `json:"pools,omitempty"`
+	Shared bool     `json:"shared,omitempty"`
 	// Stale reports whether Usage is too old to act on (§6.3), computed
 	// from Fresh at report time. It is not meaningful in the on-disk cache
 	// itself (Save never sets it): like Email, Org and Rotate, a reporting
@@ -393,6 +399,17 @@ type Auto struct {
 	// BurnRate is the measured burn in units per active hour, 0 while the
 	// daemon has too little data (the planner then uses its default).
 	BurnRate float64 `json:"burnRate"`
+	// Pools is each pool other than default's own decision and last switch
+	// (M8), present only while one exists. The fields above are the default
+	// pool's, in place, so a default-only document is unchanged.
+	Pools map[string]PoolAuto `json:"pools,omitempty"`
+}
+
+// PoolAuto is one non-default pool's auto-switch view.
+type PoolAuto struct {
+	Decision   string      `json:"decision,omitempty"`
+	LastSwitch *AutoSwitch `json:"lastSwitch,omitempty"`
+	UserChosen bool        `json:"userChosen"`
 }
 
 // AutoSwitch is the last switch the daemon made.
@@ -419,6 +436,17 @@ func (f *File) SetAuto(a Auto) bool {
 		ls := *a.LastSwitch
 		a.LastSwitch = &ls
 	}
+	if a.Pools != nil {
+		pools := make(map[string]PoolAuto, len(a.Pools))
+		for name, p := range a.Pools {
+			if p.LastSwitch != nil {
+				ls := *p.LastSwitch
+				p.LastSwitch = &ls
+			}
+			pools[name] = p
+		}
+		a.Pools = pools
+	}
 	if f.Auto != nil && sameAuto(*f.Auto, a) {
 		return false
 	}
@@ -430,15 +458,27 @@ func sameAuto(x, y Auto) bool {
 	if x.Mode != y.Mode || x.Decision != y.Decision || x.UserChosen != y.UserChosen || x.BurnRate != y.BurnRate {
 		return false
 	}
-	if (x.LastSwitch == nil) != (y.LastSwitch == nil) {
+	if !sameSwitch(x.LastSwitch, y.LastSwitch) || len(x.Pools) != len(y.Pools) {
 		return false
 	}
-	if x.LastSwitch == nil {
+	for name, p := range x.Pools {
+		q, ok := y.Pools[name]
+		if !ok || p.Decision != q.Decision || p.UserChosen != q.UserChosen || !sameSwitch(p.LastSwitch, q.LastSwitch) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameSwitch(x, y *AutoSwitch) bool {
+	if (x == nil) != (y == nil) {
+		return false
+	}
+	if x == nil {
 		return true
 	}
-	a, b := *x.LastSwitch, *y.LastSwitch
-	return a.From == b.From && a.To == b.To && a.Trigger == b.Trigger && a.Window == b.Window &&
-		a.Pct == b.Pct && a.At.Equal(b.At) && a.Retried == b.Retried
+	return x.From == y.From && x.To == y.To && x.Trigger == y.Trigger && x.Window == y.Window &&
+		x.Pct == y.Pct && x.At.Equal(y.At) && x.Retried == y.Retried
 }
 
 // AutoAttempt is the last auto-install try (R124).

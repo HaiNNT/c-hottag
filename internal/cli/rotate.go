@@ -68,6 +68,7 @@ func runRotate(args []string, r *reporter) int {
 
 	var name string
 	var count int
+	var emptied []string // pools left with no rotating member
 	if _, err := s.Update(func(st *store.State) error {
 		a, err := st.Find(args[0])
 		if err != nil {
@@ -80,6 +81,14 @@ func runRotate(args []string, r *reporter) int {
 			}
 		}
 		count = inRotation(*st)
+		emptied = emptied[:0]
+		if !want {
+			for _, pn := range accountPools(*st, *a) {
+				if poolRotating(*st, pn) == 0 {
+					emptied = append(emptied, pn)
+				}
+			}
+		}
 		return nil
 	}); err != nil {
 		return r.FailErr(err)
@@ -91,6 +100,12 @@ func runRotate(args []string, r *reporter) int {
 		// user happens to apply it in.
 		r.Warn(warnNoRotationLeft, "chottag: warning: no account left in rotation; `chottag next` will have nothing to switch to")
 	}
+	if count > 0 {
+		// Other pools still rotate, but these have nothing left to serve.
+		for _, pn := range emptied {
+			r.Warn(warnNoRotationLeft, fmt.Sprintf("chottag: warning: no account left in rotation in pool %s; `chottag next --pool %s` will have nothing to switch to", pn, pn))
+		}
+	}
 	r.Text("%s: rotate %s\n", name, onOff(want))
 	return r.OK(rotateResult{Account: name, Rotate: want, InRotation: count})
 }
@@ -99,6 +114,17 @@ func runRotate(args []string, r *reporter) int {
 func inRotation(st store.State) int {
 	n := 0
 	for _, a := range st.Accounts {
+		if a.Rotates() {
+			n++
+		}
+	}
+	return n
+}
+
+// poolRotating counts the members of pool that rotate.
+func poolRotating(st store.State, pool string) int {
+	n := 0
+	for _, a := range st.Members(pool) {
 		if a.Rotates() {
 			n++
 		}

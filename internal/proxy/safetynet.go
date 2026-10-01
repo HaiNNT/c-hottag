@@ -53,6 +53,11 @@ type safetyNet struct {
 	// -1 when unknown (chunked).
 	onUnreplayableRefusal func(contentLength int64)
 
+	// noOriginal: more than one pool exists (M8), so the client's own login,
+	// which may be another pool's or none, is never used: a refused request
+	// returns the swapped account's refusal instead of the resend below.
+	noOriginal bool
+
 	// maxBody caps bufferBody: maxReplayBody, or maxWallRetryBody when the
 	// wall retry is armed. 0 means maxReplayBody.
 	maxBody int64
@@ -138,6 +143,11 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		// (e.g. a reset connection) while the client is still waiting —
 		// exactly the case the safety net exists for, so it must not be
 		// treated as a synthesized failure.
+	}
+
+	if s.noOriginal {
+		s.finishWall(false, resp, err)
+		return resp, err
 	}
 
 	// Still refused: the route table is wrong about this route, or the

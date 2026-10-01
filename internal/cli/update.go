@@ -1081,6 +1081,19 @@ func runUpdate(args []string, r *reporter) int {
 		return r.FailErr(err)
 	}
 
+	// A release before 0.8.0 does not read pools: refuse the rollback, before
+	// any download, while extra pools exist (M8 spec §2). An unreadable
+	// state.json does not block a rollback.
+	if usingExplicitVersion && !*check {
+		if ver, _ := checkVersionTag(*versionFlag); rollbackLosesPools(ver) {
+			if st, err := (store.Store{Dir: h}).Load(); err == nil && len(st.Pools) > 0 {
+				return r.Fail(exit.Usage, codePoolsBlockRollback, fmt.Sprintf(
+					"%s predates pools, and this install has pools beyond default (%s): remove them first with `chottag pool rm`, then roll back",
+					*versionFlag, strings.Join(st.PoolNames()[1:], ", ")), nil)
+			}
+		}
+	}
+
 	repo := resolveUpdateRepo(h, r)
 	if *repoFlag != "" {
 		repo = *repoFlag

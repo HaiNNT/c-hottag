@@ -69,7 +69,9 @@ type Events struct {
 	lastAllSent  time.Time // when the last all-limited notice fired (attempted)
 	pendingAll   bool      // the flap guard suppressed this episode's notice; it is still owed
 	driftSent    bool
-	noCandSent   bool // this no-candidate episode's notice was attempted (M4)
+	// noCandSent holds the pools whose no-candidate episode's notice was
+	// attempted (M4); one episode per pool, "" for a single-pool install (M8).
+	noCandSent map[string]bool
 }
 
 // NewEvents returns a state machine with nothing yet fired.
@@ -83,7 +85,7 @@ func NewEvents(cfg Config) *Events {
 	if cfg.Location == nil {
 		cfg.Location = time.Local
 	}
-	return &Events{cfg: cfg, needsLogin: map[string]bool{}}
+	return &Events{cfg: cfg, needsLogin: map[string]bool{}, noCandSent: map[string]bool{}}
 }
 
 // NeedsLogin reports that the selector found account's token needs a
@@ -216,6 +218,12 @@ type Switch struct {
 	// Retried reports that the request that hit the wall was resent on To
 	// and went through (§4a): the notice then drops the resend hint.
 	Retried bool
+	// Pool names the pool that switched when the install has more than one;
+	// "" otherwise (M8).
+	Pool string
+	// Episode is the pool's name, the key of its no-candidate episode a switch
+	// ends. "" means Pool is the key (a single-pool install, or a test).
+	Episode string
 }
 
 // Moved describes the sessions an account lost under the spread policy.
@@ -225,6 +233,9 @@ type Moved struct {
 	Sessions int      // sessions placed on From when it crossed
 	Window   string   // "5h" | "7d"; "" when unknown
 	Limited  bool     // From hit its limit, rather than a switch point
+	// Pool names the pools From is in when the install has more than one; ""
+	// otherwise (M8).
+	Pool string
 }
 
 // Moved posts the spread notice: one per event, never any state kept.
@@ -238,7 +249,11 @@ func (e *Events) Moved(m Moved) {
 // account is available, so Limits' next flip to available posts nothing.
 // The replacement applies whether or not notifications are on.
 func (e *Events) Switched(s Switch) {
-	e.EndAllLimitedEpisode()
+	key := s.Episode
+	if key == "" {
+		key = s.Pool
+	}
+	e.EndAllLimitedEpisode(key)
 	e.fire(switchedMessage(s))
 }
 
@@ -250,9 +265,9 @@ func (e *Events) Switched(s Switch) {
 // and the deferred notice calls Limits with the episode still open
 // otherwise, and re-posts "available again" a moment before "switched to
 // B" (S8, review round 1 item 1).
-func (e *Events) EndAllLimitedEpisode() {
+func (e *Events) EndAllLimitedEpisode(pool string) {
 	e.mu.Lock()
-	e.noCandSent = false
+	delete(e.noCandSent, pool)
 	if e.phase == phaseAllLimited {
 		e.episodeSent = false
 		e.pendingAll = false
@@ -261,26 +276,29 @@ func (e *Events) EndAllLimitedEpisode() {
 }
 
 // NoCandidate reports that auto-switch had to leave from and found no
-// account to go to. It posts once per episode, and never while every
+// account to go to in pool (each pool has its own episode, keyed by its name,
+// so one pool's cannot silence another's, M8). tag names the pool in the
+// notice's title, "" with a single pool. It
+// posts once per episode, and never while every
 // account is limited: M2b's "all accounts limited" already says so (S8).
 // An episode that begins while all are limited and outlasts that (the
 // other accounts still above their switch points, say) posts then.
-func (e *Events) NoCandidate(from string, allLimited bool) {
+func (e *Events) NoCandidate(pool, tag, from string, allLimited bool) {
 	e.mu.Lock()
-	if e.noCandSent || allLimited {
+	if e.noCandSent[pool] || allLimited {
 		e.mu.Unlock()
 		return
 	}
-	e.noCandSent = true
+	e.noCandSent[pool] = true
 	e.mu.Unlock()
-	e.fire(noCandidateMessage(from))
+	e.fire(noCandidateMessage(tag, from))
 }
 
-// CandidateOK ends a no-candidate episode: the planner is content to stay,
-// or found a target. The next NoCandidate posts again.
-func (e *Events) CandidateOK() {
+// CandidateOK ends pool's no-candidate episode: the planner is content to
+// stay, or found a target. The next NoCandidate posts again.
+func (e *Events) CandidateOK(pool string) {
 	e.mu.Lock()
-	e.noCandSent = false
+	delete(e.noCandSent, pool)
 	e.mu.Unlock()
 }
 

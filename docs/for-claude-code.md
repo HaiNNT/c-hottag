@@ -120,6 +120,29 @@ can change later through the skill.
    for a new release once a day either way and says so in `chottag status`,
    on the status line and in one notification. Yes lets the daemon install
    a release by itself (same major version, at least 24 hours old).
+7. **Do you keep work and personal accounts apart?** Ask only when there are
+   at least two accounts. Default: no, which keeps one pool (`default`) with
+   every account in it. Yes creates a pool for each side (for example `work`
+   and `personal`) and puts each account the user names in its pool: a
+   session in a pool is served only by that pool's accounts, and each pool has
+   its own remote account, serving account and policy. Ask which account goes
+   in which pool, and which one is each pool's remote account (the one that
+   owns its claude.ai objects).
+   Before you put an account in a **second** pool (`chottag pool join`), tell
+   the user the down-side, because the account has one usage limit: if either
+   pool is on `spread`, the pools' sessions compete for that account, and
+   heavy use in one pool moves the other's sessions off it (their prompt
+   caches go cold); if both are `serial`, and the account serves both, they
+   use up its 5-hour window together and switch away from it at the same time.
+   Join it only if the user still wants that. Then give the user the aliases
+   to add to their shell's rc file themselves, for example
+   `alias cwork='CHOTTAG_POOL=work claude'` and
+   `alias cpersonal='CHOTTAG_POOL=personal claude'`, and say that plain `claude`
+   starts a session in the `default` pool. `default` keeps every account
+   unless the user removes one (`chottag pool leave ACCOUNT default`), so an
+   unset `CHOTTAG_POOL` still has the old pool and may use any of them; ask
+   whether to take the pool accounts out of it, and warn that an empty
+   `default` answers plain `claude` with a 503. Never edit the rc file for them.
 
 Tell the user, without asking:
 
@@ -146,8 +169,11 @@ chottag login <name> --json
 Then apply the answers, in this order:
 
 ```sh
+chottag pool add <pool> --json         # question 7, only on yes: each pool, before any login that names it
+chottag login <name> --pool <pool> --json  # question 7: instead of a plain login, an account in that pool only
+chottag pool join <name> <pool> --json # question 7: an account that is also in a second pool (tell the user the down-side first)
 chottag plan <name> max20x --json      # question 2: each account whose plan is not right yet
-chottag remote <pinned> --json         # question 3
+chottag remote <pinned> --json         # question 3 (add --pool <pool> for an account that is in several pools)
 chottag rotate <pinned> off --json     # question 4, only if it must not pay for prompts
 chottag tag <name> --json              # only if the pinned account is out of rotation: serve from another one
 chottag policy spread --json           # question 5, only on yes
@@ -158,6 +184,18 @@ With the pinned account out of rotation, log in at least one other account
 before `tag`. Run `tag` before `policy spread`: under `spread`, `tag` pins
 new sessions to that account instead of setting the serving one.
 
+With pools, `remote`, `tag`, `rotate`, `policy` and questions 3 to 5 apply
+per pool: an account in one pool acts there, one in several needs `--pool
+<pool>` (`pool_ambiguous` otherwise), and `policy` and a bare `tag --unpin`
+take `--pool <pool>` (default `default`). `chottag login <name> --pool
+<pool>` puts the new account in that pool only, so log each account in once
+and `pool join` it to any other pool; if `login` says the email is already an
+account, use `pool join` rather than a second login. Relay the `shared_account`
+warning to the user. `pool add` fails with `daemon_predates_pools` (exit 2)
+when the running daemon is older than 0.8.0: run `chottag daemon restart`, then
+repeat it. `pool join` warns with the same code. Until the daemon is restarted
+no session starts once a pool exists.
+
 ## 7. Verify
 
 ```sh
@@ -167,7 +205,12 @@ chottag doctor --json
 
 `status` must list every account the user named under `accounts`, with
 `remote` the pinned one, no `max?` plan left, and `policy` set to `spread`
-if the user chose it (it is left out under `serial`). `doctor` exits `0` when nothing is wrong; `path`
+if the user chose it (it is left out under `serial`). If the user chose
+pools, `pools[]` must list each pool with the accounts the user put in it, a
+`remote` and a `serving` for each, and `shared: true` only on an account the
+user agreed to share; `doctor`'s `roles` row names each pool's roles, and an
+`info` row warning that a pool has no account in rotation means its sessions
+get a 503 until one is back (`chottag rotate <name> on`). `doctor` exits `0` when nothing is wrong; `path`
 may still fail until step 8. Any other problem is `"ok": false`, exit
 `3`, `error.code` `doctor_problems`, with the failing checks under
 `error.checks`, each row naming its own fix.
@@ -234,6 +277,7 @@ chottag next --json                      # switch to the next account that is no
 chottag remote <name> --json             # set who owns new remote-control sessions, artifacts, routines
 chottag auto --json                      # auto-switch settings and last decision
 chottag policy spread --json              # one account per session, only if the user agrees
+chottag pool --json                      # the pools and who is in each (add, join, leave, rm ask the user first)
 chottag doctor --json                    # check the install
 chottag update --check --json            # is a newer release available
 chottag update --json                    # install it, only once the user agrees
@@ -261,7 +305,10 @@ user's yes.
   account's login and needs a typed confirmation in a terminal chottag
   controls. Tell the user the command instead.
 - Ask the user before `chottag doctor --fix`, `chottag update`, `chottag
-  logout`, `chottag rename` or `chottag uninstall`.
+  logout`, `chottag rename`, `chottag uninstall`, `chottag pool add`,
+  `pool join`, `pool leave` or `pool rm`.
+- Never edit the user's shell rc file to add the `CHOTTAG_POOL` aliases:
+  give them the lines and let them add them.
 - Do not add a company Team or Enterprise account unless that
   organization allows chottag; ask first if you are unsure.
 - Never switch to a different account to get around a hold, a suspension

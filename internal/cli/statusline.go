@@ -100,6 +100,9 @@ type statuslineResult struct {
 	Session string `json:"session"`
 	Daemon  string `json:"daemon"`
 	Serving string `json:"serving"`
+	// Pool is the session's pool when it is not default (M8); Serving and
+	// Account are then that pool's.
+	Pool string `json:"pool,omitempty"`
 	// Account is the account this session uses: its own, once the daemon has
 	// seen it make an inference request, else the serving account.
 	Account          string   `json:"account,omitempty"`
@@ -183,9 +186,13 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 		}
 		return f
 	}
-	first := []string{head + " " + rep.Account}
+	acct := rep.Account
+	if rep.Pool != "" {
+		acct += " [" + rep.Pool + "]"
+	}
+	first := []string{head + " " + acct}
 	if rep.Label != "" {
-		first = []string{head, rep.Account} // "c» dev · work": not one name
+		first = []string{head, acct} // "c» dev · work": not one name
 	}
 	parts := append(first, field("5h", rep.FiveHourPct), field("7d", rep.SevenDayPct))
 	if rep.ResetsAt != "" {
@@ -254,11 +261,14 @@ func statuslineCheck(h string) statuslineResult {
 	port := st.ResolvedPort()
 	// The sid comes from the credential's user name in HTTPS_PROXY; the
 	// password is never read. Without one, the ancestor walk's registry entry.
-	routed, sid := proxyEnvSession(os.Getenv("HTTPS_PROXY"), port)
+	routed, sid, pool := proxyEnvSession(os.Getenv("HTTPS_PROXY"), port)
 	if !routed {
 		if live, ok := liveAncestor(h); ok {
-			routed, sid = true, live.SID
+			routed, sid, pool = true, live.SID, live.Pool
 		}
+	}
+	if !st.HasPool(pool) {
+		pool = store.DefaultPool // none, or a pool since removed
 	}
 	if !routed {
 		return rep
@@ -268,10 +278,14 @@ func statuslineCheck(h string) statuslineResult {
 		rep.Daemon = "down"
 		return rep
 	}
-	rep.Daemon, rep.Serving = "up", st.Serving
+	serving := st.PoolOf(pool).Serving
+	rep.Daemon, rep.Serving = "up", serving
+	if pool != store.DefaultPool {
+		rep.Pool = pool
+	}
 	f, _ := status.Load(status.Path(h)) // a missing cache is not an error
-	rep.Account = sessionAccount(f, sid, st.Serving)
-	fillUsage(&rep, st, f)
+	rep.Account = sessionAccount(f, sid, serving)
+	fillUsage(&rep, st, pool, f)
 	if rep.Account != "" {
 		rep.UpdateAvailable = availableUpdate(f)
 		if f.Daemon != nil {
@@ -296,14 +310,14 @@ func sessionAccount(f status.File, sid, serving string) string {
 
 // fillUsage adds the serving account's usage, its next reset and the pool
 // health from the status cache. Unknown values stay unset.
-func fillUsage(rep *statuslineResult, st store.State, f status.File) {
+func fillUsage(rep *statuslineResult, st store.State, pool string, f status.File) {
 	now := statuslineNow()
 	byName := make(map[string]status.Account, len(f.Accounts))
 	for _, a := range f.Accounts {
 		byName[strings.ToLower(a.Name)] = a
 	}
 	rotation, ok := 0, 0
-	for _, a := range st.Accounts {
+	for _, a := range st.Members(pool) {
 		if a.NoRotate {
 			continue
 		}
@@ -358,25 +372,25 @@ func fillUsage(rep *statuslineResult, st store.State, f status.File) {
 // proxyEnvSession reports whether v is http://<user>:<anything>@127.0.0.1:port,
 // the URL the shim hands a session it launched, and the sid its user names:
 // "chottag" (the legacy form) is routed with no sid; "chottag.<pool>.<sid>"
-// with a valid pool and sid is routed with that sid. Only the user name is
+// with a valid pool and sid is routed with that sid and pool. Only the user name is
 // read: the password never leaves url.Parse's result.
-func proxyEnvSession(v string, port int) (routed bool, sid string) {
+func proxyEnvSession(v string, port int) (routed bool, sid, pool string) {
 	u, err := url.Parse(v)
 	if err != nil || u.Scheme != "http" || u.User == nil {
-		return false, ""
+		return false, "", ""
 	}
 	if u.Hostname() != "127.0.0.1" || u.Port() != strconv.Itoa(port) {
-		return false, ""
+		return false, "", ""
 	}
 	user := u.User.Username()
 	if user == "chottag" {
-		return true, ""
+		return true, "", ""
 	}
 	parts := strings.Split(user, ".")
 	if len(parts) == 3 && parts[0] == "chottag" && proxyauth.ValidPool(parts[1]) && proxyauth.ValidSID(parts[2]) {
-		return true, parts[2]
+		return true, parts[2], parts[1]
 	}
-	return false, ""
+	return false, "", ""
 }
 
 // liveAncestor returns the registry entry of the claude session chottag

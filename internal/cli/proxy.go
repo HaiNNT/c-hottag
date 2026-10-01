@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -274,6 +275,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	// keeps every session on its account; saved on change and at shutdown.
 	sp := newSpreadEngine(filepath.Join(h, "run", "placements.json"), cache.State, sink.fileCopy, ch.tracker.Peek, stderr, time.Now())
 	ch.spread, as.spread = sp, sp
+	ch.log, ch.refresh = stderr, cache.Invalidate
 	sp.lastAccount = ch.tracker.Account
 
 	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, autoUsageHook(as, newUsageHook(cache.State, sink, dn)), upstreamURL)
@@ -1696,6 +1698,17 @@ type chooser struct {
 	spread spreadPlacer
 	// now, if non-nil, replaces timeNow for the placement clock (tests).
 	now func() time.Time
+	// log, if non-nil, gets the one line per pool name a session names that
+	// state.json no longer has. missingPools remembers which were logged.
+	log          io.Writer
+	missingPools sync.Map
+	// multi: more than one pool existed at the last state read. refresh, if
+	// non-nil, drops the state cache (a refused request is tried again on
+	// fresh state). refusedAt is when each pool's refusal was last logged.
+	multi     atomic.Bool
+	refresh   func()
+	refuseMu  sync.Mutex
+	refusedAt map[string]time.Time
 }
 
 // newDaemonChooser builds the chooser runProxyWithSignal wires into
@@ -1708,9 +1721,24 @@ func newDaemonChooser(sel *selector.Selector, own *owners.Map, tm *tokens.Manage
 }
 
 func (c *chooser) Choose(ctx context.Context, d router.Decision, bodyID string) (string, string, bool, bool) {
-	ch := c.choose(ctx, d, bodyID)
+	account, token, owner, ok, _ := c.ChooseGuarded(ctx, d, bodyID)
+	return account, token, owner, ok
+}
+
+// ChooseGuarded is Choose with the pool boundary (proxy.PoolGuard): with
+// more than one pool, a request no account of the session's pool can serve
+// comes back with a refusal message instead of being left to go out on the
+// client's own login.
+func (c *chooser) ChooseGuarded(ctx context.Context, d router.Decision, bodyID string) (string, string, bool, bool, string) {
+	ch, pool := c.choose(ctx, d, bodyID)
 	if ch.Account == "" {
-		return "", "", false, false
+		if ch.StateErr && c.multi.Load() {
+			ch.Refused = "state.json is unreadable"
+		}
+		if ch.Refused == "" {
+			return "", "", false, false, ""
+		}
+		return "", "", false, false, c.refuse(pool, ch.Refused)
 	}
 	c.notify.beginChoose(ch.Account)
 	// requests counts account choices, not client requests: a 429 retry
@@ -1718,32 +1746,133 @@ func (c *chooser) Choose(ctx context.Context, d router.Decision, bodyID string) 
 	if id, ok := proxy.IdentityFrom(ctx); ok && c.tracker != nil {
 		c.tracker.Seen(id.Caller.SID, id.Caller.Pool, ch.Account, id.Inference, id.NativeID, timeNow())
 	}
-	return ch.Account, ch.Token, ch.Role == selector.RoleOwner, true
+	return ch.Account, ch.Token, ch.Role == selector.RoleOwner, true, ""
 }
 
-// choose is the selector's choice, with the spread policy's placement in
-// place of the serving account for an identified session's serving-class
-// request (owner and remote routing, which the selector applies first, are
-// unchanged). With no placement to give, it is the plain Choose: the serving
-// account.
-func (c *chooser) choose(ctx context.Context, d router.Decision, bodyID string) selector.Choice {
-	if c.spread == nil || c.state == nil || d.Class != router.Serving || d.Object != "" {
-		return c.sel.Choose(ctx, d, bodyID)
+// Guarded reports that more than one pool exists (as of the last request
+// chosen): the safety net then never resends on the client's own login.
+func (c *chooser) Guarded() bool { return c.multi.Load() }
+
+// refuseEvery is how often a pool's refusal is logged.
+const refuseEvery = time.Minute
+
+// refuse is the message a refused request is answered with, logged once per
+// pool per refuseEvery with the reason.
+func (c *chooser) refuse(pool, why string) string {
+	now := c.clock()
+	c.refuseMu.Lock()
+	last, seen := c.refusedAt[pool]
+	log := !seen || now.Sub(last) >= refuseEvery
+	if log {
+		if c.refusedAt == nil {
+			c.refusedAt = map[string]time.Time{}
+		}
+		c.refusedAt[pool] = now
 	}
-	id, ok := proxy.IdentityFrom(ctx)
-	if !ok || id.Caller.SID == "" {
-		return c.sel.Choose(ctx, d, bodyID)
+	c.refuseMu.Unlock()
+	if log && c.log != nil {
+		fmt.Fprintf(c.log, "chottag: refused a request: no account in pool %q can serve it (%s)\n", pool, why)
 	}
-	if st, err := c.state(); err != nil || !st.PolicySpread() {
-		return c.sel.Choose(ctx, d, bodyID)
+	return fmt.Sprintf("chottag: no account in pool %q can serve this request (run: chottag pool)", pool)
+}
+
+// choose is the selector's choice for the session's pool, with the spread
+// policy's placement in place of the pool's serving account for an
+// identified session's serving-class request (owner and remote routing,
+// which the selector applies first, are unchanged). With no placement to
+// give, it is the pool's serving account (or, under spread, its fallback; a
+// pool other than default whose serving account is unusable or has rotation
+// off falls back to its least-bad rotating member too). A refusal because an
+// account left the pool between two reads (a racing `pool leave`) is tried
+// once more on fresh state before it stands. It also returns the pool.
+func (c *chooser) choose(ctx context.Context, d router.Decision, bodyID string) (selector.Choice, string) {
+	ch, pool := c.attempt(ctx, d, bodyID)
+	if ch.Refused == refusedNotInPool {
+		if c.refresh != nil {
+			c.refresh()
+		}
+		ch, pool = c.attempt(ctx, d, bodyID)
 	}
-	if name, ok := c.spread.accountFor(id.Caller.SID, id.NativeID, c.clock()); ok {
-		return c.sel.ChooseAs(ctx, d, bodyID, name)
+	return ch, pool
+}
+
+const refusedNotInPool = "not in pool"
+
+func (c *chooser) attempt(ctx context.Context, d router.Decision, bodyID string) (selector.Choice, string) {
+	id, identified := proxy.IdentityFrom(ctx)
+	pool := store.DefaultPool
+	var st store.State
+	if c.state != nil {
+		s, err := c.state()
+		if err != nil {
+			// With pools known to exist, or an identity naming one other
+			// than default, never ask the selector: its read could succeed
+			// with another snapshot and route the session as default. The
+			// caller's own pool is named. Otherwise this is the pre-M8
+			// path: the selector reads for itself and may serve.
+			if identified && id.Caller.Pool != "" {
+				pool = id.Caller.Pool
+			}
+			if c.multi.Load() || pool != store.DefaultPool {
+				return selector.Choice{StateErr: true, Refused: "state.json is unreadable"}, pool
+			}
+			return c.sel.ChooseIn(ctx, d, bodyID, store.DefaultPool, ""), pool
+		}
+		st = s
+		c.multi.Store(len(st.PoolNames()) > 1)
 	}
-	if name, ok := c.spread.fallback(c.clock()); ok {
-		return c.sel.ChooseAs(ctx, d, bodyID, name)
+	haveState := c.state != nil
+	if identified && haveState {
+		pool = c.poolFor(st, id.Caller.Pool)
 	}
-	return c.sel.Choose(ctx, d, bodyID)
+	serving := haveState && c.spread != nil && d.Class == router.Serving && d.Object == ""
+	name := ""
+	if serving && identified && id.Caller.SID != "" && poolSpread(st, pool) {
+		if n, ok := c.spread.accountFor(id.Caller.SID, id.NativeID, pool, c.clock()); ok {
+			name = n
+		} else if n, ok := c.spread.fallbackExcluding(pool, nil, c.clock()); ok {
+			name = n
+		}
+	}
+	ch := c.sel.ChooseIn(ctx, d, bodyID, pool, name)
+	if ch.Refused != "" && ch.Refused != refusedNotInPool && serving {
+		// The account cannot serve (none set, rotation off, no usable
+		// token): the pool's least-bad rotating member other than it, if
+		// there is one.
+		// Each member is tried once: one whose login is stale in status.json
+		// but unusable is excluded and the next pick tried, before failing.
+		tried := name
+		if tried == "" {
+			tried = st.PoolOf(pool).Serving
+		}
+		exclude := map[string]bool{strings.ToLower(tried): true}
+		for range st.Members(pool) {
+			alt, ok := c.spread.fallbackExcluding(pool, exclude, c.clock())
+			if !ok {
+				break
+			}
+			alt2 := c.sel.ChooseIn(ctx, d, bodyID, pool, alt)
+			if alt2.Refused == "" {
+				return alt2, pool
+			}
+			ch = alt2
+			exclude[strings.ToLower(alt)] = true
+		}
+	}
+	return ch, pool
+}
+
+// poolFor is the pool a session of caller pool name routes through: name
+// when state.json has it, else default (the pool was removed while the
+// session ran), logged once per name.
+func (c *chooser) poolFor(st store.State, name string) string {
+	if st.HasPool(name) {
+		return name
+	}
+	if _, seen := c.missingPools.LoadOrStore(name, true); !seen && c.log != nil {
+		fmt.Fprintf(c.log, "chottag: pool %q no longer exists; its sessions use default\n", name)
+	}
+	return store.DefaultPool
 }
 
 func (c *chooser) clock() time.Time {

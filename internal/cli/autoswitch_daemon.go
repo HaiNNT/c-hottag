@@ -51,11 +51,23 @@ type autoSwitcher struct {
 	spreadSeeded       bool
 	spreadLimitNoticed map[string]bool
 
-	mu       sync.Mutex
-	burn     autoswitch.Burn
+	mu   sync.Mutex
+	burn autoswitch.Burn
+	// poolAuto is the default pool's serial auto-switch state; others holds
+	// every other pool's, created at its first evaluation (M8: each serial
+	// pool is evaluated on its own).
+	poolAuto
+	others    map[string]*poolAuto
+	published status.Auto // what the last decision wrote to status.json
+}
+
+// poolAuto is one pool's auto-switch memory. Under mu.
+type poolAuto struct {
 	lastSoft time.Time
-	// known is the serving account as this switcher last saw or wrote it.
-	// A different one in state.json is the user's choice (ruling 8). Not
+	// lastSwitch is the pool's latest switch (status.json's auto view).
+	lastSwitch *status.AutoSwitch
+	// known is the pool's serving account as this switcher last saw or wrote
+	// it. A different one in state.json is the user's choice (ruling 8). Not
 	// seeded across a restart (controller ruling 2): it depends on THIS
 	// switcher having itself last seen or written the current serving
 	// account, which a fresh process has not.
@@ -73,11 +85,9 @@ type autoSwitcher struct {
 	// userChosen is recomputed, just above).
 	fallbackTarget bool
 	lastLogKey     string
-	lastSwitch     *status.AutoSwitch
-	published      status.Auto // what the last decision wrote to status.json
 
 	// swapBackoffKey/swapBackoffUntil/swapLastErr back off a repeated
-	// SwapServing failure that is not a lost compare-and-swap (state.json
+	// swap failure that is not a lost compare-and-swap (state.json
 	// itself unwritable, say, review round 1 item 5): re-attempting the
 	// write, and re-running continuity to pick a target, on every response
 	// or tick would otherwise busy-loop against a store that just failed.
@@ -88,6 +98,40 @@ type autoSwitcher struct {
 	swapBackoffKey   string
 	swapBackoffUntil time.Time
 	swapLastErr      string
+}
+
+// poolState is pool's auto-switch memory. Caller holds a.mu.
+func (a *autoSwitcher) poolState(pool string) *poolAuto {
+	if pool == store.DefaultPool {
+		return &a.poolAuto
+	}
+	if a.others == nil {
+		a.others = map[string]*poolAuto{}
+	}
+	p := a.others[pool]
+	if p == nil {
+		p = &poolAuto{}
+		a.others[pool] = p
+	}
+	return p
+}
+
+// poolTag is the pool name a notice carries: only when the install has more
+// than one pool, so a default-only install's notices are unchanged.
+func poolTag(st store.State, pool string) string {
+	if len(st.PoolNames()) > 1 {
+		return pool
+	}
+	return ""
+}
+
+// sessionPool is the pool a request's session is in: its identity's pool, or
+// default when it has none or state.json no longer has it.
+func sessionPool(ctx context.Context, st store.State) string {
+	if id, ok := proxy.IdentityFrom(ctx); ok && st.HasPool(id.Caller.Pool) {
+		return id.Caller.Pool
+	}
+	return store.DefaultPool
 }
 
 // swapBackoff is how long a repeated SwapServing failure (not a lost
@@ -110,10 +154,19 @@ func newAutoSwitcher(s store.Store, cache *store.Cache, sink *statusSink, dn *da
 	// own view of the last switch reads as "none" for a moment even though
 	// the switch itself is still standing. The first evaluate leaves both
 	// alone unless it makes a switch of its own.
-	if auto := sink.auto(); auto != nil && auto.LastSwitch != nil {
-		a.lastSwitch = auto.LastSwitch
-		if auto.LastSwitch.Trigger == autoswitch.TriggerThreshold {
-			a.lastSoft = auto.LastSwitch.At
+	if auto := sink.auto(); auto != nil {
+		seed := func(p *poolAuto, ls *status.AutoSwitch) {
+			if ls == nil {
+				return
+			}
+			p.lastSwitch = ls
+			if ls.Trigger == autoswitch.TriggerThreshold {
+				p.lastSoft = ls.At
+			}
+		}
+		seed(&a.poolAuto, auto.LastSwitch)
+		for name, pa := range auto.Pools {
+			seed(a.poolState(name), pa.LastSwitch)
 		}
 	}
 	return a
@@ -143,14 +196,13 @@ func (a *autoSwitcher) onUsage(account string, code int, h http.Header) {
 	if err != nil {
 		return
 	}
-	if st.PolicySpread() && a.spread != nil {
+	if a.spread != nil && anySpread(st) {
 		// Sessions sit on many accounts: any account's response can push it
 		// over a point. Only the marks are refreshed here: serving is kept on
 		// the roster tick, never by a write on the response path.
 		a.spreadOnUsage(a.now())
-		return
 	}
-	if !strings.EqualFold(account, st.Serving) {
+	if !servesASerialPool(st, account, a.spread != nil) {
 		return
 	}
 	now := a.now()
@@ -162,6 +214,31 @@ func (a *autoSwitcher) onUsage(account string, code int, h http.Header) {
 		}
 	}
 	a.evaluate(now, false)
+}
+
+// anySpread reports whether some pool's policy is spread.
+func anySpread(st store.State) bool {
+	for _, p := range st.PoolNames() {
+		if poolSpread(st, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// servesASerialPool reports whether account is the serving account of a pool
+// the serial auto-switch decides for (a spread pool's serving follows the
+// placement engine, which spreadAvailable says exists).
+func servesASerialPool(st store.State, account string, spreadAvailable bool) bool {
+	for _, p := range st.PoolNames() {
+		if spreadAvailable && poolSpread(st, p) {
+			continue
+		}
+		if strings.EqualFold(account, st.PoolOf(p).Serving) {
+			return true
+		}
+	}
+	return false
 }
 
 // tick runs on the roster tick, before the notification roll-up (so a
@@ -194,21 +271,23 @@ func (a *autoSwitcher) wallRetry(ctx context.Context, account string, h http.Hea
 	if err != nil {
 		return false, nil
 	}
-	if st.PolicySpread() && a.spread != nil {
+	pool := sessionPool(ctx, st)
+	if poolSpread(st, pool) && a.spread != nil {
 		if id, ok := proxy.IdentityFrom(ctx); ok && id.Caller.SID != "" {
-			return a.spreadWallRetry(id.Caller.SID, account, now, string(planWindow(v.Window)))
+			return a.spreadWallRetry(pool, poolTag(st, pool), id.Caller.SID, account, now, string(planWindow(v.Window)))
 		}
 	}
 	if !st.AutoOn() {
 		return false, nil
 	}
 	var sw *status.AutoSwitch
-	if strings.EqualFold(account, st.Serving) {
-		sw = a.evaluate(now, true)
+	if strings.EqualFold(account, st.PoolOf(pool).Serving) {
+		sw = a.evaluateFor(now, true, pool)
 	}
 	window := string(planWindow(v.Window))
+	tag := poolTag(st, pool)
 	return true, func(to string, code int) {
-		a.retried(account, to, code, window, sw)
+		a.retried(account, to, code, window, sw, pool, tag)
 	}
 }
 
@@ -220,7 +299,7 @@ func (a *autoSwitcher) wallRetry(ctx context.Context, account string, h http.Hea
 // claim this switch's own target (review round 1 item 2). lastSwitch is
 // marked retried only when to really is this switch's own target — "count
 // the resend as OK only when to equals the switch's target".
-func (a *autoSwitcher) retried(from, to string, code int, window string, sw *status.AutoSwitch) {
+func (a *autoSwitcher) retried(from, to string, code int, window string, sw *status.AutoSwitch, pool, tag string) {
 	if to != "" {
 		fmt.Fprintln(a.log, wallRetryLine(from, to, code, window))
 	}
@@ -230,11 +309,16 @@ func (a *autoSwitcher) retried(from, to string, code int, window string, sw *sta
 	ok := to != "" && code >= 200 && code < 300
 	if ok && strings.EqualFold(to, sw.To) {
 		a.mu.Lock()
-		if a.lastSwitch == sw {
+		if p := a.poolState(pool); p.lastSwitch == sw {
 			cp := *sw
 			cp.Retried = true
-			a.lastSwitch = &cp
-			a.published.LastSwitch = a.lastSwitch
+			p.lastSwitch = &cp
+			if pool == store.DefaultPool {
+				a.published.LastSwitch = p.lastSwitch
+			} else if pa, ok := a.published.Pools[pool]; ok {
+				pa.LastSwitch = p.lastSwitch
+				a.published.Pools[pool] = pa
+			}
 			a.sink.setAuto(a.published, true)
 		}
 		a.mu.Unlock()
@@ -243,14 +327,24 @@ func (a *autoSwitcher) retried(from, to string, code int, window string, sw *sta
 	if ok {
 		dest, retried = to, true
 	}
-	a.notify.switched(notify.Switch{From: sw.From, To: dest, Trigger: sw.Trigger, Window: sw.Window, Pct: sw.Pct, Retried: retried})
+	a.notify.switched(notify.Switch{From: sw.From, To: dest, Trigger: sw.Trigger, Window: sw.Window, Pct: sw.Pct, Retried: retried, Pool: tag, Episode: pool})
 }
 
-// evaluate makes one decision and acts on it. With deferNotice (a wall
-// retry) the switch's own log line is still written now, but its notice is
-// returned for the caller to emit once the resend's outcome is known
-// (ruling 5, revised: review round 1 item 2).
+// evaluate makes one decision and acts on it, for the default pool's
+// deferNotice; see evaluateFor.
 func (a *autoSwitcher) evaluate(now time.Time, deferNotice bool) *status.AutoSwitch {
+	return a.evaluateFor(now, deferNotice, store.DefaultPool)
+}
+
+// evaluateFor decides for every pool, each on its own (M8): a serial pool
+// with the planner over its members and its own serving account, a spread
+// pool by keeping its serving at what a new session of the pool would get.
+// With deferNotice (a wall retry) the switch's own log line is still written
+// now, but the notice of pool want's switch is returned for the caller to
+// emit once the resend's outcome is known (ruling 5, revised: review round 1
+// item 2); the other pools' notices go out at once. status.json's auto
+// object is the default pool's decision.
+func (a *autoSwitcher) evaluateFor(now time.Time, deferNotice bool, want string) *status.AutoSwitch {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.fake(now)
@@ -258,38 +352,86 @@ func (a *autoSwitcher) evaluate(now time.Time, deferNotice bool) *status.AutoSwi
 	if err != nil {
 		return nil
 	}
+	for name := range a.others {
+		if !st.HasPool(name) {
+			delete(a.others, name) // a removed pool leaves no memory behind
+			a.notify.candidateOK(name)
+		}
+	}
 	f := a.sink.fileCopy()
 	params := autoParams(st)
-	accts := planAccounts(&st, &f, now)
-	if st.PolicySpread() && a.spread != nil {
-		return a.evaluateSpread(now, deferNotice, st, accts, params)
+	var wantSw *status.AutoSwitch
+	var def status.Auto
+	var others map[string]status.PoolAuto
+	anySw, marked := false, false
+	var limited map[string]autoswitch.Account
+	for _, pool := range st.PoolNames() {
+		v := poolView(st, pool)
+		dn := deferNotice && pool == want
+		var sw *status.AutoSwitch
+		var pub status.Auto
+		if poolSpread(st, pool) && a.spread != nil {
+			if !marked {
+				limited = a.spreadMarks(now, st, planAccounts(&st, &f, now), params)
+				marked = true
+			}
+			sw, pub = a.evaluateSpread(now, dn, pool, v, limited, params, poolTag(st, pool))
+		} else {
+			sw, pub = a.evaluateSerial(now, dn, pool, v, planAccounts(&v, &f, now), params, poolTag(st, pool))
+		}
+		if sw != nil {
+			anySw = true
+			if pool == want {
+				wantSw = sw
+			}
+		}
+		if pool == store.DefaultPool {
+			def = pub
+		} else {
+			if others == nil {
+				others = map[string]status.PoolAuto{}
+			}
+			others[pool] = status.PoolAuto{Decision: pub.Decision, UserChosen: pub.UserChosen, LastSwitch: a.poolState(pool).lastSwitch}
+		}
 	}
+	a.published = status.Auto{
+		Mode: string(params.Mode), Decision: def.Decision, LastSwitch: a.lastSwitch,
+		UserChosen: def.UserChosen, BurnRate: a.burn.Rate(), Pools: others,
+	}
+	a.sink.setAuto(a.published, anySw)
+	return wantSw
+}
 
+// evaluateSerial is one serial pool's decision. v is the pool's view
+// (poolView) and accts the planner's view of its members. tag is the pool
+// name for notices ("" with a single pool). Caller holds a.mu.
+func (a *autoSwitcher) evaluateSerial(now time.Time, deferNotice bool, pool string, v store.State, accts []autoswitch.Account, params autoswitch.Params, tag string) (*status.AutoSwitch, status.Auto) {
+	p := a.poolState(pool)
 	// The user's choice (S6, ruling 8): a serving account this switcher did
 	// not write, at or above a switch point when chosen. The guard lasts
 	// until serving changes again or the account drops below every point.
 	dir := ""
-	if sv, ok := findExact(&st, st.Serving); ok {
+	if sv, ok := findExact(&v, v.Serving); ok {
 		dir = sv.Dir
 	}
 	switch {
-	case !strings.EqualFold(st.Serving, a.known) && dir != "" && dir == a.knownDir:
+	case !strings.EqualFold(v.Serving, p.known) && dir != "" && dir == p.knownDir:
 		// A rename of the account this switcher already knew: same slot,
 		// new name. Nothing was chosen, so the guards stand as they were,
 		// except that a guard whose account dropped below every point
 		// clears now, as it would have without the rename.
-		a.known = st.Serving
-		if a.userChosen && !overAnyPoint(accts, st.Serving, params, now) {
-			a.userChosen = false
+		p.known = v.Serving
+		if p.userChosen && !overAnyPoint(accts, v.Serving, params, now) {
+			p.userChosen = false
 		}
-	case !strings.EqualFold(st.Serving, a.known):
-		a.userChosen = a.known != "" && overAnyPoint(accts, st.Serving, params, now)
-		a.fallbackTarget = false
-		a.known = st.Serving
-	case a.userChosen && !overAnyPoint(accts, st.Serving, params, now):
-		a.userChosen = false
+	case !strings.EqualFold(v.Serving, p.known):
+		p.userChosen = p.known != "" && overAnyPoint(accts, v.Serving, params, now)
+		p.fallbackTarget = false
+		p.known = v.Serving
+	case p.userChosen && !overAnyPoint(accts, v.Serving, params, now):
+		p.userChosen = false
 	}
-	a.knownDir = dir
+	p.knownDir = dir
 	// fallbackTarget must not outlive the condition it records (item 1,
 	// review round 4): it silences a THRESHOLD no-candidate only because
 	// serving is ITSELF above its own point — the moment serving drops
@@ -298,92 +440,94 @@ func (a *autoSwitcher) evaluate(now time.Time, deferNotice bool) *status.AutoSwi
 	// this, a later re-crossing with every other account still over its
 	// own point stays silent forever, since the flag only ever cleared on
 	// a serving change.
-	if a.fallbackTarget && !overAnyPoint(accts, st.Serving, params, now) {
-		a.fallbackTarget = false
+	if p.fallbackTarget && !overAnyPoint(accts, v.Serving, params, now) {
+		p.fallbackTarget = false
 	}
 
 	d := autoswitch.Plan(autoswitch.Input{
-		Now: now, Enabled: st.AutoOn(), Params: params, Serving: st.Serving, Accounts: accts,
-		LastSoftSwitch: a.lastSoft, UserChosen: a.userChosen, FallbackTarget: a.fallbackTarget, Burn: a.burn.Rate(),
+		Now: now, Enabled: v.AutoOn(), Params: params, Serving: v.Serving, Accounts: accts,
+		LastSoftSwitch: p.lastSoft, UserChosen: p.userChosen, FallbackTarget: p.fallbackTarget, Burn: a.burn.Rate(),
 	})
 	var sw *status.AutoSwitch
 	switch d.Action {
 	case autoswitch.ActionSwitch:
-		sw = a.trySwitch(now, deferNotice, &d, params)
+		sw = a.trySwitch(now, deferNotice, pool, p, &d, params, tag)
 	case autoswitch.ActionNoCandidate:
-		a.notify.noCandidate(d.From, a.sink.limitsAt(now).AllLimited)
-		a.logChange(d)
+		a.notify.noCandidate(pool, tag, d.From, a.sink.limitsAt(now).AllLimited)
+		a.logChange(p, pool, d)
 	case autoswitch.ActionStay, autoswitch.ActionHold:
-		a.notify.candidateOK()
-		a.logChange(d)
+		a.notify.candidateOK(pool)
+		a.logChange(p, pool, d)
 	case autoswitch.ActionOff:
-		a.lastLogKey = ""
+		p.lastLogKey = ""
 	}
-	a.published = status.Auto{
-		Mode: string(params.Mode), Decision: d.Reason, LastSwitch: a.lastSwitch,
-		UserChosen: a.userChosen, BurnRate: a.burn.Rate(),
-	}
-	a.sink.setAuto(a.published, sw != nil)
-	return sw
+	return sw, status.Auto{Decision: d.Reason, UserChosen: p.userChosen}
 }
 
-// trySwitch is evaluate's ActionSwitch case: it writes serving through the
-// compare-and-swap, backing off a repeated non-CAS failure (review round 1
-// item 5), and on success logs the switch, ends any all-limited/
-// no-candidate episode at once (review round 1 item 1) and — unless the
-// notice itself is deferred — posts it. Caller holds a.mu; d is mutated
-// (Reason) for the caller to publish.
-func (a *autoSwitcher) trySwitch(now time.Time, deferNotice bool, d *autoswitch.Decision, params autoswitch.Params) *status.AutoSwitch {
+// swapFailedHarmlessly reports a swap error that resolves itself on the next
+// decision and needs no backoff: a concurrent change of the pool's serving,
+// or of its membership (a racing `pool leave`, `pool rm`).
+func swapFailedHarmlessly(err error) bool {
+	return errors.Is(err, store.ErrServingChanged) || errors.Is(err, store.ErrNoPool) || errors.Is(err, store.ErrNotInPool)
+}
+
+// trySwitch is evaluateSerial's ActionSwitch case: it writes the pool's
+// serving through the compare-and-swap, backing off a repeated non-CAS
+// failure (review round 1 item 5), and on success logs the switch, ends any
+// all-limited/no-candidate episode at once (review round 1 item 1) and,
+// unless the notice itself is deferred, posts it. Caller holds a.mu; d is
+// mutated (Reason) for the caller to publish.
+func (a *autoSwitcher) trySwitch(now time.Time, deferNotice bool, pool string, p *poolAuto, d *autoswitch.Decision, params autoswitch.Params, tag string) *status.AutoSwitch {
 	key := d.From + "->" + d.Target
-	if key == a.swapBackoffKey && now.Before(a.swapBackoffUntil) {
+	if key == p.swapBackoffKey && now.Before(p.swapBackoffUntil) {
 		// Still backing off a non-CAS failure to write this exact switch:
 		// skip the write (and re-running continuity to pick it) until the
 		// decision changes or the backoff elapses.
 		d.Reason = fmt.Sprintf("staying on %s (switch to %s not made: could not write state)", d.From, d.Target)
 		return nil
 	}
-	swapped, err := a.store.SwapServing(d.From, d.Target)
+	swapped, err := a.store.SwapPoolServing(pool, d.From, d.Target)
 	if err != nil {
 		a.invalidate()
-		if errors.Is(err, store.ErrServingChanged) {
+		if swapFailedHarmlessly(err) {
 			// A concurrent `chottag tag` won (S10), and the next decision
 			// sees the new serving account as the user's choice. Nothing is
 			// announced, and this is not the kind of failure that needs a
 			// backoff: it resolves itself on the very next decision.
-			a.swapBackoffKey, a.swapBackoffUntil, a.swapLastErr = "", time.Time{}, ""
+			p.swapBackoffKey, p.swapBackoffUntil, p.swapLastErr = "", time.Time{}, ""
 			d.Reason = fmt.Sprintf("staying on %s (switch to %s not made: serving changed)", d.From, d.Target)
 			return nil
 		}
-		a.swapBackoffKey, a.swapBackoffUntil = key, now.Add(swapBackoff)
-		if msg := err.Error(); msg != a.swapLastErr {
+		p.swapBackoffKey, p.swapBackoffUntil = key, now.Add(swapBackoff)
+		if msg := err.Error(); msg != p.swapLastErr {
 			fmt.Fprintf(a.log, "chottag: auto-switch %s -> %s failed: %v\n", d.From, d.Target, err)
-			a.swapLastErr = msg
+			p.swapLastErr = msg
 		}
 		d.Reason = fmt.Sprintf("staying on %s (switch to %s not made: could not write state)", d.From, d.Target)
 		return nil
 	}
 	a.invalidate()
-	a.swapBackoffKey, a.swapLastErr = "", ""
-	a.known, a.userChosen, a.fallbackTarget = d.Target, false, d.Fallback
-	a.knownDir = ""
+	p.swapBackoffKey, p.swapLastErr = "", ""
+	p.known, p.userChosen, p.fallbackTarget = d.Target, false, d.Fallback
+	p.knownDir = ""
 	if t, ok := findExact(&swapped, d.Target); ok {
-		a.knownDir = t.Dir
+		p.knownDir = t.Dir
 	}
 	if d.Trigger == autoswitch.TriggerThreshold {
-		a.lastSoft = now
+		p.lastSoft = now
 	}
 	sw := &status.AutoSwitch{From: d.From, To: d.Target, Trigger: d.Trigger, Window: string(d.Window), At: now}
 	if d.Trigger == autoswitch.TriggerThreshold {
 		sw.Pct = d.Pct
 	}
-	a.lastSwitch = sw
-	a.lastLogKey = ""
-	fmt.Fprintln(a.log, autoSwitchLine(*d, params))
+	p.lastSwitch = sw
+	p.lastLogKey = ""
+	fmt.Fprintln(a.log, autoSwitchLine(*d, params)+poolLabel(pool))
 	// S8 (review round 1 item 1): end the episode the moment the switch
 	// happens, not when its own (possibly deferred) notice fires.
-	a.notify.endAllLimitedEpisode()
+	a.notify.endAllLimitedEpisode(pool)
 	if !deferNotice {
-		a.notify.switched(notify.Switch{From: sw.From, To: sw.To, Trigger: sw.Trigger, Window: sw.Window, Pct: sw.Pct})
+		a.notify.switched(notify.Switch{From: sw.From, To: sw.To, Trigger: sw.Trigger, Window: sw.Window, Pct: sw.Pct, Pool: tag, Episode: pool})
 	}
 	return sw
 }
@@ -391,14 +535,14 @@ func (a *autoSwitcher) trySwitch(now time.Time, deferNotice bool, d *autoswitch.
 // logChange writes one daemon.log line when the planner starts holding or
 // finds no candidate (spec §7: one line per hold decision change), and
 // nothing for a plain stay. Caller holds a.mu.
-func (a *autoSwitcher) logChange(d autoswitch.Decision) {
+func (a *autoSwitcher) logChange(p *poolAuto, pool string, d autoswitch.Decision) {
 	key := string(d.Action) + "|" + d.Hold + "|" + strings.ToLower(d.From)
-	if key == a.lastLogKey {
+	if key == p.lastLogKey {
 		return
 	}
-	a.lastLogKey = key
+	p.lastLogKey = key
 	if d.Action == autoswitch.ActionHold || d.Action == autoswitch.ActionNoCandidate {
-		fmt.Fprintf(a.log, "chottag: auto: %s\n", d.Reason)
+		fmt.Fprintf(a.log, "chottag: auto: %s%s\n", d.Reason, poolLabel(pool))
 	}
 }
 
@@ -465,15 +609,15 @@ func (dn *daemonNotify) moved(m notify.Moved) {
 	}
 }
 
-func (dn *daemonNotify) noCandidate(from string, allLimited bool) {
+func (dn *daemonNotify) noCandidate(pool, tag, from string, allLimited bool) {
 	if dn != nil {
-		dn.events.NoCandidate(from, allLimited)
+		dn.events.NoCandidate(pool, tag, from, allLimited)
 	}
 }
 
-func (dn *daemonNotify) candidateOK() {
+func (dn *daemonNotify) candidateOK(pool string) {
 	if dn != nil {
-		dn.events.CandidateOK()
+		dn.events.CandidateOK(pool)
 	}
 }
 
@@ -481,9 +625,9 @@ func (dn *daemonNotify) candidateOK() {
 // review round 1 item 1): called the moment a switch happens, even one
 // whose own notice is deferred (a wall retry), so a roster tick landing
 // before the deferred notice does not re-post "available again".
-func (dn *daemonNotify) endAllLimitedEpisode() {
+func (dn *daemonNotify) endAllLimitedEpisode(pool string) {
 	if dn != nil {
-		dn.events.EndAllLimitedEpisode()
+		dn.events.EndAllLimitedEpisode(pool)
 	}
 }
 

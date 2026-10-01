@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	Version     = 1
+	Version     = 2
 	DefaultPort = 47821
 )
 
@@ -69,6 +69,9 @@ type Account struct {
 	// must not outlive a re-login. omitzero: never logged in via chottag
 	// carries no LoggedInAt.
 	LoggedInAt time.Time `json:"loggedInAt,omitzero"`
+	// PoolList is the pools the account is in (M8, R132). Empty means just
+	// "default", and exactly ["default"] is never written. Use InPools.
+	PoolList []string `json:"pools,omitempty"`
 
 	// extra holds keys a newer chottag wrote that this one does not know
 	// (see extra.go); they are written back unchanged.
@@ -144,6 +147,9 @@ type State struct {
 	// spread. It has no effect under serial, and is kept across a switch
 	// back to serial. Empty is unpinned.
 	Pin string `json:"pin,omitempty"`
+	// Pools holds every pool other than default (M8). The file is version 2
+	// only while this is non-empty.
+	Pools map[string]Pool `json:"pools,omitempty"`
 
 	// extra holds top-level keys a newer chottag wrote that this one does not
 	// know (see extra.go); they are written back unchanged.
@@ -398,16 +404,19 @@ func (st *State) Find(q string) (*Account, error) {
 	return hit, nil
 }
 
-// Next returns the account after cur in registration order, wrapping around.
+// Next returns the default pool's member after cur in registration order, wrapping around.
 // An empty or unknown cur yields the first account.
 func (st *State) Next(cur string) (Account, error) {
-	if len(st.Accounts) == 0 {
+	ms := st.Members(DefaultPool)
+	if len(ms) == 0 {
 		return Account{}, ErrNoAccounts
 	}
-	if i := st.index(cur); i >= 0 {
-		return st.Accounts[(i+1)%len(st.Accounts)], nil
+	for i, m := range ms {
+		if strings.EqualFold(m.Name, cur) {
+			return ms[(i+1)%len(ms)], nil
+		}
 	}
-	return st.Accounts[0], nil
+	return ms[0], nil
 }
 
 // sameDir reports whether a and b name the same directory by file identity
@@ -466,12 +475,15 @@ func (st *State) Add(a Account) error {
 			return fmt.Errorf("%w: %s already uses %s", ErrExists, existing.Name, a.Dir)
 		}
 	}
-	st.Accounts = append(st.Accounts, a)
-	if st.Serving == "" {
-		st.Serving = a.Name
+	a.PoolList = normalizePools(a.PoolList)
+	for _, p := range a.InPools() {
+		if err := st.needPool(p); err != nil {
+			return err
+		}
 	}
-	if st.Remote == "" {
-		st.Remote = a.Name
+	st.Accounts = append(st.Accounts, a)
+	for _, p := range a.InPools() {
+		st.fillRoles(p, a)
 	}
 	return nil
 }
@@ -483,11 +495,15 @@ func (st *State) Remove(name string) error {
 	if i < 0 {
 		return fmt.Errorf("%w: %q", ErrNotFound, name)
 	}
-	if strings.EqualFold(st.Serving, name) || strings.EqualFold(st.Remote, name) {
-		return fmt.Errorf("%w: %s", ErrInUse, st.Accounts[i].Name)
+	for _, pn := range st.PoolNames() {
+		if p := st.PoolOf(pn); strings.EqualFold(p.Serving, name) || strings.EqualFold(p.Remote, name) {
+			return fmt.Errorf("%w: %s", ErrInUse, st.Accounts[i].Name)
+		}
 	}
-	if strings.EqualFold(st.Pin, name) {
-		st.Pin = ""
+	for _, pn := range st.PoolNames() {
+		if strings.EqualFold(st.PoolOf(pn).Pin, name) {
+			st.editPool(pn, func(p *Pool) { p.Pin = "" })
+		}
 	}
 	st.Accounts = append(st.Accounts[:i], st.Accounts[i+1:]...)
 	return nil
@@ -523,17 +539,28 @@ func (st *State) Rename(old, newName string) (from string, roles []string, err e
 	from = st.Accounts[i].Name
 	st.Accounts[i].Name = newName
 	roles = []string{}
-	if strings.EqualFold(st.Serving, from) {
-		st.Serving = newName
+	var srv, rem bool
+	for _, pn := range st.PoolNames() {
+		st.editPool(pn, func(p *Pool) {
+			if strings.EqualFold(p.Serving, from) {
+				p.Serving = newName
+				srv = true
+			}
+			if strings.EqualFold(p.Remote, from) {
+				p.Remote = newName
+				rem = true
+			}
+			// The pin follows the rename but is not a role: it is not reported.
+			if strings.EqualFold(p.Pin, from) {
+				p.Pin = newName
+			}
+		})
+	}
+	if srv {
 		roles = append(roles, "serving")
 	}
-	if strings.EqualFold(st.Remote, from) {
-		st.Remote = newName
+	if rem {
 		roles = append(roles, "remote")
-	}
-	// The pin follows the rename but is not a role: it is not reported.
-	if strings.EqualFold(st.Pin, from) {
-		st.Pin = newName
 	}
 	return from, roles, nil
 }
@@ -585,6 +612,7 @@ func (s Store) Load() (State, error) {
 	if st.Version > Version {
 		return State{}, fmt.Errorf("%s has version %d, newer than this chottag understands (%d); upgrade chottag", s.path(), st.Version, Version)
 	}
+	st.normalizeAccountPools()
 	if st.Auto != nil && st.Auto.Threshold != 0 {
 		st.Auto = nil // the pre-M4 block: no choice recorded (see Auto.Threshold)
 	}
@@ -602,12 +630,7 @@ func (s Store) SwapServing(from, to string) (State, error) {
 		if !strings.EqualFold(st.Serving, from) {
 			return fmt.Errorf("%w: serving is %q, not %q", ErrServingChanged, st.Serving, from)
 		}
-		i := st.index(to)
-		if i < 0 {
-			return fmt.Errorf("%w: %q", ErrNotFound, to)
-		}
-		st.Serving = st.Accounts[i].Name
-		return nil
+		return st.SetPoolServing(DefaultPool, to)
 	})
 }
 
@@ -629,7 +652,10 @@ func (s Store) Update(fn func(*State) error) (State, error) {
 	if err := fn(&st); err != nil {
 		return State{}, err
 	}
-	st.Version = Version
+	st.Version = 1
+	if len(st.Pools) > 0 {
+		st.Version = Version
+	}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return State{}, err

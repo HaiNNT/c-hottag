@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// poolTitle is a notice's title, naming the pool when there is one (M8):
+// "chottag: work: switched to C".
+func poolTitle(pool, title string) string {
+	if pool == "" {
+		return "chottag: " + title
+	}
+	return "chottag: " + pool + ": " + title
+}
+
 // Every notice names an account and a command, never an email, an org, a
 // token or a path (spec §4 "Content"). The texts are fixed here, in one
 // place, so the tests can hold them exactly.
@@ -42,7 +51,7 @@ func routeDriftMessage() (title, body string) {
 
 // switchedMessage is the auto-switch notice (M4 spec §7).
 func switchedMessage(s Switch) (title, body string) {
-	title = "chottag: switched to " + s.To
+	title = poolTitle(s.Pool, "switched to "+s.To)
 	w := windowName(s.Window)
 	switch {
 	case s.Trigger == "threshold":
@@ -55,8 +64,8 @@ func switchedMessage(s Switch) (title, body string) {
 	return title, body
 }
 
-func noCandidateMessage(from string) (title, body string) {
-	return "chottag: no account to switch to",
+func noCandidateMessage(pool, from string) (title, body string) {
+	return poolTitle(pool, "no account to switch to"),
 		from + " needs to switch, but no other account can serve now. Run: chottag status"
 }
 
@@ -88,7 +97,7 @@ func movedMessage(m Moved) (title, body string) {
 		body = fmt.Sprintf("%s reached its %s switch point.", m.From, w)
 	}
 	if len(m.To) == 0 {
-		return fmt.Sprintf("chottag: %d %s on %s have no account to move to", m.Sessions, noun, m.From), body
+		return poolTitle(m.Pool, fmt.Sprintf("%d %s on %s have no account to move to", m.Sessions, noun, m.From)), body
 	}
-	return fmt.Sprintf("chottag: moved %d %s from %s to %s", m.Sessions, noun, m.From, strings.Join(m.To, ", ")), body
+	return poolTitle(m.Pool, fmt.Sprintf("moved %d %s from %s to %s", m.Sessions, noun, m.From, strings.Join(m.To, ", "))), body
 }

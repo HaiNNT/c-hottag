@@ -57,6 +57,16 @@ const (
 	codeUpdateInProgress          errCode = "update_in_progress"
 	codeBadPolicy                 errCode = "bad_policy"
 	codeSpreadNext                errCode = "spread_next"
+	codeNoPool                    errCode = "no_pool"
+	codeBadPool                   errCode = "bad_pool"
+	codePoolExists                errCode = "pool_exists"
+	codePoolNotEmpty              errCode = "pool_not_empty"
+	codePoolDefault               errCode = "pool_default"
+	codeLastPool                  errCode = "last_pool"
+	codeDaemonPredatesPools       errCode = "daemon_predates_pools"
+	codeNotInPool                 errCode = "not_in_pool"
+	codePoolAmbiguous             errCode = "pool_ambiguous"
+	codePoolsBlockRollback        errCode = "pools_block_rollback"
 )
 
 // errCodes is the closed list. TestCodeConstantsMatchTheClosedLists keeps
@@ -76,6 +86,8 @@ var errCodes = []errCode{
 	codeUpdateInProgress,
 	codeBadPolicy,
 	codeSpreadNext,
+	codeNoPool, codeBadPool, codePoolExists, codePoolNotEmpty, codePoolDefault,
+	codeLastPool, codeDaemonPredatesPools, codeNotInPool, codePoolAmbiguous, codePoolsBlockRollback,
 }
 
 // warnCode is a warnings[].code: a line that reports something beyond the
@@ -106,6 +118,9 @@ const (
 	warnPreAttestation            warnCode = "pre_attestation"
 	warnUpdateCache               warnCode = "update_cache"
 	warnDaemonPredatesSpread      warnCode = "daemon_predates_spread"
+	warnSharedAccount             warnCode = "shared_account"
+	warnPoolNotChanged            warnCode = "pool_not_changed"
+	warnDaemonPredatesPools       warnCode = "daemon_predates_pools"
 )
 
 var warnCodes = []warnCode{
@@ -116,7 +131,8 @@ var warnCodes = []warnCode{
 	warnAdoptFailed,
 	warnUpdateDeferred, warnRestartFailed, warnPruneFailed, warnInstallRecord,
 	warnAttestationSkipped, warnPreAttestation, warnUpdateCache,
-	warnDaemonPredatesSpread,
+	warnDaemonPredatesSpread, warnSharedAccount, warnPoolNotChanged,
+	warnDaemonPredatesPools,
 }
 
 func validErrCode(c errCode) bool   { return slices.Contains(errCodes, c) }

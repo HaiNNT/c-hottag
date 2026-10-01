@@ -20,6 +20,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/redact"
 	"github.com/HaiNNT/c-hottag/internal/session"
 	"github.com/HaiNNT/c-hottag/internal/store"
+	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 )
 
 // execFn and spawnFn are the shim's only irreversible acts, behind seams so
@@ -244,6 +245,18 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 	}
 	port := st.ResolvedPort()
 
+	// pool is this session's pool (M8): CHOTTAG_POOL, unset or empty meaning
+	// default. Validated before any credential form is chosen, so a typo is
+	// caught on the legacy path too, and never falls back to default.
+	pool := envGet(env, "CHOTTAG_POOL")
+	if pool == "" {
+		pool = proxyauth.DefaultPool
+	}
+	if !store.ValidPoolName(pool) && pool != store.DefaultPool || !st.HasPool(pool) {
+		fmt.Fprintf(stderr, "chottag: no pool named %q (chottag pool lists them)\n", pool)
+		return exit.Usage
+	}
+
 	real, err := ResolveClaude(envGet(env, "PATH"), filepath.Join(home, "bin"), st.RealClaude)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -340,12 +353,15 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 		hostport := "127.0.0.1:" + strconv.Itoa(port)
 		if vh.Sessions {
 			sid = newSID()
-			httpsProxy = secret.SessionProxyURL(hostport, proxyauth.DefaultPool, sid)
+			httpsProxy = secret.SessionProxyURL(hostport, pool, sid)
 		} else {
 			// A v0.4.0-v0.5.x daemon proves the secret but accepts only
 			// chottag:<secret>; a session credential would get a 407 on
 			// every request (F255). Legacy credential, no sid or pool.
 			httpsProxy = secret.ProxyURL(hostport)
+		}
+		if refusePool(stderr, pool, vh.Version, version, len(st.Pools) > 0) {
+			return exit.Usage
 		}
 		if httpsProxy == "" {
 			// Fixed text: the URL and the secret never reach a message.
@@ -372,6 +388,9 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 		}
 		health = vh
 		httpsProxy = ourProxyURL(port)
+		if refusePool(stderr, pool, vh.Version, version, len(st.Pools) > 0) {
+			return exit.Usage
+		}
 		fmt.Fprintf(stderr, "chottag: the running daemon (%s) predates proxy authentication; this session runs without it until you run: chottag daemon restart\n", vh.Version)
 	case IdentityMismatch:
 		fmt.Fprintf(stderr, "chottag: the process on port %d did not prove it holds this install's proxy secret (%s), so claude was not started. If you replaced that file, run: chottag daemon restart. Otherwise another program holds the port (lsof -nP -iTCP:%d -sTCP:LISTEN).\n", port, proxyauth.Path(home), port)
@@ -488,7 +507,7 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 	// just the same one confirmed again (F243-R2).
 	entry := session.Session{PID: os.Getpid(), Port: port, SID: sid, Started: time.Now().UTC()}
 	if sid != "" {
-		entry.Pool = proxyauth.DefaultPool
+		entry.Pool = pool
 	}
 	registerSession := func() {
 		if reg, err := session.Open(filepath.Join(home, "run")); err != nil {
@@ -607,4 +626,30 @@ func setEnv(env []string, key, val string) []string {
 		}
 	}
 	return append(out, prefix+val)
+}
+
+// poolsSince is the first release whose daemon reads pools from state.json.
+const poolsSince = "0.8.0"
+
+// refusePool reports, after printing why, that a session in a non-default pool
+// must not start: a daemon older than 0.8.0 (or whose version is unknown or
+// not one this build can order) cannot read a version 2 state.json, so the
+// session would go out on Home's own login instead of staying in its pool.
+// The default pool is refused too once an extra pool exists (hasPools); a
+// daemon of this very build is never refused.
+func refusePool(stderr io.Writer, pool, daemonVersion, own string, hasPools bool) bool {
+	// With an extra pool state.json is version 2, which such a daemon cannot
+	// read: it would send every session, default included, on Home's login.
+	if (pool == store.DefaultPool && !hasPools) || daemonVersion == own {
+		return false
+	}
+	if daemonVersion != "" && updatecheck.Parses(daemonVersion) && !updatecheck.Newer(poolsSince, daemonVersion) {
+		return false
+	}
+	shown := daemonVersion
+	if shown == "" {
+		shown = "unknown"
+	}
+	fmt.Fprintf(stderr, "chottag: the running daemon (%s) predates pools, so a %q session would not stay in its pool; run: chottag daemon restart\n", shown, pool)
+	return true
 }

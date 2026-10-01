@@ -130,6 +130,25 @@ func nextFreeSlotDir(s store.Store, st store.State, name string) (string, error)
 	}
 }
 
+// emailRegisteredLine is login's email_registered warning. With extra pools
+// (or --pool) it says how to share the account instead of logging in twice
+// (M8 spec §3); with only the default pool there is nothing to join, so it
+// keeps its original text.
+func emailRegisteredLine(st store.State, poolFlag, email string, account store.Account) string {
+	// A pool the account is not in yet: --pool when it fits, else the first
+	// extra pool that does.
+	candidates := st.PoolNames()[1:]
+	if poolFlag != "" {
+		candidates = append([]string{poolFlag}, candidates...)
+	}
+	for _, pool := range candidates {
+		if !account.InPool(pool) {
+			return fmt.Sprintf("chottag: warning: %s is already account %s; to use it in another pool, run: chottag pool join %s %s", email, account.Name, account.Name, pool)
+		}
+	}
+	return fmt.Sprintf("chottag: warning: %s is already registered as account %s", email, account.Name)
+}
+
 // loginResult is `login --json`'s fields (spec §5.3).
 type loginResult struct {
 	Account string `json:"account"`
@@ -150,6 +169,7 @@ func runLogin(args []string, stdin io.Reader, r *reporter) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
 	claudeBin := fs.String("claude", "claude", "path to the real claude binary")
+	poolFlag := fs.String("pool", "", "the pool a new account joins (default: default)")
 	// parseInterspersed (F2): `login NAME --claude PATH` must work exactly
 	// like `login --claude PATH NAME` — a bare fs.Parse(args) stops at the
 	// first non-flag token and would silently never see --claude in the
@@ -159,7 +179,7 @@ func runLogin(args []string, stdin io.Reader, r *reporter) int {
 		return r.FlagError(err)
 	}
 	if len(positional) != 1 {
-		return r.Usage("usage: chottag login <name> [--claude PATH]")
+		return r.Usage("usage: chottag login <name> [--pool POOL] [--claude PATH]")
 	}
 	name := positional[0]
 	if err := store.ValidName(name); err != nil {
@@ -175,6 +195,12 @@ func runLogin(args []string, stdin io.Reader, r *reporter) int {
 	st, err := s.Load()
 	if err != nil {
 		return r.FailErr(err)
+	}
+	// An unknown pool is refused before the browser opens.
+	if *poolFlag != "" {
+		if err := checkPool(st, *poolFlag); err != nil {
+			return failPool(r, err)
+		}
 	}
 	// Exact match, never st.Find: Find resolves a unique name PREFIX, which
 	// would treat an unrelated "Alpha" as the registered "A" (F15).
@@ -248,10 +274,17 @@ func runLogin(args []string, stdin io.Reader, r *reporter) int {
 		return r.Fail(exit.Error, codeLoginFailed, fmt.Sprintf("%s still reports no login after `claude auth login`", name), nil)
 	}
 
+	if existing && *poolFlag != "" {
+		for _, a := range st.Accounts {
+			if strings.EqualFold(a.Name, name) && !a.InPool(*poolFlag) {
+				r.Warn(warnPoolNotChanged, fmt.Sprintf("chottag: %s is already registered; --pool applies only to a new account. To add it to %s, run: chottag pool join %s %s", a.Name, *poolFlag, a.Name, *poolFlag))
+			}
+		}
+	}
 	for i := range st.Accounts {
 		a := st.Accounts[i]
 		if email != "" && strings.EqualFold(a.Email, email) && !strings.EqualFold(a.Name, name) {
-			r.Warn(warnEmailRegistered, fmt.Sprintf("chottag: warning: %s is already registered as account %s", email, a.Name))
+			r.Warn(warnEmailRegistered, emailRegisteredLine(st, *poolFlag, email, a))
 		}
 	}
 
@@ -272,7 +305,12 @@ func runLogin(args []string, stdin io.Reader, r *reporter) int {
 				return nil
 			}
 		}
-		return st.Add(store.Account{Name: name, Email: email, Org: org, Plan: planFromSubscription(sub), Dir: dir, AddedAt: now, LoggedInAt: now})
+		// A new account joins the --pool pool only, else default (R132).
+		var pools []string
+		if *poolFlag != "" && *poolFlag != store.DefaultPool {
+			pools = []string{*poolFlag}
+		}
+		return st.Add(store.Account{Name: name, Email: email, Org: org, Plan: planFromSubscription(sub), Dir: dir, AddedAt: now, LoggedInAt: now, PoolList: pools})
 	}); err != nil {
 		// F5: the browser login and the slot it landed in are both real by
 		// this point — only the registration write failed — so a slot this
@@ -280,7 +318,7 @@ func runLogin(args []string, stdin io.Reader, r *reporter) int {
 		// failure path, or it survives to later look adoptable despite
 		// never having been registered.
 		cleanup()
-		return r.FailErr(err)
+		return failPool(r, err)
 	}
 
 	r.Text("logged in: %s (%s)\n", name, email)

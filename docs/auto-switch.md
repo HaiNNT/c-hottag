@@ -86,6 +86,19 @@ and the notices are the spread ones (`chottag: moved N sessions from A to B,
 C`, or `N sessions on A have no account to move to`, plus the usual switched
 notice on a retry), also controlled by `chottag notify`.
 
+## Pools
+
+With [pools](how-it-works.md#pools), each `serial` pool is evaluated on its
+own: the planner looks at the pool's members, switches the pool's serving
+account, and a wall retry moves the session to another member of its own pool,
+never to an account outside it. Two pools may have the same serving account.
+Usage and limits belong to the account, so a shared account looks the same
+from every pool, and its usage drives the decision in each pool it serves.
+The settings (`chottag auto`, `chottag notify`) are global. `chottag status`
+shows each pool's last decision and switch, and a notice says which pool it
+is about (`chottag: work: switched to C`). Under `spread` a pool places its
+sessions among its own members.
+
 ## Plan sizes
 
 The planner needs to know each account's plan tier to pick the right

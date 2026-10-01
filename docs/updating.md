@@ -157,6 +157,23 @@ may delete) the placements; run `chottag policy spread` again after you
 upgrade back. After an update, run `chottag daemon restart` before turning
 spread on: a daemon from before 0.7.0 would ignore the policy and may reset it.
 
+Rolling back below 0.8.0 (`chottag update --version v0.7.x`) is refused
+while a pool other than `default` exists (`pools_block_rollback`, exit 2,
+before anything is downloaded): `state.json` is version 2 then, and an older
+chottag cannot read a version 2 `state.json` at all (0.7.x refuses it rather
+than mix the pools), and version 1 is written only once the extra pools are
+gone. Take each extra pool out first:
+`chottag pool leave ACCOUNT POOL` for its members (an account must stay in
+some pool: `chottag pool join ACCOUNT default` first for one that is in no
+other), then `chottag pool rm POOL`. Removing the last one writes `state.json` back as version 1, and the
+rollback then goes through. After an update to 0.8.0, run `chottag daemon
+restart` before `chottag pool add`: a daemon from before 0.8.0 cannot read a
+version 2 file, so its requests would go out on Home's own login (`chottag
+pool add` refuses with `daemon_predates_pools`, `pool join` warns, and once a
+pool exists every `claude` session is refused with exit 2 until the daemon is
+restarted). Such a daemon does not restart itself onto 0.8.0 once it cannot
+read `state.json`, so `chottag daemon restart` is required.
+
 ## The plugin
 
 The plugin and skill update separately from the binary: `claude plugin

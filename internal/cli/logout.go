@@ -71,6 +71,47 @@ type logoutResult struct {
 	// (F152).
 	MovedServing string `json:"movedServing,omitempty"`
 	MovedRemote  string `json:"movedRemote,omitempty"`
+	// MovedInPools lists the roles --force handed off in pools other than
+	// default (M8); absent when there were none.
+	MovedInPools []poolMoved `json:"movedInPools,omitempty"`
+}
+
+// poolMoved is one extra pool's roles that --force handed to another account.
+type poolMoved struct {
+	Pool    string `json:"pool"`
+	Serving string `json:"serving,omitempty"`
+	Remote  string `json:"remote,omitempty"`
+}
+
+// holdsAnyRole reports whether name is the serving or remote account of any
+// pool.
+func holdsAnyRole(st store.State, name string) bool {
+	for _, pn := range st.PoolNames() {
+		p := st.PoolOf(pn)
+		if strings.EqualFold(p.Serving, name) || strings.EqualFold(p.Remote, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// moveRolesOffEverywhere moves name's roles off in the default pool (the
+// returned serving and remote, exactly as before pools) and in every other
+// pool it holds one.
+func moveRolesOffEverywhere(st *store.State, name string) (servingTo, remoteTo string, others []poolMoved, err error) {
+	if servingTo, remoteTo, err = moveRolesOff(st, name); err != nil {
+		return "", "", nil, err
+	}
+	for _, pn := range st.PoolNames()[1:] {
+		sv, rm, err := moveRolesOffInPool(st, pn, name)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if sv != "" || rm != "" {
+			others = append(others, poolMoved{Pool: pn, Serving: sv, Remote: rm})
+		}
+	}
+	return servingTo, remoteTo, others, nil
 }
 
 // runLogout logs a slot out and removes it (spec §5).
@@ -159,7 +200,7 @@ func runLogout(args []string, stdin io.Reader, r *reporter) int {
 			map[string]any{"account": name, "dir": dir})
 	}
 
-	holdsRole := strings.EqualFold(st.Serving, name) || strings.EqualFold(st.Remote, name)
+	holdsRole := holdsAnyRole(st, name)
 	if holdsRole && !*force {
 		return logoutRoleHeld(r, name)
 	}
@@ -225,17 +266,20 @@ func runLogout(args []string, stdin io.Reader, r *reporter) int {
 	// below.
 	deregisteredOutOfTree := false
 	var movedServing, movedRemote string
+	var movedElsewhere []poolMoved
 	if _, err := s.Update(func(st *store.State) error {
 		a, err := st.Find(name)
 		if err != nil {
 			return err
 		}
-		holds := strings.EqualFold(st.Serving, a.Name) || strings.EqualFold(st.Remote, a.Name)
-		if holds && !*force {
+		if holdsAnyRole(*st, a.Name) && !*force {
 			return errLogoutHoldsRole
 		}
 		if *force {
-			movedServing, movedRemote = moveRolesOff(st, a.Name)
+			var err error
+			if movedServing, movedRemote, movedElsewhere, err = moveRolesOffEverywhere(st, a.Name); err != nil {
+				return err
+			}
 		}
 		if !inTree {
 			deregisteredOutOfTree = true
@@ -248,10 +292,10 @@ func runLogout(args []string, stdin io.Reader, r *reporter) int {
 		}
 		return r.FailErr(err)
 	}
-	reportMovedRoles(r, movedServing, movedRemote)
+	reportMovedRoles(r, movedServing, movedRemote, movedElsewhere)
 	if deregisteredOutOfTree {
 		r.Text("%s's login and directory %s were left in place\n", name, dir)
-		return r.OK(logoutResult{Account: name, Removed: false, Dir: dir, MovedServing: movedServing, MovedRemote: movedRemote})
+		return r.OK(logoutResult{Account: name, Removed: false, Dir: dir, MovedServing: movedServing, MovedRemote: movedRemote, MovedInPools: movedElsewhere})
 	}
 
 	if err := claudeAuthExec(*claudeBin, dir, "logout", stdin, r.ChildStdout(), r.Stderr()); err != nil {
@@ -291,20 +335,28 @@ func runLogout(args []string, stdin io.Reader, r *reporter) int {
 	}
 
 	r.Text("logged out: %s\n", name)
-	return r.OK(logoutResult{Account: name, Removed: true, Dir: dir, MovedServing: movedServing, MovedRemote: movedRemote})
+	return r.OK(logoutResult{Account: name, Removed: true, Dir: dir, MovedServing: movedServing, MovedRemote: movedRemote, MovedInPools: movedElsewhere})
 }
 
 // reportMovedRoles is logout --force's one line saying where the roles
 // went (F152), printed as soon as the move is saved, before the revoke:
 // the move stands even if a later step fails. Nothing is printed when no
 // role moved to an account.
-func reportMovedRoles(r *reporter, serving, remote string) {
+func reportMovedRoles(r *reporter, serving, remote string, others []poolMoved) {
 	var parts []string
 	if serving != "" {
 		parts = append(parts, "serving to "+serving)
 	}
 	if remote != "" {
 		parts = append(parts, "remote to "+remote)
+	}
+	for _, o := range others {
+		if o.Serving != "" {
+			parts = append(parts, "serving to "+o.Serving+" in "+o.Pool)
+		}
+		if o.Remote != "" {
+			parts = append(parts, "remote to "+o.Remote+" in "+o.Pool)
+		}
 	}
 	if len(parts) > 0 {
 		r.Text("moved %s\n", strings.Join(parts, ", "))
@@ -341,7 +393,32 @@ func logoutRoleHeld(r *reporter, name string) int {
 // It returns the account each role moved to: "" for a role name did not
 // hold, or one that nobody could take (serving, when no other account is
 // in rotation).
-func moveRolesOff(st *store.State, name string) (servingTo, remoteTo string) {
+func moveRolesOff(st *store.State, name string) (servingTo, remoteTo string, err error) {
+	return moveRolesOffInPool(st, store.DefaultPool, name)
+}
+
+// moveRolesOffInPool is moveRolesOff for one pool: the walk runs over the
+// pool's members, and the result is written back to the pool's roles.
+func moveRolesOffInPool(whole *store.State, pool, name string) (servingTo, remoteTo string, err error) {
+	view := poolView(*whole, pool)
+	servingHeld := strings.EqualFold(view.Serving, name)
+	remoteHeld := strings.EqualFold(view.Remote, name)
+	servingTo, remoteTo = moveRolesOffView(&view, name)
+	if servingHeld {
+		if err := whole.SetPoolServing(pool, view.Serving); err != nil {
+			return "", "", err
+		}
+	}
+	if remoteHeld {
+		if err := whole.SetPoolRemote(pool, view.Remote); err != nil {
+			return "", "", err
+		}
+	}
+	return servingTo, remoteTo, nil
+}
+
+// moveRolesOffView is the walk itself, on a one-pool view.
+func moveRolesOffView(st *store.State, name string) (servingTo, remoteTo string) {
 	servingHeld := strings.EqualFold(st.Serving, name)
 	remoteHeld := strings.EqualFold(st.Remote, name)
 	if !servingHeld && !remoteHeld {

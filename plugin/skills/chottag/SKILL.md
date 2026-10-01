@@ -74,7 +74,7 @@ Without arguments, work out what the user wants and use "Common tasks".
    prompt**: `status`, `doctor --json`, `update --check --json`, `version`,
    `tag`, `next`, `remote`, `rotate`, `auto`, `notify`, `plan`. Everything
    else (`login`, `logout`, `doctor --fix`, `update`, `rename`, `uninstall`,
-   `policy`)
+   `policy`, `pool add`, `pool join`, `pool leave`, `pool rm`)
    asks the user first. That is deliberate; don't work around it.
 
 ## Spreading sessions over accounts
@@ -95,6 +95,63 @@ sessions at the moment (limited, at a switch point, rotation off or needing a
 login), so they are placed normally. `bad_policy` means a value other than
 `serial` or `spread`.
 
+## Pools
+
+A pool is a named set of accounts with its own serving account, remote
+account, policy and pin; the top-level fields are the `default` pool, and a
+session picks its pool with `CHOTTAG_POOL=<name> claude`. `chottag pool --json`
+lists them. `pool add`, `pool join`, `pool leave` and `pool rm` ask the user
+first (not pre-approved). `chottag login <name> --pool <pool>` puts a new
+account in that pool only (for an existing account it warns `pool_not_changed`; use
+`pool join`). `tag <name>` and `remote <name>` act in the
+account's pool; for an account in several, pass `--pool` (`pool_ambiguous`
+otherwise). `next`, `tag --unpin`, `policy` and a bare `remote` take
+`--pool` (default `default`). `rotate`, `plan`, `rename` and `logout` apply
+in every pool.
+
+**Before `pool join` that shares an account between pools, tell the user the
+down-side** (the `shared_account` warning): the usage limit is shared, so the
+pools affect each other. With a `spread` pool among them, their sessions
+compete for the account, and heavy use in one pool moves the other's sessions
+off it (their prompt caches go cold). With every pool on `serial`, if the
+account serves both they use up its 5-hour window together and switch away
+from it at the same time. Warn, then join only if the user still wants it.
+When `login` says the email is already an account, `pool join` is the way to
+use it in another pool. `update --version` below 0.8.0 is refused
+(`pools_block_rollback`) while extra pools exist: `pool rm` them first (ask).
+To remove a pool, take its members out (`pool leave`; an account in no other
+pool needs `pool join <account> default` first), then `pool rm`.
+
+Seeing them: `chottag status --json` has `pools[]` (each pool's `serving`,
+`remote`, `policy`, `pin`, `accounts`, `liveSessions`, and the daemon's
+`decision` and `lastSwitch`), `pools` and `shared` on each account, and a
+`pool` on each session; they are there only while a pool other than
+`default` exists (the top-level `serving`, `remote` and `auto` are
+`default`'s). The text form adds a `POOLS` column and a line per pool, with
+`(B shared with personal)` for a shared account. `chottag statusline` shows
+`[work]` after the account for a session outside `default` (`pool` in
+`--json`). Notices name the pool (`chottag: work: switched to C`).
+
+**A pool that cannot serve fails closed.** With more than one pool, a request
+its pool cannot serve (no serving account, every member out of rotation,
+needs a login) is answered by chottag itself with a 503 naming the pool; it
+never goes out on Home's own login, which could belong to another pool, and
+the safety net's resend is off. An existing object whose owner needs a login
+gets the 503 as well. Claude Code retries it, so a fix lands by
+itself: `chottag pool` shows the members, then `chottag login`, `chottag
+rotate <name> on` or `chottag pool join`. `chottag doctor` has the matching
+warning: its `roles` row is `info` ("pool work has no account in rotation")
+for such a pool. With only `default` an unservable request still passes
+through as before.
+
+Warnings to relay: `shared_account` (above), `pool_not_changed` (`login
+--pool` for an account that already exists), and `daemon_predates_pools`
+(an error for `pool add`, a warning for `pool join`: the running daemon is
+older than 0.8.0 or reports no version, so it cannot read a version 2
+`state.json`; run `chottag daemon restart`, telling the user first, and repeat
+the `pool add`). Once a pool exists the shim also refuses every session,
+`default` included (exit 2), against such a daemon until it is restarted.
+
 ## If `chottag` is not found
 
 - Installed, but this shell predates the install: use the full path,
@@ -112,11 +169,12 @@ login), so they are placed normally. `bad_policy` means a value other than
 | the user wants | run |
 |---|---|
 | which account is serving, usage, limits | `chottag status --json` |
-| which account is this session on, or what each live session uses | `chottag statusline --json` (`account`: this session's own account; `serving`: the install's); `chottag status --json` lists every live session in `sessions[]` |
-| show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <this session's account> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, `c» down` or `c» off`; never fails) |
+| which account is this session on, or what each live session uses | `chottag statusline --json` (`account`: this session's own account; `serving`: its pool's; `pool`: the pool, outside `default`); `chottag status --json` lists every live session in `sessions[]` |
+| show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <this session's account> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, with `[pool]` after the account outside `default`, `c» down` or `c» off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
 | spread sessions over accounts / pin new sessions | `chottag policy spread --json` (asks first: it changes how every new session is placed, and is not pre-approved); `chottag tag <name> --json` then pins new sessions to it (the pin is for new sessions only; on a rotation-off account it warns and is ignored); `chottag tag --unpin --json` clears the pin; `chottag policy serial --json` goes back to one serving account. Under spread `chottag next` is refused (`spread_next`) |
+| pools: list, create, put an account in one, take it out, remove one | `chottag pool --json`; `chottag pool add <name> --json`, `chottag pool join <account> <pool> --json`, `chottag pool leave <account> <pool> --json`, `chottag pool rm <name> --json` (the last four ask first; explain the shared-account down-side above before a join that shares) |
 | add or re-login an account | `chottag login <name> --json` (timeout 600000) |
 | set the account that owns new remote-control sessions, artifacts, routines | `chottag remote <name> --json` |
 | keep an account out of `next` | `chottag rotate <name> off --json` |

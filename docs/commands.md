@@ -196,7 +196,7 @@ then start the daemon (`chottag daemon start`).
 | Flag | Meaning |
 |---|---|
 | `--check` | report whether a newer release exists; install nothing |
-| `--version V` | install this release tag instead of the latest, e.g. to roll back |
+| `--version V` | install this release tag instead of the latest, e.g. to roll back. Below 0.8.0 it is refused (`pools_block_rollback`) while pools beyond `default` exist |
 | `--repo OWNER/NAME` | use this repo instead of `install.json`'s or the default |
 | `--restart` | restart the daemon even if a claude session is running |
 | `--no-restart` | install, but leave the daemon running (`daemon` is `not-restarted`); the daemon uses the new version after `chottag daemon restart`, or restarts itself when idle (unless `--auto-restart off`; daemons from 0.6.0 on). Not with `--restart` |
@@ -289,15 +289,27 @@ Prints chottag's own version. It takes no flags.
 ### `chottag login`
 
 ```sh
-chottag login NAME [--claude PATH]
+chottag login NAME [--pool POOL] [--claude PATH]
 ```
 
 Logs a slot in through the browser (`claude auth login`) and registers it
 under `NAME`. Running it again for an existing account re-logs in that
 same slot.
 
+A new account joins `POOL` only, or `default` without `--pool`; never every
+pool. An account that already exists keeps its pools: if `--pool` names a pool it
+is not in, `login` warns `pool_not_changed` (`<name> is already registered;
+--pool applies only to a new account. To add it to <pool>, run: chottag pool
+join <name> <pool>`). An unknown pool is exit 2, `no_pool`, before the
+browser opens. When the email is already registered under another name,
+`login` warns `email_registered`. If there is a pool that account is not in
+(`--pool`, else the first extra pool), it says `<email> is already account b;
+to use it in another pool, run: chottag pool join b <pool>`, which shares the
+one login instead of logging it in twice; otherwise it keeps its older text. See [`chottag pool`](#chottag-pool).
+
 | Flag | Meaning |
 |---|---|
+| `--pool POOL` | the pool a new account joins (default: `default`) |
 | `--claude PATH` | path to the real `claude` binary |
 
 ```json
@@ -318,8 +330,9 @@ chottag logout NAME [--claude PATH] [--force] [--yes]
 ```
 
 Revokes a slot's login and removes the account. `--force` is required when
-the account is currently serving or remote; it moves that role to another
-account first, then continues.
+the account is currently serving or remote in any pool; it moves each such
+role to another member of that pool first (or to none), then continues.
+Its memberships in every pool go with it.
 
 | Flag | Meaning |
 |---|---|
@@ -336,9 +349,15 @@ account first, then continues.
   "removed": true,
   "dir": "a",
   "movedServing": "personal",
-  "movedRemote": "personal"
+  "movedRemote": "personal",
+  "movedInPools": [
+    {"pool": "work", "serving": "team", "remote": "team"}
+  ]
 }
 ```
+
+`movedInPools` lists the roles handed off in pools other than `default`, and
+is absent when there were none.
 
 ### `chottag rename`
 
@@ -416,8 +435,8 @@ flags: a stray flag is exit 2, never treated as `NAME` or `on`/`off`.
 ### `chottag tag`
 
 ```sh
-chottag tag [NAME] [--force]
-chottag tag --unpin
+chottag tag [NAME] [--force] [--pool POOL]
+chottag tag --unpin [--pool POOL]
 ```
 
 Sets the serving account: the one whose login the proxy hands to Claude
@@ -434,10 +453,18 @@ off, and the line says that. A bare `tag` is refused under spread, as
 and no `--force`, and under `serial` it is a usage error, because a pin has
 no effect there. Under `serial`, `tag` never touches the pin.
 
+With [pools](#chottag-pool), `tag NAME` acts in `NAME`'s pool when it is in
+exactly one. When `NAME` is in several, `--pool POOL` is required
+(`pool_ambiguous` without it), and `POOL` must be one of its pools
+(`not_in_pool`). A bare `tag` and `tag --unpin` act in `--pool` (default:
+`default`), and spread is judged per pool. An unknown pool is `no_pool`. A
+result outside `default` says `serving: NAME (pool POOL)`.
+
 | Flag | Meaning |
 |---|---|
 | `--force` | switch even past a limit, a switch point or a needs-login state (never past rotation) |
 | `--unpin` | under spread, clear the pin (no `NAME`) |
+| `--pool POOL` | the pool to act in (default: `NAME`'s pool, or `default`) |
 
 ```json
 {
@@ -446,27 +473,32 @@ no effect there. Under `serial`, `tag` never touches the pin.
   "warnings": [],
   "serving": "work",
   "previous": "personal",
-  "pin": "work"
+  "pin": "work",
+  "pool": "work"
 }
 ```
 
 `pin` appears only under spread; `tag --unpin` answers with `serving` only.
+`pool` is present only outside `default`.
 
 ### `chottag next`
 
 ```sh
-chottag next [--force]
+chottag next [--force] [--pool POOL]
 ```
 
-Moves the serving account to the next one in rotation. Under
+Moves the serving account to the next one in rotation, within the pool
+(`--pool`, default `default`; unknown is `no_pool`). Under
 [`chottag policy spread`](#chottag-policy) it is refused with exit 2 and code
 `spread_next`: sessions sit on different accounts, so a machine-wide "next"
-has no meaning. Use `chottag tag NAME` to pin new sessions, or `chottag
-policy serial` to go back to one serving account.
+has no meaning (in that pool: another pool on `serial` still moves). Use
+`chottag tag NAME` to pin new sessions, or `chottag policy serial` to go back
+to one serving account.
 
 | Flag | Meaning |
 |---|---|
 | `--force` | switch even past a limit, a switch point or a needs-login state (never past rotation) |
+| `--pool POOL` | the pool whose serving account moves (default: `default`) |
 
 ```json
 {
@@ -478,20 +510,30 @@ policy serial` to go back to one serving account.
   "skipped": [
     {"name": "team", "reason": "limited", "until": "2026-09-28T14:05:00Z"}
   ],
-  "fallback": false
+  "fallback": false,
+  "pool": "work"
 }
 ```
+
+`pool` is present only outside `default`.
 
 ### `chottag remote`
 
 ```sh
-chottag remote [NAME]
+chottag remote [NAME] [--pool POOL]
 ```
 
 Sets, or with no `NAME` shows, the account that owns claude.ai objects
 (Remote Control sessions, environments, artifacts and connectors created
-from here on). Also `chottag rc` and `chottag remote-control`. It takes no
-flags.
+from here on) for a pool. Also `chottag rc` and `chottag remote-control`.
+`remote NAME` acts in `NAME`'s pool when it is in exactly one; in several it
+needs `--pool` (`pool_ambiguous`), and the pool must be one of its
+(`not_in_pool`). A bare `remote` shows `--pool`'s remote (default: `default`;
+unknown is `no_pool`). Its only flag is `--pool`; any other is exit 2.
+
+| Flag | Meaning |
+|---|---|
+| `--pool POOL` | the pool to act in (default: `NAME`'s pool, or `default`) |
 
 ```json
 {
@@ -499,9 +541,12 @@ flags.
   "ok": true,
   "warnings": [],
   "remote": "work",
-  "changed": true
+  "changed": true,
+  "pool": "work"
 }
 ```
+
+`pool` is present only outside `default`.
 
 ### `chottag own`
 
@@ -536,7 +581,8 @@ chottag status
 Prints each account's usage and limit state: which is serving, which is
 remote, each account's 5-hour and 7-day utilization, and whether the
 daemon is currently passing requests through on Home's login instead of
-the account you chose. Also `chottag ls`. It takes no flags.
+the account you chose. Also `chottag ls`. It takes no flags. With more than
+one pool it adds a `POOLS` column and a line per pool (see below).
 
 ```json
 {
@@ -565,6 +611,8 @@ the account you chose. Also `chottag ls`. It takes no flags.
       "rotate": true,
       "passthrough": "",
       "plan": "max5x",
+      "pools": ["default", "personal"],
+      "shared": true,
       "stale": false
     }
   ],
@@ -618,7 +666,22 @@ the account you chose. Also `chottag ls`. It takes no flags.
       "retried": true
     },
     "userChosen": false,
-    "burnRate": 12.5
+    "burnRate": 12.5,
+    "pools": {
+      "personal": {
+        "decision": "holding work (5h 42%, resets in 5h)",
+        "lastSwitch": {
+          "from": "dev",
+          "to": "work",
+          "trigger": "threshold",
+          "window": "5h",
+          "pct": 90,
+          "at": "2026-09-28T10:00:00Z",
+          "retried": false
+        },
+        "userChosen": false
+      }
+    }
   },
   "update": {
     "latest": "0.5.0",
@@ -640,9 +703,77 @@ the account you chose. Also `chottag ls`. It takes no flags.
     "restart": true
   },
   "policy": "spread",
-  "pin": "work"
+  "pin": "work",
+  "pools": [
+    {
+      "name": "default",
+      "serving": "work",
+      "remote": "work",
+      "policy": "spread",
+      "pin": "work",
+      "accounts": ["work"],
+      "liveSessions": 1,
+      "decision": "holding work (5h 42%, resets in 5h)",
+      "lastSwitch": {
+        "from": "personal",
+        "to": "work",
+        "trigger": "threshold",
+        "window": "5h",
+        "pct": 90,
+        "at": "2026-09-28T09:00:00Z",
+        "retried": true
+      }
+    },
+    {
+      "name": "personal",
+      "serving": "work",
+      "remote": "dev",
+      "policy": "spread",
+      "pin": "dev",
+      "accounts": ["dev", "work"],
+      "liveSessions": 0,
+      "decision": "holding work (5h 42%, resets in 5h)",
+      "lastSwitch": {
+        "from": "dev",
+        "to": "work",
+        "trigger": "threshold",
+        "window": "5h",
+        "pct": 90,
+        "at": "2026-09-28T10:00:00Z",
+        "retried": false
+      }
+    }
+  ]
 }
 ```
+
+**Pools.** `pools`, an account's `pools` and `shared`, and `auto.pools` are
+present only while the install has more than one pool (see [`chottag
+pool`](#chottag-pool)); with only `default` the document is exactly what it
+was. The top-level `serving`, `remote`, `policy`, `pin` and `auto` (its
+`decision` and `lastSwitch`) are the `default` pool's, in place. `pools[]` has
+one entry per pool, `default` first and the rest sorted: its `serving`,
+`remote`, `policy`, `pin` (under spread), member `accounts`, `liveSessions`
+(sessions placed in the pool; an unidentified session counts for `default`),
+and the daemon's `decision` and `lastSwitch` for it. `auto.pools` is the same
+two fields, and `userChosen`, for each pool other than `default`. An account's `pools`
+lists the pools it is in, and `shared` is `true` when that is more than one:
+they then share its usage limit. A session's `pool` (in `sessions`) says which
+pool it runs in.
+
+The text form adds a `POOLS` column after `NAME` (`personal,work`), and
+after the table one line per pool:
+
+```text
+pool work · serving A · remote A · serial · 3 live sessions · holding A (5h 40%, resets in 2h) · last B→A 09:12 (limit) (B shared with personal)
+```
+
+The decision and the last switch follow the `auto:` line's rules (the decision
+only while the daemon runs and auto-switch is on). A spread pool shows `spread`
+and its pin. An account in more than one pool is flagged at the end of each of
+its pools' lines: `(B shared with personal)`. The header's `serving` and
+`remote` are the `default` pool's, and say `none` when it has no
+members.
 
 `policy` and `pin` show how new sessions are placed (see [`chottag
 policy`](#chottag-policy)). `policy` is `"spread"` and is left out under
@@ -750,8 +881,8 @@ processes is a live `claude` session chottag launched, or `HTTPS_PROXY` is
 `chottag` or `chottag.<pool>.<sid>`). Then the daemon is asked, for at most
 300 ms, whether it answers.
 
-The session is found first by `HTTPS_PROXY`: its user name, `chottag.default.<sid>`,
-gives the session id. Only the user name is read; the password is never
+The session is found first by `HTTPS_PROXY`: its user name, `chottag.<pool>.<sid>`
+(`chottag.default.<sid>` outside a pool), gives the session id and pool. Only the user name is read; the password is never
 read into anything it prints. Without one, the ancestor walk's registry
 entry names the session. The account shown is that session's own, once the
 daemon has seen it make an inference request. Before that, for a session
@@ -761,6 +892,7 @@ is the serving account. It never changes anything.
 | Line | Meaning |
 |---|---|
 | `c» work · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok` | routed, the daemon answers; `work` is the account this session uses |
+| `c» C [work] · 5h 42% · …` | the same for a session in the pool `work` (`CHOTTAG_POOL=work`): `[work]` follows the account, only outside `default` |
 | `c» up` | routed, the daemon answers, but no account is serving |
 | `c» down` | routed, but the daemon does not answer |
 | `c» off` | not routed, chottag is not set up, or anything went wrong |
@@ -774,7 +906,8 @@ mark in every state: `c» dev off`, `c» dev · work · 5h 3% · …`.
   80 %, otherwise the earlier of the two known resets. Local time, or
   `Mon 18:00` when more than 24 hours away. Left out when unknown.
 - `n/m ok` is the accounts in rotation that are not limited, out of all
-  accounts in rotation. Left out when none is in rotation.
+  accounts in rotation, counted in this session's pool. Left out when none is
+  in rotation.
 - `↑0.6.0` is last, only when the update check found a newer release
   (`chottag update` installs it). It takes no colour, and the `off`, `down`
   and `up` lines never show it. The cmux pill carries it too.
@@ -801,6 +934,7 @@ failure is ignored. `--cmux` combines with `--json`.
   "session": "routed",
   "daemon": "up",
   "serving": "work",
+  "pool": "work",
   "account": "work",
   "label": "dev",
   "fiveHourPct": 41.6,
@@ -817,7 +951,9 @@ failure is ignored. `--cmux` combines with `--json`.
 (`unknown` when the session is not routed: the daemon is not asked).
 `serving` is empty unless the session is routed and the daemon is up.
 `account` is the account this session uses (see above), present when
-`serving` is; `serving` keeps its meaning, the install's serving account.
+`serving` is; `serving` is the serving account of the session's pool.
+`pool` is that pool, present only outside `default` (and only for an
+identified session whose pool still exists).
 `label`, `fiveHourPct`, `sevenDayPct`, `resetsAt` (RFC 3339), `okAccounts`
 and `rotationAccounts` are left out when unknown. `updateAvailable` is the
 release the update check found (newer than this build), and is left out
@@ -853,7 +989,7 @@ Its checks, in the order they run:
 | `bin` | `bin/chottag` and `bin/claude` point at this binary | `--fix` relinks them, unless one already points at another working chottag |
 | `rc-block` | your shell's rc file has the chottag PATH block | `--fix` writes it, copying the existing file to `backups/` first and printing the path on stderr |
 | `path` | this process's PATH already finds `claude` in `bin/` | open a new shell |
-| `roles` | the serving and remote roles name a registered account | `--fix` gives a dangling role to the first registered account |
+| `roles` | the serving and remote roles name a registered account, in every pool: a pool's roles name one of its own members, and a pool with members has both | `--fix` gives a dangling role to the first registered account, and a dangling serving role to the first account in rotation (the row names the targets). In a pool other than `default` it uses that pool's members only, and leaves serving empty when none is in rotation |
 | `real-claude` | the cached real `claude` path is still what PATH resolves | `--fix` re-resolves and re-caches it |
 | `port` | the daemon's port answers, or is free | `--fix` moves state.json to a free port (only with no daemon and no live sessions) |
 | `daemon` | a daemon that holds `daemon.lock` also answers on its port | `chottag daemon restart` |
@@ -865,6 +1001,12 @@ Its checks, in the order they run:
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |
+
+With more than one pool, the `roles` row names each pool (`default: serving
+A, remote A; work: serving B, remote B`) and flags a problem as `work serving
+"X"`. A pool whose members are all out of rotation is a warning, not a
+problem: the row is `info`, says `warning: pool work has no account in
+rotation, so its sessions get a 503`, and hints `chottag rotate NAME on`.
 
 ```json
 {
@@ -935,16 +1077,22 @@ no verb it only prints the current setting. It takes no flags.
 ### `chottag policy`
 
 ```sh
-chottag policy [serial|spread]
+chottag policy [serial|spread] [--pool POOL]
 ```
 
 Shows or sets how new sessions are placed. `serial`, the default, is one
 serving account for every session. `spread` places each new session on the
 account with most headroom and keeps it there. With no value it prints the
-policy, and the pin under `spread` (`pin: NAME`). It takes no flags. Any
-other value is exit 2, code `bad_policy`. Switching policy changes nothing
+policy, and the pin under `spread` (`pin: NAME`). Its only flag is
+`--pool`: each pool has its own policy (default: `default`; unknown is
+`no_pool`), and a result outside `default` says `policy: spread (pool work)`.
+Any other value is exit 2, code `bad_policy`. Switching policy changes nothing
 about rotation, and keeps a stored pin (which has no effect under `serial`).
 See [`chottag tag`](#chottag-tag) for pinning.
+
+| Flag | Meaning |
+|---|---|
+| `--pool POOL` | the pool whose policy to show or set (default: `default`) |
 
 ```json
 {
@@ -952,11 +1100,17 @@ See [`chottag tag`](#chottag-tag) for pinning.
   "ok": true,
   "warnings": [],
   "policy": "spread",
-  "pin": "work"
+  "pin": "work",
+  "pool": "work"
 }
 ```
 
 `pin` is always present, `""` when unset or when the policy is `serial`.
+`pool` is present only outside `default`.
+
+Setting `spread` on a pool that has an account shared with another pool adds
+a `shared_account` warning for each such account (see
+[`chottag pool`](#chottag-pool)).
 
 When the running daemon is older than this `chottag` (or its version cannot
 be ordered), turning spread on adds the warning `daemon_predates_spread`:
@@ -965,6 +1119,149 @@ a daemon from before 0.7.0 ignores the policy and, the next time it writes
 takes effect. The warning does not refuse the change, and `tag NAME` under
 spread gives it too. No daemon, or one at the same or a newer version, gives
 none.
+
+## Pools
+
+### `chottag pool`
+
+```sh
+chottag pool
+chottag pool add NAME
+chottag pool join ACCOUNT POOL
+chottag pool leave ACCOUNT POOL
+chottag pool rm NAME
+```
+
+A pool is a named set of accounts with its own serving account, remote
+account, policy and pin. The top-level fields of `state.json` are the
+`default` pool, which always exists. An account can be in several pools. A
+session picks its pool with `CHOTTAG_POOL=NAME claude`; unset means `default`.
+
+`chottag pool` lists the pools, `default` first and the rest sorted: name,
+serving, remote, policy, the pin (under spread) and the member accounts; text output says `none` for an empty role or pool.
+
+| Form | What it does |
+|---|---|
+| `pool add NAME` | create an empty pool; `NAME` is 1-16 of `a-z`, `0-9` and `-` (`bad_pool`, `pool_exists`) |
+| `pool join ACCOUNT POOL` | add `ACCOUNT` to `POOL`; it stays in its other pools. In `POOL` it becomes serving if `POOL` has none and it rotates, and remote if `POOL` has none. Already a member: nothing changes |
+| `pool leave ACCOUNT POOL` | remove `ACCOUNT` from `POOL`. It must stay in at least one pool (`last_pool`). A serving or remote role it held in `POOL` goes to the next eligible member, or to none; a pin on it is cleared |
+| `pool rm NAME` | remove an empty pool other than `default` (`pool_not_empty`, `pool_default`). Removing the last extra pool writes `state.json` back as version 1 |
+
+An unknown pool is `no_pool`. Every pool error exits 2. `rotate`, `plan`,
+`rename` and `logout` act on the account in every pool it is in.
+
+**Sharing an account warns.** When `pool join` leaves an account in more than
+one pool, it succeeds and warns `shared_account`: the usage limit is shared,
+so the pools affect each other. With a `spread` pool among them it says that
+their sessions compete for the account and that heavy use in one pool moves
+the other's sessions off it (their prompt caches go cold); with every pool on
+`serial` it says that if the account serves both, they use up its 5-hour
+window together and switch away from it at the same time. `chottag policy
+spread --pool POOL` repeats it for each shared account in `POOL`.
+
+**An older daemon.** A daemon older than 0.8.0 (or one reporting no usable
+version) cannot read the version-2 `state.json` pools write: its requests would
+go out on Home's own login, and it cannot restart itself onto 0.8.0 once it
+cannot read the file. So `pool add` refuses while one runs (`daemon_predates_pools`,
+exit 2: run `chottag daemon restart` first), and `pool join`, when the pool
+already exists, warns with the same code. The shim backstops it: once an extra
+pool exists, against such a daemon every `claude` session, `default` included,
+exits 2 without starting Claude Code (`chottag: the running daemon (0.7.1)
+predates pools, so a "work" session would not stay in its pool; run: chottag
+daemon restart`). With no extra pool, nothing changes. None of this applies when
+no daemon runs or it is 0.8.0 or later.
+
+**Notices name the pool.** With more than one pool, a desktop notice says
+which pool it is about: `chottag: work: switched to C`, `chottag: work: no
+account to switch to`. A spread move names the account's pools that spread
+(`chottag: work, personal: moved 2 sessions from B to C`). Each pool keeps its
+own "no account to switch to" episode, so one pool's cannot hide another's.
+With only `default` the texts are unchanged.
+
+`update --version` below 0.8.0 is refused while pools beyond `default` exist,
+exit 2 with `pools_block_rollback`, before anything is downloaded: remove the
+extra pools with `chottag pool rm` first.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "pools": [
+    {
+      "name": "default",
+      "serving": "personal",
+      "remote": "personal",
+      "policy": "serial",
+      "pin": "",
+      "accounts": ["personal"]
+    }
+  ]
+}
+```
+
+`pin` is `""` unless the pool's policy is `spread`. `accounts` is an array,
+empty for an empty pool.
+
+### `chottag pool add`
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "pool": "work"
+}
+```
+
+### `chottag pool join`
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [
+    {"code": "shared_account", "message": "personal is now in default and work and shares one usage limit between them: if personal serves both, they use up its 5-hour window together and switch away from it at the same time."}
+  ],
+  "account": "personal",
+  "pool": "work",
+  "pools": ["default", "work"],
+  "changed": true
+}
+```
+
+`pools` is every pool the account is in afterwards. `changed` is false when it
+was already a member.
+
+### `chottag pool leave`
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "account": "personal",
+  "pool": "work",
+  "pools": ["default"],
+  "changed": true
+}
+```
+
+`pools` is what the account is in afterwards. Leaving a pool the account is not
+in is `not_in_pool`, so `changed` is always true here.
+
+### `chottag pool rm`
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "pool": "work"
+}
+```
+
+`pool` names the removed pool.
 
 ## Auto-switch
 
@@ -1299,6 +1596,16 @@ does not support `--json`.
 | `update_failed` | 1 | `chottag update` could not install the release (or back up `state.json` first), or `--check` could not reach GitHub |
 | `update_in_progress` | 1 | another `chottag update` holds the update lock (`run/update.lock`) |
 | `bad_policy` | 2 | `chottag policy` takes `serial` or `spread`, nothing else |
+| `no_pool` | 2 | the pool named does not exist (`chottag pool` lists them) |
+| `bad_pool` | 2 | a pool name must be 1-16 of `a-z`, `0-9` and `-` |
+| `pool_exists` | 2 | `pool add` named a pool that exists (`default` always does) |
+| `daemon_predates_pools` | 2 | `pool add` while the running daemon is older than 0.8.0 or reports no usable version: it cannot read the version-2 `state.json`; run `chottag daemon restart` first (`pool join` only warns) |
+| `pool_not_empty` | 2 | `pool rm` of a pool that still has accounts; `pool leave` them first |
+| `pool_default` | 2 | `pool rm default`: the default pool cannot be removed |
+| `last_pool` | 2 | `pool leave` would leave the account in no pool |
+| `not_in_pool` | 2 | the account is not in the pool named (`--pool`, `pool leave`) |
+| `pool_ambiguous` | 2 | `tag NAME` or `remote NAME` for an account in several pools, without `--pool` |
+| `pools_block_rollback` | 2 | `update --version` below 0.8.0 while pools beyond `default` exist: `chottag pool rm` them first |
 | `spread_next` | 2 | `next` (or a bare `tag`) under `chottag policy spread`: chottag places sessions itself; pin with `chottag tag NAME`, or `chottag policy serial` |
 
 ## Warning codes
@@ -1307,7 +1614,8 @@ does not support `--json`.
 |---|---|
 | `limited` | the account named is currently limited |
 | `out_of_rotation` | an account was skipped because it is excluded from rotation |
-| `no_rotation_left` | no account is left in rotation to switch to |
+| `no_rotation_left` | no account is left in rotation to switch to (or, naming a pool, none left in that pool) |
+| `pool_not_changed` | `login NAME --pool P` for an account that already exists and is not in `P`: `--pool` applies only to a new account; `chottag pool join` adds it |
 | `owners_recovered` | `owners.json` was corrupt and has been moved aside |
 | `email_registered` | the email logged in belongs to an account already registered |
 | `revoke_failed` | the revoke step failed, but the command continued |
@@ -1327,4 +1635,6 @@ does not support `--json`.
 | `attestation_skipped` | release attestation verification was skipped |
 | `pre_attestation` | the release predates attestation and was installed without verifying one |
 | `update_cache` | `update --check` could not record its result in `status.json` |
+| `shared_account` | `pool join` left an account in more than one pool (or `policy spread` found one in the pool): they share one usage limit, so the pools affect each other |
+| `daemon_predates_pools` | `pool join` found the running daemon older than 0.8.0 (or reporting no version): it cannot read a version-2 `state.json`, so its requests fall back to Home's own login; run `chottag daemon restart` (`pool add` refuses instead: see the error code) |
 | `daemon_predates_spread` | `chottag policy spread` (or `tag NAME` under spread) found the running daemon older than this binary: it ignores the policy and may reset it to serial; run `chottag daemon restart` first |

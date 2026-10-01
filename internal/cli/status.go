@@ -97,6 +97,7 @@ func runStatus(home string, args []string, r *reporter) int {
 	// account chottag has never seen traffic for would simply be missing
 	// from the report, rather than shown as unknown (contract 2).
 	f.EnsureRoster(accountMembers(st))
+	multiPool := len(st.PoolNames()) > 1
 	for i := range f.Accounts {
 		// The slot dir is the daemon's matching key, not part of the
 		// report (F171).
@@ -106,6 +107,10 @@ func runStatus(home string, args []string, r *reporter) int {
 			f.Accounts[i].Org = a.Org
 			f.Accounts[i].Rotate = !a.NoRotate
 			f.Accounts[i].Plan = a.Plan
+			if multiPool {
+				f.Accounts[i].Pools = accountPools(st, *a)
+				f.Accounts[i].Shared = len(f.Accounts[i].Pools) > 1
+			}
 		}
 	}
 	f.Serving, f.Remote = st.Serving, st.Remote
@@ -222,7 +227,7 @@ func runStatus(home string, args []string, r *reporter) int {
 			u.Available = availableUpdate(f) != ""
 			f.Update = &u
 		}
-		doc := statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st)}
+		doc := statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st), Pools: poolStatuses(st, f, rows)}
 		if st.PolicySpread() {
 			doc.Policy, doc.Pin = store.PolicySpread, st.Pin
 		}
@@ -230,6 +235,9 @@ func runStatus(home string, args []string, r *reporter) int {
 	}
 
 	renderStatusWith(r.Stdout(), f, now, accountCounts(rows))
+	for _, line := range poolStatusLines(st, f, rows, now) {
+		fmt.Fprintln(r.Stdout(), line)
+	}
 	fmt.Fprintln(r.Stdout(), autoStatusLine(st, f, now))
 	if line := policyStatusLine(st, f, now); line != "" {
 		fmt.Fprintln(r.Stdout(), line)
@@ -308,7 +316,13 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 	if f.Label != "" {
 		label = "   (" + f.Label + ")"
 	}
-	fmt.Fprintf(out, "serving: %s   remote: %s%s\n\n", f.Serving, f.Remote, label)
+	// With pools, the header is the default pool's, which may have none.
+	pooled := slices.ContainsFunc(f.Accounts, func(a status.Account) bool { return len(a.Pools) > 0 })
+	serving, remote := f.Serving, f.Remote
+	if pooled {
+		serving, remote = orNone(serving), orNone(remote)
+	}
+	fmt.Fprintf(out, "serving: %s   remote: %s%s\n\n", serving, remote, label)
 	// The daemon version-mismatch line (public release design §2.4): shown
 	// only when the overlay above (runStatus) found a running daemon whose
 	// health version differs from this binary's. VersionMismatch is never
@@ -353,7 +367,11 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 		fmt.Fprintf(out, "live sessions: %d%s\n\n", f.Daemon.LiveSessions, counts)
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 3, ' ', 0)
-	fmt.Fprintln(tw, "  NAME\tPLAN\tORG\t5h\t7d\tSTATE")
+	if pooled {
+		fmt.Fprintln(tw, "  NAME\tPOOLS\tPLAN\tORG\t5h\t7d\tSTATE")
+	} else {
+		fmt.Fprintln(tw, "  NAME\tPLAN\tORG\t5h\t7d\tSTATE")
+	}
 	for _, a := range f.Accounts {
 		fresh := f.Fresh(a.Name, now)
 		five, seven := "unknown", "unknown"
@@ -387,6 +405,10 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 		case fresh:
 			state = "ok"
 		}
+		if pooled {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Name, strings.Join(a.Pools, ","), planLabel(store.Account{Plan: a.Plan}), a.Org, five, seven, state)
+			continue
+		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", a.Name, planLabel(store.Account{Plan: a.Plan}), a.Org, five, seven, state)
 	}
 	tw.Flush()
@@ -415,6 +437,121 @@ type statusDocument struct {
 	// spread, so a serial document is unchanged. Pin only when one is set.
 	Policy string `json:"policy,omitempty"`
 	Pin    string `json:"pin,omitempty"`
+	// Pools is one entry per pool, present only while the install has more
+	// than one (M8): the top-level serving, remote, policy, pin and auto are
+	// the default pool's, in place.
+	Pools []poolStatus `json:"pools,omitempty"`
+}
+
+// poolStatus is one pool in `status --json`'s pools array.
+type poolStatus struct {
+	Name         string   `json:"name"`
+	Serving      string   `json:"serving"`
+	Remote       string   `json:"remote"`
+	Policy       string   `json:"policy"`
+	Pin          string   `json:"pin,omitempty"`
+	Accounts     []string `json:"accounts"`
+	LiveSessions int      `json:"liveSessions"`
+	// Decision and LastSwitch are the daemon's auto-switch view of the pool
+	// (status.json's auto, per pool).
+	Decision   string             `json:"decision,omitempty"`
+	LastSwitch *status.AutoSwitch `json:"lastSwitch,omitempty"`
+}
+
+// poolAutoOf is pool's auto-switch view in f: the default pool's is auto's own
+// fields.
+func poolAutoOf(f status.File, pool string) (decision string, ls *status.AutoSwitch) {
+	if f.Auto == nil {
+		return "", nil
+	}
+	if pool == store.DefaultPool {
+		return f.Auto.Decision, f.Auto.LastSwitch
+	}
+	p := f.Auto.Pools[pool]
+	return p.Decision, p.LastSwitch
+}
+
+// poolStatuses is the pools array: nil with only default, so a default-only
+// document is unchanged.
+func poolStatuses(st store.State, f status.File, rows []sessionRow) []poolStatus {
+	if len(st.PoolNames()) < 2 {
+		return nil
+	}
+	live := map[string]int{}
+	for _, r := range rows {
+		name := poolOrDefault(r.Pool)
+		if !st.HasPool(name) {
+			name = store.DefaultPool // a removed pool's session routes as default
+		}
+		live[name]++
+	}
+	var out []poolStatus
+	for _, name := range st.PoolNames() {
+		v := poolView(st, name)
+		p := poolStatus{Name: name, Serving: v.Serving, Remote: v.Remote, Policy: policyName(v), Accounts: []string{}, LiveSessions: live[name]}
+		if v.PolicySpread() {
+			p.Pin = v.Pin
+		}
+		for _, a := range v.Accounts {
+			p.Accounts = append(p.Accounts, a.Name)
+		}
+		p.Decision, p.LastSwitch = poolAutoOf(f, name)
+		out = append(out, p)
+	}
+	return out
+}
+
+// poolStatusLines is the text report's line per pool, only while the install
+// has more than one: "pool work · serving C · remote A · serial · 3 live
+// sessions · holding C (5h 96%, resets in 9m) · last B→C 09:12 (limit) (B
+// shared with personal)". The decision follows autoStatusLine's rule (a live
+// daemon's, and only while auto-switch is on).
+func poolStatusLines(st store.State, f status.File, rows []sessionRow, now time.Time) []string {
+	pools := poolStatuses(st, f, rows)
+	if pools == nil {
+		return nil
+	}
+	f.DaemonRunningAt(now)
+	running := f.Daemon != nil && f.Daemon.Running
+	lines := make([]string, 0, len(pools))
+	for _, p := range pools {
+		noun := "live sessions"
+		if p.LiveSessions == 1 {
+			noun = "live session"
+		}
+		parts := []string{"pool " + p.Name, "serving " + orNone(p.Serving), "remote " + orNone(p.Remote), p.Policy}
+		if p.Pin != "" {
+			parts = append(parts, "pin "+p.Pin)
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", p.LiveSessions, noun))
+		if st.AutoOn() {
+			if p.Decision != "" && running {
+				parts = append(parts, p.Decision)
+			}
+			if p.LastSwitch != nil {
+				parts = append(parts, lastSwitchText(*p.LastSwitch))
+			}
+		}
+		line := strings.Join(parts, " · ")
+		for _, a := range poolView(st, p.Name).Accounts {
+			if others := otherPools(accountPools(st, a), p.Name); len(others) > 0 {
+				line += fmt.Sprintf(" (%s shared with %s)", a.Name, strings.Join(others, ", "))
+			}
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// otherPools is pools without name.
+func otherPools(pools []string, name string) []string {
+	var out []string
+	for _, p := range pools {
+		if p != name {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // sessionRow is one live registry entry. An unidentified one (an old shim's)

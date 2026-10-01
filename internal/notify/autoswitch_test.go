@@ -68,19 +68,19 @@ func TestSwitchedRespectsNotifyOff(t *testing.T) {
 
 func TestNoCandidateOncePerEpisode(t *testing.T) {
 	ev, em, _, _ := newTestEvents()
-	ev.NoCandidate("A", false)
-	ev.NoCandidate("A", false)
+	ev.NoCandidate("", "", "A", false)
+	ev.NoCandidate("", "", "A", false)
 	want := [][2]string{{"chottag: no account to switch to", "A needs to switch, but no other account can serve now. Run: chottag status"}}
 	if got := em.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("notices = %q\nwant %q", got, want)
 	}
-	ev.CandidateOK()
-	ev.NoCandidate("A", false)
+	ev.CandidateOK("")
+	ev.NoCandidate("", "", "A", false)
 	if got := em.all(); len(got) != 2 {
 		t.Fatalf("notices = %q, want a second one after the episode ended", got)
 	}
 	ev.Switched(Switch{From: "A", To: "B", Trigger: "limit", Window: "5h"})
-	ev.NoCandidate("B", false)
+	ev.NoCandidate("", "", "B", false)
 	if got := em.all(); len(got) != 4 || got[3][0] != "chottag: no account to switch to" {
 		t.Fatalf("notices = %q; a switch ends the episode too", got)
 	}
@@ -91,12 +91,12 @@ func TestNoCandidateOncePerEpisode(t *testing.T) {
 // all-limited state, it posts then.
 func TestNoCandidateAddsNothingWhileAllLimited(t *testing.T) {
 	ev, em, _, _ := newTestEvents()
-	ev.NoCandidate("A", true)
-	ev.NoCandidate("A", true)
+	ev.NoCandidate("", "", "A", true)
+	ev.NoCandidate("", "", "A", true)
 	if got := em.all(); len(got) != 0 {
 		t.Fatalf("notices = %q, want none while every account is limited", got)
 	}
-	ev.NoCandidate("A", false)
+	ev.NoCandidate("", "", "A", false)
 	if got := em.all(); len(got) != 1 {
 		t.Fatalf("notices = %q, want one once not every account is limited", got)
 	}
@@ -109,4 +109,69 @@ func (s LimitState) withAll(reset time.Time) LimitState {
 		s.NextResetAccount = "B"
 	}
 	return s
+}
+
+// Each pool has its own no-candidate episode (M8): one pool's cannot silence
+// another's, a switch or CandidateOK ends only its own pool's, and the
+// notice names the pool.
+func TestNoCandidateEpisodesAreKeyedByPool(t *testing.T) {
+	ev, em, _, _ := newTestEvents()
+	ev.NoCandidate("work", "work", "A", false)
+	ev.NoCandidate("personal", "personal", "C", false)
+	ev.NoCandidate("work", "work", "A", false) // same episode
+	want := [][2]string{
+		{"chottag: work: no account to switch to", "A needs to switch, but no other account can serve now. Run: chottag status"},
+		{"chottag: personal: no account to switch to", "C needs to switch, but no other account can serve now. Run: chottag status"},
+	}
+	if got := em.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %q\nwant %q", got, want)
+	}
+	ev.CandidateOK("personal")
+	ev.NoCandidate("work", "work", "A", false)
+	if len(em.all()) != 2 {
+		t.Fatalf("personal's CandidateOK ended work's episode: %q", em.all())
+	}
+	ev.NoCandidate("personal", "personal", "C", false)
+	if len(em.all()) != 3 {
+		t.Fatalf("personal's episode did not restart: %q", em.all())
+	}
+	ev.Switched(Switch{From: "A", To: "B", Trigger: "limit", Window: "5h", Pool: "work", Episode: "work"})
+	ev.NoCandidate("work", "work", "B", false)
+	ev.NoCandidate("personal", "personal", "C", false)
+	got := em.all()
+	if len(got) != 5 || got[3][0] != "chottag: work: switched to B" || got[4][0] != "chottag: work: no account to switch to" {
+		t.Fatalf("notices = %q; a work switch ends work's episode only", got)
+	}
+}
+
+func TestPoolNamedSwitchAndMovedNotices(t *testing.T) {
+	ev, em, _, _ := newTestEvents()
+	ev.Switched(Switch{From: "A", To: "C", Trigger: "limit", Window: "5h", Pool: "work"})
+	ev.Moved(Moved{From: "B", To: []string{"C"}, Sessions: 2, Window: "5h", Pool: "work, personal"})
+	ev.Moved(Moved{From: "B", Sessions: 1, Window: "5h", Pool: "work, personal"})
+	got := em.all()
+	want := []string{
+		"chottag: work: switched to C",
+		"chottag: work, personal: moved 2 sessions from B to C",
+		"chottag: work, personal: 1 session on B have no account to move to",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("notices = %q", got)
+	}
+	for i := range want {
+		if got[i][0] != want[i] {
+			t.Errorf("title %d = %q, want %q", i, got[i][0], want[i])
+		}
+	}
+}
+
+// The episode is keyed by the pool, not by the title's tag: adding a pool
+// (the tag goes from "" to the name) does not start a second episode.
+func TestNoCandidateEpisodeSurvivesTheTagChanging(t *testing.T) {
+	ev, em, _, _ := newTestEvents()
+	ev.NoCandidate("default", "", "A", false)
+	ev.NoCandidate("default", "default", "A", false)
+	if got := em.all(); len(got) != 1 {
+		t.Fatalf("notices = %q, want one", got)
+	}
 }

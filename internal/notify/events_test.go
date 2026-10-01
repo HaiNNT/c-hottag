@@ -357,7 +357,7 @@ func TestEndAllLimitedEpisodeSuppressesTheNextAvailableNotice(t *testing.T) {
 	if got := em.all(); len(got) != 1 {
 		t.Fatalf("notices = %q, want the one all-limited notice", got)
 	}
-	ev.EndAllLimitedEpisode()
+	ev.EndAllLimitedEpisode("")
 	ev.Limits(LimitState{Available: "A"})
 	if got := em.all(); len(got) != 1 {
 		t.Fatalf("notices = %q, want no \"available again\": EndAllLimitedEpisode already closed the episode", got)
@@ -371,7 +371,7 @@ func TestEndAllLimitedEpisodeSuppressesTheNextAvailableNotice(t *testing.T) {
 func TestEndAllLimitedEpisodeLeavesAFreshEpisodeFireable(t *testing.T) {
 	ev, em, now, _ := newTestEvents()
 	ev.Limits(LimitState{AllLimited: true})
-	ev.EndAllLimitedEpisode()
+	ev.EndAllLimitedEpisode("")
 	ev.Limits(LimitState{Available: "A"}) // suppressed by the line above
 	*now = now.Add(time.Hour)             // well past DefaultFlapWindow
 	ev.Limits(LimitState{AllLimited: true})
@@ -392,13 +392,13 @@ func TestEndAllLimitedEpisodeLeavesAFreshEpisodeFireable(t *testing.T) {
 // CandidateOK in between.
 func TestEndAllLimitedEpisodeClearsANoCandidateEpisodeToo(t *testing.T) {
 	ev, em, _, _ := newTestEvents()
-	ev.NoCandidate("A", false)
-	ev.NoCandidate("A", false) // already suppressed: one episode
+	ev.NoCandidate("", "", "A", false)
+	ev.NoCandidate("", "", "A", false) // already suppressed: one episode
 	if got := em.all(); len(got) != 1 {
 		t.Fatalf("notices = %q, want one no-candidate notice", got)
 	}
-	ev.EndAllLimitedEpisode()
-	ev.NoCandidate("A", false)
+	ev.EndAllLimitedEpisode("")
+	ev.NoCandidate("", "", "A", false)
 	if got := em.all(); len(got) != 2 {
 		t.Fatalf("notices = %q, want a second no-candidate notice: EndAllLimitedEpisode also cleared noCandSent", got)
 	}
@@ -409,7 +409,7 @@ func TestEndAllLimitedEpisodeClearsANoCandidateEpisodeToo(t *testing.T) {
 // episode's own notice.
 func TestEndAllLimitedEpisodeIsANoOpOutsideAnAllLimitedEpisode(t *testing.T) {
 	ev, em, _, _ := newTestEvents()
-	ev.EndAllLimitedEpisode()
+	ev.EndAllLimitedEpisode("")
 	ev.Limits(LimitState{AllLimited: true})
 	if got := em.all(); len(got) != 1 {
 		t.Fatalf("notices = %q, want the all-limited notice to still fire normally", got)

@@ -47,10 +47,13 @@ var spreadWrite = fsutil.WriteFileAtomic
 // so a test can prove serial never reaches it.
 type spreadPlacer interface {
 	// accountFor is the account sid's request goes out as, native being the
-	// request's own session id header ("" if absent).
-	accountFor(sid, native string, now time.Time) (string, bool)
-	// fallback is the account for a session accountFor had none for (R90).
-	fallback(now time.Time) (string, bool)
+	// request's own session id header ("" if absent). pool is the session's
+	// pool: the account is always one of its members.
+	accountFor(sid, native, pool string, now time.Time) (string, bool)
+	// fallback is the account for a session of pool accountFor had none for
+	// (R90).
+	// fallbackExcluding is fallback when exclude was tried and cannot serve.
+	fallbackExcluding(pool string, exclude map[string]bool, now time.Time) (string, bool)
 }
 
 // placement is one session's place, as placements.json stores it.
@@ -150,6 +153,54 @@ func (e *spreadEngine) view(now time.Time) (spreadView, bool) {
 	return spreadView{st: st, accts: planAccounts(&st, &f, now), params: autoParams(st)}, true
 }
 
+// in is the view's accounts that are members of pool, in registration order,
+// and the pool's pin. A pool that is not in state.json is default.
+func (v spreadView) in(pool string) ([]autoswitch.Account, string) {
+	if !v.st.HasPool(pool) {
+		pool = store.DefaultPool
+	}
+	var out []autoswitch.Account
+	for _, a := range v.accts {
+		if m, ok := findExact(&v.st, a.Name); ok && m.InPool(pool) {
+			out = append(out, a)
+		}
+	}
+	return out, v.st.PoolOf(pool).Pin
+}
+
+// sharing is the view's accounts that are in at least one pool account is in.
+func (v spreadView) sharing(account string) []autoswitch.Account {
+	a, ok := findExact(&v.st, account)
+	if !ok {
+		return v.accts
+	}
+	var out []autoswitch.Account
+	for _, pa := range v.accts {
+		if m, ok := findExact(&v.st, pa.Name); ok && shareAPool(*a, *m) {
+			out = append(out, pa)
+		}
+	}
+	return out
+}
+
+func shareAPool(a, b store.Account) bool {
+	for _, p := range a.InPools() {
+		if b.InPool(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isMember reports whether name is a member of pool.
+func (v spreadView) isMember(pool, name string) bool {
+	if !v.st.HasPool(pool) {
+		pool = store.DefaultPool
+	}
+	m, ok := findExact(&v.st, name)
+	return ok && m.InPool(pool)
+}
+
 func (v spreadView) find(name string) (autoswitch.Account, bool) {
 	for _, a := range v.accts {
 		if strings.EqualFold(a.Name, name) {
@@ -212,7 +263,9 @@ func (e *spreadEngine) counts(sid string, now time.Time) bool {
 }
 
 // load is the number of live placements per account, keyed by the account's
-// registered name (spec §3: live identified sessions). A placement on an
+// registered name (spec §3: live identified sessions), whatever pool the
+// session is in: an account's capacity is shared by every pool it is in. A
+// placement on an
 // account that is not registered counts nowhere, nor does one whose session
 // has not been seen since a restart and is not in the registry.
 func (e *spreadEngine) load(v spreadView, now time.Time) map[string]int {
@@ -228,7 +281,7 @@ func (e *spreadEngine) load(v spreadView, now time.Time) map[string]int {
 	return out
 }
 
-func (e *spreadEngine) accountFor(sid, native string, now time.Time) (string, bool) {
+func (e *spreadEngine) accountFor(sid, native, pool string, now time.Time) (string, bool) {
 	if sid == "" {
 		return "", false
 	}
@@ -240,6 +293,7 @@ func (e *spreadEngine) accountFor(sid, native string, now time.Time) (string, bo
 	}
 	e.seen[sid] = now
 	conv := e.conv(sid, native)
+	cands, pin := v.in(pool)
 	p := e.placements[sid]
 	if p == nil {
 		// A running session whose account is a candidate stays on it: turning
@@ -247,32 +301,39 @@ func (e *spreadEngine) accountFor(sid, native string, now time.Time) (string, bo
 		// new sessions, does not move one.) Later rebalancing is the
 		// cold-move rule's.
 		if e.lastAccount != nil {
-			if cur, ok := v.find(e.lastAccount(sid)); ok && autoswitch.Candidate(cur, v.params, now) {
+			if cur, ok := v.find(e.lastAccount(sid)); ok && v.isMember(pool, cur.Name) && autoswitch.Candidate(cur, v.params, now) {
 				e.placements[sid] = &placement{Account: cur.Name, Dir: dirOf(v, cur.Name), At: now, Conversations: conv}
 				e.dirty = true
 				return cur.Name, true
 			}
 		}
-		name, ok := autoswitch.Place(v.accts, e.load(v, now), v.st.Pin, nil, v.params, now)
+		name, ok := autoswitch.Place(cands, e.load(v, now), pin, nil, v.params, now)
 		if !ok {
-			return "", false // the caller serves the serving account; the next request tries again
+			return "", false // the caller serves the pool's fallback; the next request tries again
 		}
 		e.placements[sid] = &placement{Account: name, Dir: dirOf(v, name), At: now, Conversations: conv}
 		e.dirty = true
 		return name, true
 	}
-	return e.keepOrMove(sid, p, conv, v, now)
+	return e.keepOrMove(sid, p, conv, v, pool, now)
 }
 
-// account is accountFor for a request without a native session id.
+// account is accountFor for a default-pool request without a native session
+// id.
 func (e *spreadEngine) account(sid string, now time.Time) (string, bool) {
-	return e.accountFor(sid, "", now)
+	return e.accountFor(sid, "", store.DefaultPool, now)
 }
 
 // keepOrMove is accountFor for a session that already has a placement.
 // Caller holds e.mu.
-func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadView, now time.Time) (string, bool) {
+func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadView, pool string, now time.Time) (string, bool) {
 	cur, found := e.resolve(v, p)
+	// An account that is no longer in the session's pool (a `pool leave`)
+	// is gone for this session: it re-places within the pool at once.
+	if found && !v.isMember(pool, cur.Name) {
+		found = false
+	}
+	cands, _ := v.in(pool)
 	// hard: the account can no longer serve anyone (rotation off, needs a
 	// login, limited, or gone). Such a session leaves at once, whatever
 	// the move window says.
@@ -295,7 +356,7 @@ func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadVi
 		if from, ok := v.find(p.From); ok && recent && !allowBack {
 			exclude[from.Name] = true
 		}
-		return autoswitch.Place(v.accts, e.load(v, now), "", exclude, v.params, now)
+		return autoswitch.Place(cands, e.load(v, now), "", exclude, v.params, now)
 	}
 	switch {
 	case hard:
@@ -352,10 +413,15 @@ func (e *spreadEngine) move(v spreadView, p *placement, name string, conv int, n
 	e.dirty = true
 }
 
-// replace is the wall retry: sid's account hit a limit, so re-place it now,
-// excluding its current account. It ignores the move window and the
-// no-move-back rule.
+// replace is replaceIn for the default pool.
 func (e *spreadEngine) replace(sid string, now time.Time) (string, bool) {
+	return e.replaceIn(sid, store.DefaultPool, now)
+}
+
+// replaceIn is the wall retry: sid's account hit a limit, so re-place it now
+// within pool, excluding its current account. It ignores the move window and
+// the no-move-back rule.
+func (e *spreadEngine) replaceIn(sid, pool string, now time.Time) (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	v, ok := e.view(now)
@@ -369,7 +435,8 @@ func (e *spreadEngine) replace(sid string, now time.Time) (string, bool) {
 			exclude[a.Name] = true
 		}
 	}
-	name, ok := autoswitch.Place(v.accts, e.load(v, now), "", exclude, v.params, now)
+	cands, _ := v.in(pool)
+	name, ok := autoswitch.Place(cands, e.load(v, now), "", exclude, v.params, now)
 	if !ok {
 		return "", false
 	}
@@ -398,7 +465,8 @@ func (e *spreadEngine) placed(sid string) (string, bool) {
 // first mark of an episode is Newly.
 //
 // To is an approximation of where the sessions will go: the accounts Place
-// would pick one after another with today's loads. Each session really
+// would pick one after another with today's loads, among the members of the
+// pools account is in (a session never leaves its pool). Each session really
 // decides at its own next request, with the loads of that moment.
 func (e *spreadEngine) mark(account, why string, now time.Time) markOutcome {
 	e.mu.Lock()
@@ -417,8 +485,9 @@ func (e *spreadEngine) mark(account, why string, now time.Time) markOutcome {
 		res.Sessions = e.load(v, now)[a.Name]
 	}
 	load := e.load(v, now)
+	cands := v.sharing(account)
 	for len(res.To) < spreadNoticeTargets {
-		name, ok := autoswitch.Place(v.accts, load, "", exclude, v.params, now)
+		name, ok := autoswitch.Place(cands, load, "", exclude, v.params, now)
 		if !ok {
 			break
 		}
@@ -440,7 +509,7 @@ func (e *spreadEngine) unmark(account string) {
 // except that the current serving account is kept while it is still a
 // candidate and scores within spreadColdMargin of the best, so a small usage
 // change never rewrites state.json.
-func (e *spreadEngine) servingFor(current string, now time.Time) (string, bool) {
+func (e *spreadEngine) servingFor(pool, current string, now time.Time) (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	v, ok := e.view(now)
@@ -448,14 +517,16 @@ func (e *spreadEngine) servingFor(current string, now time.Time) (string, bool) 
 		return "", false
 	}
 	load := e.load(v, now)
-	best, ok := autoswitch.Place(v.accts, load, v.st.Pin, nil, v.params, now)
+	cands, pin := v.in(pool)
+	best, ok := autoswitch.Place(cands, load, pin, nil, v.params, now)
 	if !ok {
 		return "", false
 	}
-	if strings.EqualFold(best, current) || (v.st.Pin != "" && strings.EqualFold(best, v.st.Pin)) {
+	if strings.EqualFold(best, current) || (pin != "" && strings.EqualFold(best, pin)) {
 		return best, true
 	}
 	cur, curOK := v.find(current)
+	curOK = curOK && v.isMember(pool, cur.Name)
 	bestAcct, _ := v.find(best)
 	if curOK && autoswitch.Candidate(cur, v.params, now) {
 		score := func(a autoswitch.Account) float64 {
@@ -561,36 +632,33 @@ func (e *spreadEngine) writeFile(seq uint64, data []byte) bool {
 	return true
 }
 
-// evaluateSpread is evaluate's decision under the spread policy (M7 spec
-// §4 and §5): it never switches serving for a switch point. It marks every
-// account at a switch point or limited (a notice per account that just
-// crossed, naming where its sessions will go), clears the marks of
-// accounts that are candidates again, and keeps serving at what a new
-// session would get. The first evaluation after a start only seeds the
+// evaluateSpread is a spread pool's decision (M7 spec §4 and §5; M8: one per
+// pool): it never switches serving for a switch point. The marks (every
+// account at a switch point or limited, a notice per account that just
+// crossed, naming where its sessions will go, the marks of accounts that are
+// candidates again cleared) are made once for all pools by spreadMarks, which
+// passes limited here; this keeps the pool's serving at what a new session of
+// the pool would get. The first evaluation after a start only seeds the
 // marks, silently: a crossing that predates the daemon is not a new event.
 //
 // With deferNotice (a wall retry) it returns the serving move off a limited
 // account as an AutoSwitch for the caller to announce once the resend's
-// outcome is known, as serial does. Caller holds a.mu.
-func (a *autoSwitcher) evaluateSpread(now time.Time, deferNotice bool, st store.State, accts []autoswitch.Account, params autoswitch.Params) *status.AutoSwitch {
-	limited := a.spreadMarks(now, accts, params)
+// outcome is known, as serial does. v is the pool's view (poolView); tag is
+// the pool name for notices. Caller holds a.mu.
+func (a *autoSwitcher) evaluateSpread(now time.Time, deferNotice bool, pool string, v store.State, limited map[string]autoswitch.Account, params autoswitch.Params, tag string) (*status.AutoSwitch, status.Auto) {
 	var sw *status.AutoSwitch
 	decision := "spread: no account can take a new session"
-	if target, ok := a.spread.servingFor(st.Serving, now); ok {
+	if target, ok := a.spread.servingFor(pool, v.Serving, now); ok {
 		decision = "spread: new sessions go to " + target
-		if !strings.EqualFold(target, st.Serving) {
-			if a.spreadServe(now, st.Serving, target) && deferNotice {
-				if from, ok := limited[strings.ToLower(st.Serving)]; ok {
-					sw = &status.AutoSwitch{From: st.Serving, To: target, Trigger: autoswitch.TriggerLimit, Window: string(from.LimitWindow), At: now}
+		if !strings.EqualFold(target, v.Serving) {
+			if a.spreadServe(now, pool, v.Serving, target) && deferNotice {
+				if from, ok := limited[strings.ToLower(v.Serving)]; ok {
+					sw = &status.AutoSwitch{From: v.Serving, To: target, Trigger: autoswitch.TriggerLimit, Window: string(from.LimitWindow), At: now}
 				}
 			}
 		}
 	}
-	a.published = status.Auto{
-		Mode: string(params.Mode), Decision: decision, LastSwitch: a.lastSwitch, BurnRate: a.burn.Rate(),
-	}
-	a.sink.setAuto(a.published, false)
-	return sw
+	return sw, status.Auto{Decision: decision}
 }
 
 // spreadOnUsage is onUsage under spread: it only refreshes the marks (and
@@ -601,20 +669,23 @@ func (a *autoSwitcher) spreadOnUsage(now time.Time) {
 	defer a.mu.Unlock()
 	a.fake(now)
 	st, err := a.state()
-	if err != nil || !st.PolicySpread() {
+	if err != nil || !anySpread(st) {
 		return
 	}
 	f := a.sink.fileCopy()
 	params := autoParams(st)
-	a.spreadMarks(now, planAccounts(&st, &f, now), params)
+	a.spreadMarks(now, st, planAccounts(&st, &f, now), params)
 }
 
 // spreadMarks marks every account at a switch point or limited, clears the
 // marks of candidates, and posts one notice per account that just crossed. It
-// returns the limited accounts, keyed by lowercased name. Caller holds a.mu.
-func (a *autoSwitcher) spreadMarks(now time.Time, accts []autoswitch.Account, params autoswitch.Params) map[string]autoswitch.Account {
+// returns the limited accounts, keyed by lowercased name. An account's mark
+// is shared by every pool it is in: its limit is the same wherever it is seen
+// from. Caller holds a.mu.
+func (a *autoSwitcher) spreadMarks(now time.Time, st store.State, accts []autoswitch.Account, params autoswitch.Params) map[string]autoswitch.Account {
 	quiet := !a.spreadSeeded
 	a.spreadSeeded = true
+	multi := len(st.PoolNames()) > 1
 	var limited map[string]autoswitch.Account
 	for _, pa := range accts {
 		if autoswitch.Eligible(pa, params, now) == "" {
@@ -633,54 +704,67 @@ func (a *autoSwitcher) spreadMarks(now time.Time, accts []autoswitch.Account, pa
 		}
 		window, isLimit := spreadWhy(pa, params, now)
 		if res := a.spread.mark(pa.Name, window, now); res.Newly && res.Sessions > 0 && !quiet {
-			a.notify.moved(notify.Moved{From: pa.Name, To: res.To, Sessions: res.Sessions, Window: window, Limited: isLimit})
+			tag := ""
+			if m, ok := findExact(&st, pa.Name); ok && multi {
+				// Only the pools that spread move sessions off the account.
+				var spreading []string
+				for _, p := range accountPools(st, *m) {
+					if poolSpread(st, p) {
+						spreading = append(spreading, p)
+					}
+				}
+				tag = strings.Join(spreading, ", ")
+			}
+			a.notify.moved(notify.Moved{From: pa.Name, To: res.To, Sessions: res.Sessions, Window: window, Limited: isLimit, Pool: tag})
 		}
 	}
 	return limited
 }
 
-// spreadServe keeps state.json's serving at target, the account a new
-// session would get, through the same compare-and-swap auto-switch uses. A
-// lost swap (a concurrent `chottag tag`) is left for the next evaluation;
-// any other failure backs off as trySwitch does. Caller holds a.mu.
-func (a *autoSwitcher) spreadServe(now time.Time, from, target string) bool {
+// spreadServe keeps pool's serving at target, the account a new session of
+// the pool would get, through the same compare-and-swap auto-switch uses. A
+// lost swap (a concurrent `chottag tag`, a `pool leave`) is left for the next
+// evaluation; any other failure backs off as trySwitch does. Caller holds
+// a.mu.
+func (a *autoSwitcher) spreadServe(now time.Time, pool, from, target string) bool {
+	p := a.poolState(pool)
 	key := from + "->" + target
-	if key == a.swapBackoffKey && now.Before(a.swapBackoffUntil) {
+	if key == p.swapBackoffKey && now.Before(p.swapBackoffUntil) {
 		return false
 	}
-	swapped, err := a.store.SwapServing(from, target)
+	swapped, err := a.store.SwapPoolServing(pool, from, target)
 	if err != nil {
 		a.invalidate()
-		if errors.Is(err, store.ErrServingChanged) {
-			a.swapBackoffKey, a.swapBackoffUntil, a.swapLastErr = "", time.Time{}, ""
+		if swapFailedHarmlessly(err) {
+			p.swapBackoffKey, p.swapBackoffUntil, p.swapLastErr = "", time.Time{}, ""
 			return false
 		}
-		a.swapBackoffKey, a.swapBackoffUntil = key, now.Add(swapBackoff)
-		if msg := err.Error(); msg != a.swapLastErr {
+		p.swapBackoffKey, p.swapBackoffUntil = key, now.Add(swapBackoff)
+		if msg := err.Error(); msg != p.swapLastErr {
 			fmt.Fprintf(a.log, "chottag: spread: serving %s -> %s failed: %v\n", from, target, err)
-			a.swapLastErr = msg
+			p.swapLastErr = msg
 		}
 		return false
 	}
 	a.invalidate()
-	a.swapBackoffKey, a.swapLastErr = "", ""
-	a.known, a.userChosen, a.fallbackTarget, a.knownDir = target, false, false, ""
+	p.swapBackoffKey, p.swapLastErr = "", ""
+	p.known, p.userChosen, p.fallbackTarget, p.knownDir = target, false, false, ""
 	if t, ok := findExact(&swapped, target); ok {
-		a.knownDir = t.Dir
+		p.knownDir = t.Dir
 	}
 	return true
 }
 
 // spreadWallRetry is wallRetry for an identified session under spread: the
-// limit hit moves only this session, to another account, and the proxy
-// resends on it. The limited account is marked by the evaluation, so its
-// other sessions follow at their next request. The retry is reported as
+// limit hit moves only this session, to another member of its pool, and the
+// proxy resends on it. The limited account is marked by the evaluation, so
+// its other sessions follow at their next request. The retry is reported as
 // serial reports one: a "switched" notice once the resend's outcome is known,
 // once per limited account until it is a candidate again.
-func (a *autoSwitcher) spreadWallRetry(sid, account string, now time.Time, window string) (bool, func(string, int)) {
+func (a *autoSwitcher) spreadWallRetry(pool, tag, sid, account string, now time.Time, window string) (bool, func(string, int)) {
 	chosen, moved := "", true
 	if cur, ok := a.spread.placed(sid); !ok || strings.EqualFold(cur, account) {
-		chosen, moved = a.spread.replace(sid, now)
+		chosen, moved = a.spread.replaceIn(sid, pool, now)
 	} else {
 		chosen = cur // a concurrent request already moved it: resend on its new account
 	}
@@ -708,7 +792,7 @@ func (a *autoSwitcher) spreadWallRetry(sid, account string, now time.Time, windo
 		}
 		a.mu.Unlock()
 		if first {
-			a.notify.switched(notify.Switch{From: account, To: dest, Trigger: autoswitch.TriggerLimit, Window: window, Retried: retried})
+			a.notify.switched(notify.Switch{From: account, To: dest, Trigger: autoswitch.TriggerLimit, Window: window, Retried: retried, Pool: tag, Episode: pool})
 		}
 	}
 }
@@ -734,25 +818,38 @@ func spreadWhy(pa autoswitch.Account, p autoswitch.Params, now time.Time) (windo
 	return "", false
 }
 
-// fallback is the account to send a request as when no candidate can take
-// the session (R90): state.json's serving account when it rotates (ok is
+// fallback is the account to send a request of pool as when no candidate can
+// take the session (R90): the pool's serving account when it rotates (ok is
 // false, the caller uses serving as before); otherwise the least-bad
-// rotating account, preferring one that is neither limited nor needing a
+// rotating member of the pool, preferring one that is neither limited nor needing a
 // login, then a limited one over one needing a login, then the lowest usage. ok is also false when no account rotates at
 // all, where serving is all there is.
-func (e *spreadEngine) fallback(now time.Time) (string, bool) {
+func (e *spreadEngine) fallback(pool string, now time.Time) (string, bool) {
+	return e.fallbackExcluding(pool, nil, now)
+}
+
+// fallbackExcluding is fallback for an account that was tried and cannot
+// serve (rotation off, no usable login) though it may rotate: with exclude
+// set, the serving-rotates shortcut is skipped and no account in it (keyed by
+// lowercased name) is a choice.
+func (e *spreadEngine) fallbackExcluding(pool string, exclude map[string]bool, now time.Time) (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	v, ok := e.view(now)
 	if !ok {
 		return "", false
 	}
-	if sv, ok := v.find(v.st.Serving); ok && sv.Rotates {
+	cands, _ := v.in(pool)
+	serving := v.st.PoolOf(pool).Serving
+	if !v.st.HasPool(pool) {
+		serving = v.st.Serving
+	}
+	if sv, ok := v.find(serving); ok && sv.Rotates && len(exclude) == 0 {
 		return "", false
 	}
 	best, bestKey, found := "", [2]float64{}, false
-	for _, a := range v.accts {
-		if !a.Rotates {
+	for _, a := range cands {
+		if !a.Rotates || exclude[strings.ToLower(a.Name)] {
 			continue
 		}
 		// A needs-login account has no token: the request would go out on

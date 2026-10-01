@@ -33,8 +33,9 @@ the shim:
 2. checks the daemon proves it holds this install's own secret (a fresh
    health challenge, not just "something answered on the port");
 3. runs the real `claude` binary with
-   `HTTPS_PROXY=http://chottag.default.<sid>:<password>@127.0.0.1:47821`, a
-   credential made for this session alone (`<sid>` is a new random id; the
+   `HTTPS_PROXY=http://chottag.<pool>.<sid>:<password>@127.0.0.1:47821`, a
+   credential made for this session alone (`<pool>` is `default`, or the
+   pool `CHOTTAG_POOL` names; `<sid>` is a new random id; the
    password is derived from the install's secret and that user, so the
    secret itself is not handed out; the older `chottag:<secret>` form still
    works, as an unidentified caller),
@@ -177,3 +178,73 @@ flowchart LR
   slots["slots: ~/.chottag/accounts/NAME"] -.->|"tokens, read in memory"| daemon
   owners["owners.json"] -.-> daemon
 ```
+
+## Pools
+
+A **pool** is a named set of accounts with its own serving account, remote
+account, policy (`serial` or `spread`) and pin. Everything above (serving,
+remote, the owner map, spread) is the `default` pool's, which always exists;
+you add more when you want to keep accounts apart, such as work and personal:
+
+```sh
+chottag pool add work
+chottag login C --pool work      # a new account, in work only
+chottag pool join B work         # an existing account, now also in work
+CHOTTAG_POOL=work claude         # a session in the work pool
+```
+
+- **A session picks its pool at launch** with `CHOTTAG_POOL=NAME claude`;
+  unset means `default`. The choice is part of the session's proxy
+  credential, so it cannot be changed from inside. A name that is not a pool
+  stops the launch (`chottag: no pool named "x" (chottag pool lists them)`,
+  exit 2): it never falls back to `default`.
+- **Aliases keep the choice.** Add them to your shell's rc file yourself,
+  for example `alias cwork='CHOTTAG_POOL=work claude'` and
+  `alias cpersonal='CHOTTAG_POOL=personal claude'`; chottag never edits your rc file
+  for this. Pick names that are not existing commands (an alias called `cp`
+  would shadow the copy command).
+- **A session is only ever served by accounts in its pool.** Inference goes to
+  the pool's serving account, or, under `spread`, is placed among the pool's
+  members; a new claude.ai object is created as the pool's remote account.
+  Auto-switch runs for each `serial` pool on its own and stays within the pool.
+  The one request that crosses a pool is a lookup of an object that already
+  exists: it goes out as its owner, whatever the session's pool.
+- **An account can be in several pools** (`chottag pool join ACCOUNT POOL`):
+  the same login serves both, with one usage record. Rotation off applies in
+  every pool (in `default`, an explicit `chottag tag` still overrides it, as before).
+- **Sharing an account has a down-side, because its usage limit is one.**
+  Under `spread`, the sessions of both pools compete for it, so heavy use in
+  one pool moves the other's sessions off it, and their prompt caches go cold.
+  Under `serial`, if the account serves both pools they use up its 5-hour
+  window together and switch away from it at the same time. `pool join`
+  warns (`shared_account`) when it shares an account, and `policy spread`
+  warns again for a pool that has one. Keep the pools' accounts apart when
+  you need them to be independent.
+- **Status shows it.** `chottag status` adds a `POOLS` column and a line per
+  pool once there is more than one; the status line shows `[work]` after the
+  account for a session outside `default`; notices name the pool.
+- **Older daemons.** A daemon from before 0.8.0 cannot read what pools write
+  to `state.json`, and cannot restart itself onto 0.8.0 once pools exist.
+  `chottag pool add` refuses and `pool join` warns (`daemon_predates_pools`):
+  run `chottag daemon restart` first. Once a pool exists, the shim also
+  refuses every session against such a daemon. See
+  [Updating](updating.md) for rolling back.
+
+## If a pool can't serve a request
+
+Once you have more than one pool, a session only ever uses accounts from
+its own pool. If none of them can serve a request (the pool has no serving
+account, every member is out of rotation, or the serving account needs a
+login), chottag does not fall back to the login Claude Code started with: that
+account could belong to another pool, and sending a work prompt on it would
+cross the line you drew. Instead chottag answers the request itself with a 503
+error that names the pool, and Claude Code retries it with a delay, so a
+change you make in the meantime takes effect on its own. The same holds for
+the safety net: with more than one pool, a refused request is not resent on
+Claude Code's own login. An existing object whose owner cannot serve (it needs a
+login) gets the 503 too, rather than going out on Home's login.
+
+Run `chottag pool` to see each pool's members, then log in again
+(`chottag login`), put an account back in rotation (`chottag rotate`), or add
+a member (`chottag pool join`). With only the `default` pool nothing changes:
+an unservable request still goes out on Claude Code's own login, as before.

@@ -22,7 +22,7 @@ func TestUpdateKeepsUnknownKeys(t *testing.T) {
   "serving": "B",
   "port": 47821,
   "futureThing": {"a": 1, "b": ["x"]},
-  "pools": null
+  "quotas": null
 }
 `
 	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(in), 0o600); err != nil {
@@ -38,7 +38,7 @@ func TestUpdateKeepsUnknownKeys(t *testing.T) {
 	}
 	var got, want struct {
 		FutureThing json.RawMessage   `json:"futureThing"`
-		Pools       json.RawMessage   `json:"pools"`
+		Quotas      json.RawMessage   `json:"quotas"`
 		Policy      string            `json:"policy"`
 		Serving     string            `json:"serving"`
 		Accounts    []json.RawMessage `json:"accounts"`
@@ -53,7 +53,7 @@ func TestUpdateKeepsUnknownKeys(t *testing.T) {
 		var x, y any
 		return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && reflect.DeepEqual(x, y)
 	}
-	if !same(got.FutureThing, want.FutureThing) || !same(got.Pools, want.Pools) {
+	if !same(got.FutureThing, want.FutureThing) || !same(got.Quotas, want.Quotas) {
 		t.Fatalf("a top-level unknown key was lost or changed:\n%s", raw)
 	}
 	var acct map[string]json.RawMessage

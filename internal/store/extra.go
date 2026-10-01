@@ -131,6 +131,7 @@ func (a *Account) UnmarshalJSON(b []byte) error {
 }
 
 func (a Account) MarshalJSON() ([]byte, error) {
+	a.PoolList = normalizePools(a.PoolList)
 	b, err := json.Marshal(accountFields(a))
 	if err != nil {
 		return nil, err

@@ -65,6 +65,15 @@ type Choice struct {
 	Account string
 	Token   string
 	Role    string // RoleServing | RoleRemote | RoleOwner
+	// Refused, when not "", says why no account of the session's pool can
+	// serve it, with more than one pool in state.json (M8): the request must
+	// not go out on the client's own login, whose account may be in another
+	// pool or none. Account is "" then. With a single pool a request that
+	// cannot be served is the plain zero Choice, as before.
+	Refused string
+	// StateErr reports that state.json could not be read: the caller, which
+	// may know that several pools exist, decides whether to refuse.
+	StateErr bool
 }
 
 // Role values for Choice.Role. RoleOwner is exported so a caller outside
@@ -88,7 +97,7 @@ const (
 // request has no such cost, and waiting on it is exactly what F37 removed;
 // only remote/owner requests wait here.
 func (s *Selector) Choose(ctx context.Context, d router.Decision, bodyID string) Choice {
-	return s.choose(ctx, d, bodyID, nil)
+	return s.choose(ctx, d, bodyID, store.DefaultPool, nil)
 }
 
 // ChooseAs is Choose with serving standing in for state.json's serving
@@ -96,21 +105,42 @@ func (s *Selector) Choose(ctx context.Context, d router.Decision, bodyID string)
 // is unchanged and still comes first. The daemon's spread policy uses it to
 // send a placed session as the account it was placed on.
 func (s *Selector) ChooseAs(ctx context.Context, d router.Decision, bodyID, serving string) Choice {
-	return s.choose(ctx, d, bodyID, &serving)
+	return s.choose(ctx, d, bodyID, store.DefaultPool, &serving)
 }
 
-// choose is Choose and ChooseAs: serving, when non-nil, replaces
-// st.Serving for the serving class.
-func (s *Selector) choose(ctx context.Context, d router.Decision, bodyID string, serving *string) Choice {
+// ChooseIn is Choose for a session of pool: the serving class uses the
+// pool's serving account, or serving when it is not "" (the spread policy's
+// placement), and the remote class, creates included, uses the pool's remote
+// account. A pool that is not in state.json is default. Owner routing is
+// unchanged and still comes first: an existing object goes out as its
+// creator whatever the pool. Apart from that, an account outside the pool
+// never serves: one that is not a member (a concurrent `pool leave`, a stale
+// placement) sends the request unchanged.
+func (s *Selector) ChooseIn(ctx context.Context, d router.Decision, bodyID, pool, serving string) Choice {
+	if serving == "" {
+		return s.choose(ctx, d, bodyID, pool, nil)
+	}
+	return s.choose(ctx, d, bodyID, pool, &serving)
+}
+
+// choose is Choose, ChooseAs and ChooseIn: serving, when non-nil, replaces
+// the pool's serving account for the serving class.
+func (s *Selector) choose(ctx context.Context, d router.Decision, bodyID, pool string, serving *string) Choice {
 	if d.Class == router.Untouched || d.Class == "" {
 		return Choice{}
 	}
 	st, err := s.cfg.State()
 	if err != nil {
 		s.emit(Event{Kind: "passthrough", Detail: "state: " + err.Error()})
-		return Choice{}
+		return Choice{StateErr: true}
 	}
+	guarded := len(st.PoolNames()) > 1
 
+	if !st.HasPool(pool) {
+		pool = store.DefaultPool
+	}
+	p := st.PoolOf(pool)
+	st.Serving, st.Remote = p.Serving, p.Remote
 	if serving != nil {
 		st.Serving = *serving
 	}
@@ -124,19 +154,38 @@ func (s *Selector) choose(ctx context.Context, d router.Decision, bodyID string,
 			s.emit(Event{Kind: "owner-unregistered", Account: owner, Detail: string(d.Object)})
 		}
 	}
+	// deny is a request nothing can serve: unchanged, or, with several pools,
+	// refused (see Choice.Refused), an owner lookup included: Home's login may
+	// belong to another pool.
+	deny := func(why string) Choice {
+		if guarded {
+			return Choice{Refused: why}
+		}
+		return Choice{}
+	}
 	if name == "" {
 		s.emit(Event{Kind: "passthrough", Detail: "no " + role + " account set"})
-		return Choice{}
+		return deny("no " + role + " account set")
 	}
 	acct, ok := findExact(&st, name)
 	if !ok {
 		s.emit(Event{Kind: "passthrough", Account: name, Detail: "no such account"})
-		return Choice{}
+		return deny("no such account")
+	}
+	if role != RoleOwner && !acct.InPool(pool) {
+		s.emit(Event{Kind: "passthrough", Account: name, Detail: "not in pool " + pool})
+		return deny("not in pool")
+	}
+	if role == RoleServing && pool != store.DefaultPool && !acct.Rotates() {
+		// R90 in a pool other than default: a rotation-off account never
+		// serves a session (default keeps `tag`'s explicit override).
+		s.emit(Event{Kind: "passthrough", Account: name, Detail: "rotation off"})
+		return deny("rotation off")
 	}
 	tok, status, ok := s.token(ctx, acct.Dir, role)
 	if !ok {
 		s.emit(Event{Kind: "passthrough", Account: acct.Name, Status: status})
-		return Choice{}
+		return deny("no usable token")
 	}
 	return Choice{Account: acct.Name, Token: tok, Role: role}
 }

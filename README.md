@@ -27,10 +27,8 @@ serving: B
 - **Switching never breaks Remote Control, connectors or artifacts.** Most switchers swap your
   whole login, so those claude.ai features break or vanish after a switch. chottag pins them to
   one account (`chottag remote <name>`) and switches only the account that pays for your prompts.
-- **Several logins side by side.** Each account has its own Claude Code
-  config dir (a *slot*). Your own `~/.claude` login is never changed.
-- **Switch mid-session.** `chottag tag B` moves every chottag session to B
-  from its next request: no logout, no restart.
+- **Several logins side by side.** Each account has its own Claude Code config dir (a *slot*). Your own `~/.claude` login is never changed.
+- **Switch mid-session.** `chottag tag B` moves every chottag session to B from its next request: no logout, no restart.
 - **Auto-switch near a limit**, on by default, holding a warm prompt cache
   when a reset is close, and resending a request that hit a limit.
 - **Usage at a glance, and stays current.** `chottag status` shows each account's 5-hour and 7-day usage and limits, and a daily update check (shown in `status` and `statusline`, one notice per version), opt-in auto-install, and a daemon that restarts itself onto an installed update when idle ([Updating](docs/updating.md)).
@@ -41,7 +39,9 @@ serving: B
 
 ## Install
 
-A Claude Code session: use [For Claude Code](#for-claude-code) instead, which also installs the plugin. You need macOS or Linux on amd64 or arm64, and either `gh` logged in or a clone and Go.
+**Recommended: let Claude Code do it.** In any Claude Code session, ask: *"Install and set up chottag for me: https://github.com/HaiNNT/c-hottag"*. It follows [For Claude Code](#for-claude-code): installs the binary and the plugin, asks you which accounts, plans and options you want, logs each account in with you, and checks the result.
+
+By hand: you need macOS or Linux on amd64 or arm64, and either `gh` logged in or a clone and Go.
 
 ```sh
 gh repo clone HaiNNT/c-hottag && cd c-hottag && ./install.sh
@@ -63,11 +63,11 @@ claude                 # Claude Code, through chottag (the daemon starts by itse
 chottag status         # usage and limits per account; `chottag statusline` for a status line
 chottag next           # serving -> the next account that is not limited
 chottag policy spread  # or: spread new sessions over accounts (`chottag tag NAME` pins)
+chottag pool add work  # a separate pool of accounts: `chottag login C --pool work`, `CHOTTAG_POOL=work claude`
 chottag doctor         # check the install; --fix repairs what it safely can
 ```
 
-What *serving*, *remote* and a *slot* are: [How it works](docs/how-it-works.md).
-Every command, flag and exit code: [Command reference](docs/commands.md).
+What *serving*, *remote* and a *slot* are: [How it works](docs/how-it-works.md). Every command, flag and exit code: [Command reference](docs/commands.md).
 
 ## Auto-switch
 
@@ -82,15 +82,15 @@ chottag auto off
 
 ## Compared with the best-known switchers
 
-By GitHub stars (as of 2026-09-29), chottag next to the best-known Claude Code account switchers (✅ yes, ⚠️ partly, ❌ no, ❔ not stated in its README):
+By GitHub stars (as of 2026-09-29; the spread and pools columns checked 2026-10-01), chottag next to the best-known Claude Code account switchers (✅ yes, ⚠️ partly, ❌ no, ❔ not stated in its README):
 
-| Tool | Pins Remote Control, connectors, artifacts to one account | Mid-session switch, no restart | Auto-switch at a limit | Never writes Home's login |
-|---|---|---|---|---|
-| <img src="assets/logo/chottag.svg" alt="" width="16" align="absmiddle"> **chottag** | ✅ **built in** | ✅ | ✅ on by default | ✅ |
-| [claude-swap](https://github.com/realiti4/claude-swap) | ❌ (the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it) | ⚠️ Linux/Windows: yes; macOS: ~30s or a restart | ✅ | ❌ |
-| [clauth](https://github.com/uwuclxdy/clauth) | ❌ | ❔ not stated | ✅ | ❌ |
-| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | ❌ | ❌ switch before a new session | ✅ reactive | ❌ |
-| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | ❌ | ✅ | ❔ not stated | ❌ |
+| Tool | Pins Remote Control, connectors, artifacts to one account | Mid-session switch, no restart | Auto-switch at a limit | Spreads parallel sessions over accounts | Separate account pools | Never writes Home's login |
+|---|---|---|---|---|---|---|
+| <img src="assets/logo/chottag.svg" alt="" width="16" align="absmiddle"> **chottag** | ✅ **built in** | ✅ | ✅ on by default | ✅ by headroom, each kept on one account (`chottag policy spread`) | ✅ an account can be in several (`CHOTTAG_POOL=work claude`) | ✅ |
+| [claude-swap](https://github.com/realiti4/claude-swap) | ❌ (the separate [cswap-pin](https://github.com/codeslake/cswap-pin) add-on adds it) | ⚠️ Linux/Windows: yes; macOS: ~30s or a restart | ✅ | ⚠️ by hand, [one account per terminal](https://github.com/realiti4/claude-swap#run-multiple-accounts-at-the-same-time-session-mode) | ⚠️ binds a directory to one account (`cswap map`) | ❌ |
+| [clauth](https://github.com/uwuclxdy/clauth) | ❌ | ❔ not stated | ✅ | ⚠️ by hand, a profile per session (`clauth start`) | ❔ not stated | ❌ |
+| [caam](https://github.com/Dicklesworthstone/coding_agent_account_manager) | ❌ | ❌ switch before a new session | ✅ reactive | ⚠️ ranks accounts for a new session (`caam limits --rank`); you launch it | ❔ not stated | ❌ |
+| [CCSwitcher](https://github.com/XueshiQiao/CCSwitcher) | ❌ | ✅ | ❔ not stated | ❌ one login for every session | ❔ not stated | ❌ |
 
 The four others switch by swapping Claude Code's whole login, so every claude.ai feature moves with it. [CC Switch](https://github.com/farion1231/cc-switch) is the best-known "switch" tool for Claude Code, but it switches API providers and gateways, not your own subscription accounts. Full sourcing, more tools and migration guides: [docs/comparison.md](docs/comparison.md).
 

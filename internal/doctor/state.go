@@ -27,7 +27,10 @@ func StateChecks() []Check {
 
 func portAddr(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }
 
-// rolesCheck is row 7: one row naming every dangling role.
+// rolesCheck is row 7: one row naming every dangling role, in every pool
+// (M8). With only the default pool its texts are as they always were; with
+// more, each role is prefixed by its pool, and a pool with members but none in
+// rotation is a warning (info): its sessions get a 503 until one is.
 func rolesCheck() Check {
 	return Check{
 		ID: "roles",
@@ -39,34 +42,150 @@ func rolesCheck() Check {
 			if len(st.Accounts) == 0 {
 				return Finding{Status: StatusProblem, Detail: "no accounts are registered", Hint: "chottag login <name>"}
 			}
-			var bad []string
-			if !registered(st, st.Serving) {
-				bad = append(bad, fmt.Sprintf("serving %q", st.Serving))
-			}
-			if !registered(st, st.Remote) {
-				bad = append(bad, fmt.Sprintf("remote %q", st.Remote))
+			multi := len(st.PoolNames()) > 1
+			var bad, ok, warn, targets []string
+			hint := ""
+			for _, pool := range st.PoolNames() {
+				members, p := st.Members(pool), st.PoolOf(pool)
+				prefix := ""
+				if multi {
+					prefix = pool + " "
+				}
+				var badHere bool
+				if !roleOK(members, p.Serving, pool == store.DefaultPool || hasRotating(members)) {
+					bad = append(bad, fmt.Sprintf("%sserving %q", prefix, p.Serving))
+					targets = append(targets, firstServing(members, pool == store.DefaultPool))
+					badHere = true
+				}
+				if !roleOK(members, p.Remote, true) {
+					bad = append(bad, fmt.Sprintf("%sremote %q", prefix, p.Remote))
+					targets = append(targets, firstMember(members))
+					badHere = true
+				}
+				if badHere {
+					continue
+				}
+				ok = append(ok, fmt.Sprintf("%s: serving %s, remote %s", pool, orNone(p.Serving), orNone(p.Remote)))
+				if multi && len(members) > 0 && !hasRotating(members) {
+					warn = append(warn, "pool "+pool+" has no account in rotation, so its sessions get a 503")
+					if hint == "" {
+						hint = "chottag rotate " + members[0].Name + " on"
+					}
+				}
 			}
 			if len(bad) > 0 {
-				return Finding{Status: StatusProblem, Detail: strings.Join(bad, " and ") + " names no registered account; the fix gives it to " + st.Accounts[0].Name}
+				what := "names no registered account"
+				if multi {
+					what = "names no member of its pool"
+				}
+				return Finding{Status: StatusProblem, Detail: strings.Join(bad, " and ") + " " + what + "; " + fixTargets(targets)}
 			}
-			return Finding{Status: StatusOK, Detail: fmt.Sprintf("serving %s, remote %s", st.Serving, st.Remote)}
+			if !multi {
+				p := st.PoolOf(store.DefaultPool)
+				return Finding{Status: StatusOK, Detail: fmt.Sprintf("serving %s, remote %s", p.Serving, p.Remote)}
+			}
+			detail := strings.Join(ok, "; ")
+			if len(warn) > 0 {
+				return Finding{Status: StatusInfo, Detail: detail + "; warning: " + strings.Join(warn, "; warning: "), Hint: hint}
+			}
+			return Finding{Status: StatusOK, Detail: detail}
 		},
 		Fix: func(e *Env) error {
 			_, err := e.Store().Update(func(st *store.State) error {
 				if len(st.Accounts) == 0 {
 					return store.ErrNoAccounts
 				}
-				if !registered(*st, st.Serving) {
-					st.Serving = st.Accounts[0].Name
-				}
-				if !registered(*st, st.Remote) {
-					st.Remote = st.Accounts[0].Name
+				for _, pool := range st.PoolNames() {
+					members, p := st.Members(pool), st.PoolOf(pool)
+					if !roleOK(members, p.Serving, pool == store.DefaultPool || hasRotating(members)) {
+						p.Serving = firstServing(members, pool == store.DefaultPool)
+					}
+					if !roleOK(members, p.Remote, true) {
+						p.Remote = firstMember(members)
+					}
+					if pool == store.DefaultPool {
+						st.Serving, st.Remote = p.Serving, p.Remote
+						continue
+					}
+					st.Pools[pool] = p
 				}
 				return nil
 			})
 			return err
 		},
 	}
+}
+
+// fixTargets says where --fix puts the roles: one name when they all go to the
+// same account, as the check always said, else each in turn.
+func fixTargets(targets []string) string {
+	same := true
+	for _, t := range targets {
+		same = same && t == targets[0]
+	}
+	if same {
+		if targets[0] == "" {
+			return "the fix leaves it empty"
+		}
+		return "the fix gives it to " + targets[0]
+	}
+	names := make([]string, len(targets))
+	for i, t := range targets {
+		names[i] = orNone(t)
+	}
+	return "the fix gives them to " + strings.Join(names, " and ")
+}
+
+func firstMember(members []store.Account) string {
+	if len(members) == 0 {
+		return ""
+	}
+	return members[0].Name
+}
+
+// roleOK reports whether v is a sound value for a role of a pool holding
+// members: a member's name, or empty when the pool has no one to hold it
+// (needed false: no rotating member for a serving role).
+func roleOK(members []store.Account, v string, needed bool) bool {
+	if v == "" {
+		return len(members) == 0 || !needed
+	}
+	for _, a := range members {
+		if strings.EqualFold(a.Name, v) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRotating(members []store.Account) bool {
+	for _, a := range members {
+		if a.Rotates() {
+			return true
+		}
+	}
+	return false
+}
+
+// firstServing is the first member in rotation. The default pool falls back to
+// its first member, as the fix always did.
+func firstServing(members []store.Account, isDefault bool) string {
+	for _, a := range members {
+		if a.Rotates() {
+			return a.Name
+		}
+	}
+	if isDefault && len(members) > 0 {
+		return members[0].Name
+	}
+	return ""
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
 
 // realClaudeCheck is row 8, a reconcile. The shim re-resolves on every
