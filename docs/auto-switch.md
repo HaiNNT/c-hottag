@@ -79,6 +79,13 @@ switch to, you get a no-candidate or all-limited notice instead.
 `chottag notify` controls whether these show as desktop notifications
 (macOS only).
 
+Under [`chottag policy spread`](how-it-works.md#spreading-sessions-spread)
+this works per session, not on `serving`: the refused request's session is
+moved to another account and resent once, whether or not auto-switch is on,
+and the notices are the spread ones (`chottag: moved N sessions from A to B,
+C`, or `N sessions on A have no account to move to`, plus the usual switched
+notice on a retry), also controlled by `chottag notify`.
+
 ## Plan sizes
 
 The planner needs to know each account's plan tier to pick the right

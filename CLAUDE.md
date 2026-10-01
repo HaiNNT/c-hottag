@@ -118,6 +118,12 @@ says how to file a good issue and how an invited change lands.
   `plugin/skills/chottag/SKILL.md` and `docs/commands.md` in the same
   change. `test/consistency`, `test/plugin` and `internal/cli`'s docs test
   fail on a name that doesn't exist or isn't documented.
+- A change that adds or changes anything a user or their Claude Code can
+  see updates, in the same change, the user docs (`docs/`, `README.md`),
+  the guides (`docs/for-claude-code.md` where it applies, the next release
+  notes, `CHANGELOG.md`) and the plugin skill
+  (`plugin/skills/chottag/SKILL.md`). `test/plugin` fails when a command or
+  flag in the usage text is missing from the skill or `docs/commands.md`.
 - A user-visible change gets a line in the next
   `docs/release-notes/v<version>.md`, and in that version's `CHANGELOG.md`
   entry.

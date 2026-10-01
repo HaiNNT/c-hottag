@@ -218,6 +218,20 @@ type Switch struct {
 	Retried bool
 }
 
+// Moved describes the sessions an account lost under the spread policy.
+type Moved struct {
+	From     string
+	To       []string // up to three accounts they will most likely move to
+	Sessions int      // sessions placed on From when it crossed
+	Window   string   // "5h" | "7d"; "" when unknown
+	Limited  bool     // From hit its limit, rather than a switch point
+}
+
+// Moved posts the spread notice: one per event, never any state kept.
+func (e *Events) Moved(m Moved) {
+	e.fire(movedMessage(m))
+}
+
 // Switched posts an auto-switch's notice and ends any no-candidate
 // episode. A switch made while every account is limited replaces that
 // episode's "available again" (S8): the switch notice already says an

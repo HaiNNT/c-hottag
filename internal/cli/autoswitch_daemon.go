@@ -13,6 +13,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/autoswitch"
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/notify"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
 	usagehdr "github.com/HaiNNT/c-hottag/internal/usage"
@@ -39,6 +40,16 @@ type autoSwitcher struct {
 	// fake is the fake-util knob's re-applier (fakeutil_on.go): a no-op in
 	// a release build. It runs before every decision.
 	fake func(time.Time)
+
+	// spread, if non-nil, is the spread policy's placement engine: while
+	// state.json's policy is spread, evaluate marks accounts and keeps
+	// serving at the new-session choice instead of switching (M7).
+	spread *spreadEngine
+	// spreadSeeded: the first spread evaluation after a start has run (it
+	// only seeds marks). spreadLimitNoticed: accounts whose limit-hit retry
+	// has been announced, until they are candidates again. Both under mu.
+	spreadSeeded       bool
+	spreadLimitNoticed map[string]bool
 
 	mu       sync.Mutex
 	burn     autoswitch.Burn
@@ -129,7 +140,17 @@ func (a *autoSwitcher) onUsage(account string, code int, h http.Header) {
 		a.sink.setNeedsLoginCleared(account, a.now())
 	}
 	st, err := a.state()
-	if err != nil || !strings.EqualFold(account, st.Serving) {
+	if err != nil {
+		return
+	}
+	if st.PolicySpread() && a.spread != nil {
+		// Sessions sit on many accounts: any account's response can push it
+		// over a point. Only the marks are refreshed here: serving is kept on
+		// the roster tick, never by a write on the response path.
+		a.spreadOnUsage(a.now())
+		return
+	}
+	if !strings.EqualFold(account, st.Serving) {
 		return
 	}
 	now := a.now()
@@ -162,7 +183,7 @@ func (a *autoSwitcher) tick(now time.Time) {
 // anything); only the notice, and a second log line about the resend
 // itself, wait for done, so they can say what actually happened to the
 // request (ruling 5, revised).
-func (a *autoSwitcher) wallRetry(_ context.Context, account string, h http.Header) (bool, func(string, int)) {
+func (a *autoSwitcher) wallRetry(ctx context.Context, account string, h http.Header) (bool, func(string, int)) {
 	now := a.now()
 	v := usagehdr.Classify(http.StatusTooManyRequests, h, now)
 	if !v.Limited {
@@ -170,7 +191,15 @@ func (a *autoSwitcher) wallRetry(_ context.Context, account string, h http.Heade
 	}
 	a.sink.observe(account, usagehdr.Parse(h, now), v)
 	st, err := a.state()
-	if err != nil || !st.AutoOn() {
+	if err != nil {
+		return false, nil
+	}
+	if st.PolicySpread() && a.spread != nil {
+		if id, ok := proxy.IdentityFrom(ctx); ok && id.Caller.SID != "" {
+			return a.spreadWallRetry(id.Caller.SID, account, now, string(planWindow(v.Window)))
+		}
+	}
+	if !st.AutoOn() {
 		return false, nil
 	}
 	var sw *status.AutoSwitch
@@ -232,6 +261,9 @@ func (a *autoSwitcher) evaluate(now time.Time, deferNotice bool) *status.AutoSwi
 	f := a.sink.fileCopy()
 	params := autoParams(st)
 	accts := planAccounts(&st, &f, now)
+	if st.PolicySpread() && a.spread != nil {
+		return a.evaluateSpread(now, deferNotice, st, accts, params)
+	}
 
 	// The user's choice (S6, ruling 8): a serving account this switcher did
 	// not write, at or above a switch point when chosen. The guard lasts
@@ -424,6 +456,12 @@ func wallRetryLine(from, to string, code int, window string) string {
 func (dn *daemonNotify) switched(s notify.Switch) {
 	if dn != nil {
 		dn.events.Switched(s)
+	}
+}
+
+func (dn *daemonNotify) moved(m notify.Moved) {
+	if dn != nil {
+		dn.events.Moved(m)
 	}
 }
 

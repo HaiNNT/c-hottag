@@ -604,3 +604,44 @@ func TestAdoptNameOverride(t *testing.T) {
 		t.Fatalf("invalid override = %d %q, want exit 2", code, errb)
 	}
 }
+
+// F258: an adopt that finds a registered slot unchanged confirms nothing new
+// about the login, so it must not advance LoggedInAt: that stamp is what
+// clears a needs-login, and `chottag update` (setup, adopt) re-runs it for
+// every account. A changed identity is evidence of a re-login and does
+// advance it.
+func TestAdoptLeavesLoggedInAtAloneOnAnUnchangedSlotButAdvancesOnAnIdentityChange(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "accounts", "B"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fake := func(name, email string) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte("#!/bin/sh\necho '{\"loggedIn\":true,\"email\":\""+email+"\"}'\n"), 0o755)
+		return p
+	}
+	if code, _, errb := runHome(t, dir, "adopt", "--claude", fake("c1", "b@example.com")); code != 0 {
+		t.Fatalf("first adopt = %d %q", code, errb)
+	}
+	t0 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := (store.Store{Dir: dir}).Update(func(st *store.State) error {
+		st.Accounts[0].LoggedInAt = t0
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := runHome(t, dir, "adopt", "--claude", fake("c1", "b@example.com")); code != 0 {
+		t.Fatalf("second adopt = %d %q", code, errb)
+	}
+	st, _ := (store.Store{Dir: dir}).Load()
+	if got := st.Accounts[0].LoggedInAt; !got.Equal(t0) {
+		t.Fatalf("LoggedInAt after an unchanged adopt = %v, want it left at %v", got, t0)
+	}
+	if code, _, errb := runHome(t, dir, "adopt", "--claude", fake("c2", "other@example.com")); code != 0 {
+		t.Fatalf("third adopt = %d %q", code, errb)
+	}
+	st, _ = (store.Store{Dir: dir}).Load()
+	if got := st.Accounts[0].LoggedInAt; !got.After(t0) {
+		t.Fatalf("LoggedInAt after an identity change = %v, want it advanced past %v", got, t0)
+	}
+}

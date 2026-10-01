@@ -415,3 +415,25 @@ func TestEndAllLimitedEpisodeIsANoOpOutsideAnAllLimitedEpisode(t *testing.T) {
 		t.Fatalf("notices = %q, want the all-limited notice to still fire normally", got)
 	}
 }
+
+func TestMovedNotice(t *testing.T) {
+	ev, em, _, on := newTestEvents()
+	ev.Moved(Moved{From: "A", To: []string{"B", "C"}, Sessions: 3, Window: "5h"})
+	ev.Moved(Moved{From: "A", To: []string{"B"}, Sessions: 1, Window: "7d", Limited: true})
+	ev.Moved(Moved{From: "A", Sessions: 2, Window: "5h"})
+	ev.Moved(Moved{From: "A", To: []string{"B"}, Sessions: 2})
+	want := [][2]string{
+		{"chottag: moved 3 sessions from A to B, C", "A reached its 5-hour switch point."},
+		{"chottag: moved 1 session from A to B", "A hit its 7-day limit."},
+		{"chottag: 2 sessions on A have no account to move to", "A reached its 5-hour switch point."},
+		{"chottag: moved 2 sessions from A to B", "A is over its switch point."},
+	}
+	if got := em.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %q, want %q", got, want)
+	}
+	*on = false
+	ev.Moved(Moved{From: "A", To: []string{"B"}, Sessions: 1})
+	if len(em.all()) != 4 {
+		t.Fatal("a notice was posted with notifications off")
+	}
+}

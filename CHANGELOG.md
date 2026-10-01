@@ -7,6 +7,30 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.7.0] - 2026-10-01
+
+### Added
+
+- `chottag policy [serial|spread]`: `spread` places each new session on the account with most headroom and keeps it there. Under it, `chottag tag NAME` pins new sessions, `chottag tag --unpin` clears the pin, and `chottag next` is refused (`spread_next`); `bad_policy` for a wrong value.
+- The spread engine: a session is placed on its first request and stays there; it moves at a switch point, on a limit, or when its prompt cache is cold and a move clearly helps, at most once in 10 minutes. Placements survive a daemon restart (`run/placements.json`), and a notification says when sessions moved.
+- `chottag status` shows `policy: spread` and the `pin` under spread (`policy` and `pin` in `--json`, left out under `serial`).
+
+- `state.json` keeps top-level and per-account keys this chottag does not know and writes them back unchanged. `chottag policy spread` and `tag NAME` under spread warn (`daemon_predates_spread`) when the running daemon is older: restart it first. Turning spread on keeps running sessions on their accounts; rolling back below 0.7.0 returns to serial and forgets placements.
+
+### Fixed
+
+- `chottag update`, `setup` and `adopt` no longer clear a real needs-login: adopt re-stamped every account's `loggedInAt`, so a broken login looked fixed. Only `chottag login`, or `adopt` finding a changed email or org in the slot, advances it now.
+  See [release notes](docs/release-notes/v0.7.0.md).
+- The daemon's restart-when-idle state in `run/restart.json` is no longer deleted by `chottag status` or the daemon itself, so its once-per-version notices and hourly attempt limit hold across restarts.
+  See [release notes](docs/release-notes/v0.7.0.md).
+
+### Changed
+
+- When `chottag update` defers the daemon restart and the running daemon can't restart itself (it predates 0.6.0, auto-restart is off, or it is newer than what was installed), it now says so plainly, `the running daemon (0.5.0) can't restart itself: run chottag daemon restart once when convenient`, and `update --json` has `selfRestart`. The plugin skill tells Claude Code to run `chottag daemon restart` to finish the update.
+  See [release notes](docs/release-notes/v0.7.0.md).
+- The plugin skill, `docs/for-claude-code.md` and the README now cover the update check, `update_in_progress`, the restart-when-idle markers, `own` and `adopt`; a test keeps the skill and `docs/commands.md` complete against the usage text.
+  See [release notes](docs/release-notes/v0.7.0.md).
+
 ## [0.6.0] - 2026-10-01
 
 ### Added
@@ -221,6 +245,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.7.0]: docs/release-notes/v0.7.0.md
 [0.6.0]: docs/release-notes/v0.6.0.md
 [0.5.1]: docs/release-notes/v0.5.1.md
 [0.5.0]: docs/release-notes/v0.5.0.md

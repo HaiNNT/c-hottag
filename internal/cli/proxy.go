@@ -270,6 +270,12 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	fake := applyFakeUtil(os.Getenv, cache.State, sink, stderr, time.Now())
 	as := newAutoSwitcher(store.Store{Dir: h}, cache, sink, dn, stderr, fake)
 
+	// The spread policy's placements (M7): loaded now, so a daemon restart
+	// keeps every session on its account; saved on change and at shutdown.
+	sp := newSpreadEngine(filepath.Join(h, "run", "placements.json"), cache.State, sink.fileCopy, ch.tracker.Peek, stderr, time.Now())
+	ch.spread, as.spread = sp, sp
+	sp.lastAccount = ch.tracker.Account
+
 	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, autoUsageHook(as, newUsageHook(cache.State, sink, dn)), upstreamURL)
 	cfg.WallRetry = as.wallRetry
 	// Test hooks only (proxy.Config's own doc comment: nil = the real
@@ -331,6 +337,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Poller:     poller,
 			Notify:     dn,
 			Auto:       as,
+			Spread:     sp,
 			Update:     ul,
 			Restart:    rl,
 			// nil in production: runDaemon's own RosterProcessed default.
@@ -775,6 +782,10 @@ type daemonDeps struct {
 	// replaces "available again" (S8). nil (every daemonDeps literal
 	// before M4) switches nothing.
 	Auto *autoSwitcher
+	// Spread, if non-nil, is the spread policy's placement engine (M7): the
+	// roster tick prunes dead sessions' placements and saves a debounced
+	// change. nil (every literal before M7) does nothing.
+	Spread *spreadEngine
 	// Update, if non-nil, is the update-check loop (R124). runDaemon runs it
 	// on the roster watcher's context and joins it before the sink closes.
 	// nil (a dev build, CHOTTAG_NO_UPDATE_CHECK=1, every test literal) never
@@ -840,6 +851,9 @@ var listenTCP = net.Listen
 // on whatever machine the suite runs on (see
 // TestCloseOwnersJoinsRosterWatcherBeforeClosingTheMap's doc comment).
 func runDaemon(ctx context.Context, d daemonDeps) int {
+	if d.Spread != nil {
+		defer d.Spread.close() // the last placements reach disk, so a restart keeps every session where it was
+	}
 	srv := d.Srv
 	if srv == nil {
 		srv = proxy.New(d.Cfg)
@@ -937,6 +951,10 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		// only when the snapshot changed.
 		if d.Chooser != nil && d.Chooser.tracker != nil && d.Sink != nil {
 			stampSessions(d.Sink, d.Chooser.tracker, d.Home, now)
+		}
+		if d.Spread != nil {
+			d.Spread.prune(liveKeep(d.Home), now)
+			d.Spread.tick(now)
 		}
 		d.Notify.tick(d.Cache.State, d.Sink, routeDrift, now)
 		notifyErrs := d.Notify.Errors()
@@ -1672,6 +1690,12 @@ type chooser struct {
 	// tracker, if non-nil, is told about every successful Choose made for an
 	// identified caller (M6). nil is a no-op, as for notify.
 	tracker *sessions.Tracker
+	// spread, if non-nil, places identified sessions while state.json's
+	// policy is spread (M7). Under serial the chooser never calls it; nil
+	// (a chooser built without a daemon) is serial.
+	spread spreadPlacer
+	// now, if non-nil, replaces timeNow for the placement clock (tests).
+	now func() time.Time
 }
 
 // newDaemonChooser builds the chooser runProxyWithSignal wires into
@@ -1684,7 +1708,7 @@ func newDaemonChooser(sel *selector.Selector, own *owners.Map, tm *tokens.Manage
 }
 
 func (c *chooser) Choose(ctx context.Context, d router.Decision, bodyID string) (string, string, bool, bool) {
-	ch := c.sel.Choose(ctx, d, bodyID)
+	ch := c.choose(ctx, d, bodyID)
 	if ch.Account == "" {
 		return "", "", false, false
 	}
@@ -1695,6 +1719,38 @@ func (c *chooser) Choose(ctx context.Context, d router.Decision, bodyID string) 
 		c.tracker.Seen(id.Caller.SID, id.Caller.Pool, ch.Account, id.Inference, id.NativeID, timeNow())
 	}
 	return ch.Account, ch.Token, ch.Role == selector.RoleOwner, true
+}
+
+// choose is the selector's choice, with the spread policy's placement in
+// place of the serving account for an identified session's serving-class
+// request (owner and remote routing, which the selector applies first, are
+// unchanged). With no placement to give, it is the plain Choose: the serving
+// account.
+func (c *chooser) choose(ctx context.Context, d router.Decision, bodyID string) selector.Choice {
+	if c.spread == nil || c.state == nil || d.Class != router.Serving || d.Object != "" {
+		return c.sel.Choose(ctx, d, bodyID)
+	}
+	id, ok := proxy.IdentityFrom(ctx)
+	if !ok || id.Caller.SID == "" {
+		return c.sel.Choose(ctx, d, bodyID)
+	}
+	if st, err := c.state(); err != nil || !st.PolicySpread() {
+		return c.sel.Choose(ctx, d, bodyID)
+	}
+	if name, ok := c.spread.accountFor(id.Caller.SID, id.NativeID, c.clock()); ok {
+		return c.sel.ChooseAs(ctx, d, bodyID, name)
+	}
+	if name, ok := c.spread.fallback(c.clock()); ok {
+		return c.sel.ChooseAs(ctx, d, bodyID, name)
+	}
+	return c.sel.Choose(ctx, d, bodyID)
+}
+
+func (c *chooser) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return timeNow()
 }
 
 func (c *chooser) Record(kind router.Kind, ids []string, account string) {

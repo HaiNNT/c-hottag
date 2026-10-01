@@ -31,10 +31,9 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/fsutil"
 )
 
-// FileName is the lock's name inside <home>/run. It must not end in
-// ".json". internal/session's Registry lives in the same directory, and
-// Live() reads every *.json there as a managed claude session, so a record
-// named that way would list the daemon itself as a live session.
+// FileName is the lock's name inside <home>/run, which internal/session's
+// Registry shares. Live() reads only <digits>.json there, so this name is
+// not an entry; keep it from ever looking like one.
 const FileName = "daemon.lock"
 
 // Path is home's daemon lock.

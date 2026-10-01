@@ -60,14 +60,19 @@ type Account struct {
 	// Units overrides the tier's capacity units (`chottag plan … --units
 	// N`). 0 means the tier's own.
 	Units int `json:"units,omitempty"`
-	// LoggedInAt is when `chottag login` or `chottag adopt` last confirmed
-	// this account logged in. internal/cli's planAccounts compares it
-	// against status.json's TokenAt to tell a needs-login row that predates
+	// LoggedInAt is when `chottag login` last confirmed this account logged
+	// in, or `chottag adopt` last saw its slot's identity change (a
+	// re-login). An unchanged slot does not advance it (F258).
+	// internal/cli's planAccounts compares it against status.json's TokenAt to tell a needs-login row that predates
 	// this login (cleared) from one recorded after it (still needs one) —
 	// fix round 1 item 1, superseding plan ruling 3: a stale needs-login
 	// must not outlive a re-login. omitzero: never logged in via chottag
 	// carries no LoggedInAt.
 	LoggedInAt time.Time `json:"loggedInAt,omitzero"`
+
+	// extra holds keys a newer chottag wrote that this one does not know
+	// (see extra.go); they are written back unchanged.
+	extra map[string]json.RawMessage
 }
 
 // Rotates reports whether `next` and auto-switch may select this account.
@@ -131,7 +136,42 @@ type State struct {
 	Label string `json:"label,omitempty"`
 	// Updates is the update-check settings (R124). Zero writes no key.
 	Updates Updates `json:"updates,omitzero"`
+	// Policy is how new sessions are placed on accounts (M7): "serial" (one
+	// serving account, today's behaviour) or "spread". Absent is serial. It
+	// is the default pool's policy; M8 adds per-pool ones.
+	Policy string `json:"policy,omitempty"`
+	// Pin is the account `chottag tag NAME` pins new sessions to under
+	// spread. It has no effect under serial, and is kept across a switch
+	// back to serial. Empty is unpinned.
+	Pin string `json:"pin,omitempty"`
+
+	// extra holds top-level keys a newer chottag wrote that this one does not
+	// know (see extra.go); they are written back unchanged.
+	extra map[string]json.RawMessage
 }
+
+// The two values of State.Policy.
+const (
+	PolicySerial = "serial"
+	PolicySpread = "spread"
+)
+
+// PolicySpread reports whether new sessions are spread over accounts.
+// Absent, and anything but "spread", is serial.
+func (s State) PolicySpread() bool { return s.Policy == PolicySpread }
+
+// SetPolicy records the policy. Serial is stored as absent, so a state that
+// never used spread (or went back) writes no key.
+func (st *State) SetPolicy(p string) {
+	if p == PolicySpread {
+		st.Policy = PolicySpread
+		return
+	}
+	st.Policy = ""
+}
+
+// SetPin records the pinned account name; "" clears it.
+func (st *State) SetPin(name string) { st.Pin = name }
 
 func Default() State {
 	return State{Version: Version, Port: DefaultPort}
@@ -446,6 +486,9 @@ func (st *State) Remove(name string) error {
 	if strings.EqualFold(st.Serving, name) || strings.EqualFold(st.Remote, name) {
 		return fmt.Errorf("%w: %s", ErrInUse, st.Accounts[i].Name)
 	}
+	if strings.EqualFold(st.Pin, name) {
+		st.Pin = ""
+	}
 	st.Accounts = append(st.Accounts[:i], st.Accounts[i+1:]...)
 	return nil
 }
@@ -487,6 +530,10 @@ func (st *State) Rename(old, newName string) (from string, roles []string, err e
 	if strings.EqualFold(st.Remote, from) {
 		st.Remote = newName
 		roles = append(roles, "remote")
+	}
+	// The pin follows the rename but is not a role: it is not reported.
+	if strings.EqualFold(st.Pin, from) {
+		st.Pin = newName
 	}
 	return from, roles, nil
 }

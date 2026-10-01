@@ -2,6 +2,7 @@ package notify
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -68,4 +69,26 @@ func windowName(w string) string {
 		return "7-day"
 	}
 	return "usage"
+}
+
+// movedMessage is the spread notice (M7 spec §7): the sessions on an account
+// that crossed a switch point or hit a limit, and where they will go.
+func movedMessage(m Moved) (title, body string) {
+	noun := "sessions"
+	if m.Sessions == 1 {
+		noun = "session"
+	}
+	w := windowName(m.Window)
+	switch {
+	case m.Limited:
+		body = fmt.Sprintf("%s hit its %s limit.", m.From, w)
+	case m.Window == "":
+		body = m.From + " is over its switch point."
+	default:
+		body = fmt.Sprintf("%s reached its %s switch point.", m.From, w)
+	}
+	if len(m.To) == 0 {
+		return fmt.Sprintf("chottag: %d %s on %s have no account to move to", m.Sessions, noun, m.From), body
+	}
+	return fmt.Sprintf("chottag: moved %d %s from %s to %s", m.Sessions, noun, m.From, strings.Join(m.To, ", ")), body
 }

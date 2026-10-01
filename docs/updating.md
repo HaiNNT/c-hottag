@@ -105,7 +105,10 @@ the daemon for you once the new version is installed. If a session is
 running, the restart is deferred: the daemon restarts itself when it is idle
 (see [above](#restarting-onto-an-installed-update); not if you turned
 `--auto-restart` off), or run `chottag daemon restart` yourself once you're
-ready. `chottag update --restart` restarts the daemon at once
+ready. A daemon from before 0.6.0 can't restart itself, and `update` says so:
+`the running daemon (0.5.0) can't restart itself: run chottag daemon restart
+once when convenient` (`selfRestart: false` in `--json`). Run it then: the
+new version isn't in use until you do. `chottag update --restart` restarts the daemon at once
 regardless, and any running session sees a short interruption.
 `chottag update --no-restart` installs and leaves the daemon alone, session or
 not. Until the
@@ -147,6 +150,12 @@ update --version vX.Y.Z` to put the older binary back, copy back the
 `state.json` backup that the update being undone printed (it is also listed
 in its `backups`; not the newest file, which the rollback itself just made),
 then start the daemon (`chottag daemon start`).
+
+Rolling back below 0.7.0 (`chottag update --version v0.6.x`) returns to
+serial behaviour: 0.6 does not know `chottag policy spread`, and ignores (and
+may delete) the placements; run `chottag policy spread` again after you
+upgrade back. After an update, run `chottag daemon restart` before turning
+spread on: a daemon from before 0.7.0 would ignore the policy and may reset it.
 
 ## The plugin
 

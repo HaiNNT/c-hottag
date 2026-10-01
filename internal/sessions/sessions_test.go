@@ -158,3 +158,41 @@ func TestConcurrent(t *testing.T) {
 		t.Fatalf("requests %d", got)
 	}
 }
+
+func TestPeekCountsWithoutRecording(t *testing.T) {
+	tr := NewTracker()
+	if got := tr.Peek("s1", ""); got != 0 {
+		t.Fatalf("unknown sid, no native id: %d, want 0", got)
+	}
+	if got := tr.Peek("s1", "n1"); got != 1 {
+		t.Fatalf("unknown sid, first native id: %d, want 1", got)
+	}
+	if len(tr.Snapshot()) != 0 {
+		t.Fatal("Peek recorded a session")
+	}
+	tr.Seen("s1", "default", "A", true, "n1", t0)
+	if got := tr.Peek("s1", "n1"); got != 1 {
+		t.Fatalf("same native id: %d, want 1", got)
+	}
+	if got := tr.Peek("s1", "n2"); got != 2 {
+		t.Fatalf("new native id: %d, want 2", got)
+	}
+	if got := tr.Peek("s1", ""); got != 1 {
+		t.Fatalf("no native id: %d, want 1", got)
+	}
+	if one(t, tr).Conversations != 1 {
+		t.Fatal("Peek changed the count")
+	}
+}
+
+func TestAccountIsTheLastInferenceAccount(t *testing.T) {
+	tr := NewTracker()
+	if tr.Account("s1") != "" {
+		t.Fatal("unknown sid has an account")
+	}
+	tr.Seen("s1", "default", "B", true, "n1", t0)
+	tr.Seen("s1", "default", "A", false, "n1", t0) // not inference: ignored
+	if got := tr.Account("s1"); got != "B" {
+		t.Fatalf("Account = %q, want B", got)
+	}
+}

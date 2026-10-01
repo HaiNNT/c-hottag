@@ -62,6 +62,36 @@ func (t *Tracker) Seen(sid, pool, account string, inference bool, nativeID strin
 	}
 }
 
+// Peek is the Conversations count sid would have after a Seen carrying
+// nativeID, without recording anything. It lets a caller ask, before it
+// routes a request, whether that request starts a new conversation.
+func (t *Tracker) Peek(sid, nativeID string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e := t.m[sid]
+	if e == nil {
+		if nativeID != "" {
+			return 1
+		}
+		return 0
+	}
+	if nativeID != "" && nativeID != e.native {
+		return e.Conversations + 1
+	}
+	return e.Conversations
+}
+
+// Account is the account sid's last inference request went out as, "" if
+// unknown.
+func (t *Tracker) Account(sid string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e := t.m[sid]; e != nil {
+		return e.Account
+	}
+	return ""
+}
+
 // Snapshot returns copies of every entry, sorted by SID.
 func (t *Tracker) Snapshot() []Activity {
 	t.mu.Lock()

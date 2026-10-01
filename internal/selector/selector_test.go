@@ -300,3 +300,34 @@ func TestAwaitFailureEmitsPassthroughLikeTokenDoes(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 }
+
+func TestChooseAsReplacesOnlyTheServingAccount(t *testing.T) {
+	own := fakeOwners{"artifact:slug1": "B"}
+	s := newSelector(fakeTokens{"/slots/B": "tok-B", "/slots/C": "tok-C"}, own, nil)
+	ctx := context.Background()
+	// serving class: the given account stands in for state's serving (B).
+	if got := s.ChooseAs(ctx, router.Decision{Class: router.Serving}, "", "C"); got != (selector.Choice{Account: "C", Token: "tok-C", Role: "serving"}) {
+		t.Errorf("ChooseAs serving = %+v", got)
+	}
+	// remote class is unchanged.
+	if got := s.ChooseAs(ctx, router.Decision{Class: router.Remote}, "", "B"); got.Account != "C" || got.Role != "remote" {
+		t.Errorf("ChooseAs remote = %+v, want the remote account", got)
+	}
+	// the owner still comes first.
+	d := router.Decision{Class: router.Serving, Object: router.KindArtifact, ObjectID: "slug1"}
+	if got := s.ChooseAs(ctx, d, "", "C"); got.Account != "B" || got.Role != "owner" {
+		t.Errorf("ChooseAs owner = %+v, want the owner", got)
+	}
+	// an unusable token passes through, as Choose does.
+	if got := newSelector(fakeTokens{}, fakeOwners{}, nil).ChooseAs(ctx, router.Decision{Class: router.Serving}, "", "C"); got != (selector.Choice{}) {
+		t.Errorf("ChooseAs unusable = %+v, want empty", got)
+	}
+	// an unregistered name passes through.
+	if got := s.ChooseAs(ctx, router.Decision{Class: router.Serving}, "", "Z"); got != (selector.Choice{}) {
+		t.Errorf("ChooseAs unknown = %+v, want empty", got)
+	}
+	// Choose is unchanged.
+	if got := s.Choose(ctx, router.Decision{Class: router.Serving}, ""); got.Account != "B" {
+		t.Errorf("Choose = %+v, want B", got)
+	}
+}

@@ -506,9 +506,9 @@ func TestUpdateDeferredTextSaysTheDaemonRestartsItselfUnlessOff(t *testing.T) {
 		want   string
 	}{
 		{"on", false, "0.6.0", "chottag: daemon restart deferred: 2 session(s) running; the daemon restarts itself when idle, or run: chottag daemon restart\n"},
-		{"off", true, "0.6.0", "chottag: daemon restart deferred: 2 session(s) running; run: chottag daemon restart\n"},
-		{"a daemon from before the loop", false, "0.5.0", "chottag: daemon restart deferred: 2 session(s) running; run: chottag daemon restart\n"},
-		{"a rollback", false, "0.7.0", "chottag: daemon restart deferred: 2 session(s) running; run: chottag daemon restart\n"},
+		{"off", true, "0.6.0", "chottag: daemon restart deferred: 2 session(s) running; auto-restart is off, so the daemon keeps running 0.6.0: run chottag daemon restart once when convenient\n"},
+		{"a daemon from before the loop", false, "0.5.0", "chottag: daemon restart deferred: 2 session(s) running; the running daemon (0.5.0) can't restart itself: run chottag daemon restart once when convenient\n"},
+		{"a rollback", false, "0.7.0", "chottag: daemon restart deferred: 2 session(s) running; the running daemon (0.7.0) is newer than 0.6.1 and won't restart onto it: run chottag daemon restart once when convenient\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			withVersion(t, "0.6.0")
@@ -530,6 +530,40 @@ func TestUpdateDeferredTextSaysTheDaemonRestartsItselfUnlessOff(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), c.want) {
 				t.Errorf("stdout = %q, want it to contain %q", out.String(), c.want)
+			}
+		})
+	}
+}
+
+// R129: `update --json` says whether the deferred restart happens on its own,
+// so an agent knows to run `chottag daemon restart` to finish the update.
+func TestUpdateJSONSaysWhetherTheDaemonRestartsItself(t *testing.T) {
+	for _, c := range []struct {
+		daemon string
+		want   bool
+	}{{"0.6.0", true}, {"0.5.0", false}} {
+		t.Run(c.daemon, func(t *testing.T) {
+			withVersion(t, "0.6.0")
+			h := updateHome(t)
+			seedLiveSessions(t, h, 2)
+			fx := goodRelease(t, "0.6.1", []byte("payload"))
+			base, _ := fakeGH(t, nil, "v0.6.1", nil, map[string]releaseFixture{"v0.6.1": fx})
+			gh := bareUpdateGH(t, base)
+			child, _ := fakeChild(t, h, true, nil)
+			stubUpdateSeams(t, gh, child, func(int) (bool, string) { return true, c.daemon })
+			var out, errb bytes.Buffer
+			if code := runUpdate(nil, newReporter(true, &out, &errb)); code != exit.OK {
+				t.Fatalf("exit = %d; %s", code, errb.String())
+			}
+			var doc struct {
+				Daemon      string `json:"daemon"`
+				SelfRestart *bool  `json:"selfRestart"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+				t.Fatalf("%v: %s", err, out.String())
+			}
+			if doc.Daemon != "deferred" || doc.SelfRestart == nil || *doc.SelfRestart != c.want {
+				t.Fatalf("daemon=%q selfRestart=%v, want deferred and %v", doc.Daemon, doc.SelfRestart, c.want)
 			}
 		})
 	}

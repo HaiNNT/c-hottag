@@ -81,6 +81,10 @@ type updateResult struct {
 	Pruned          []string `json:"pruned,omitempty"`
 	Daemon          string   `json:"daemon,omitempty"`
 	LiveSessions    int      `json:"liveSessions,omitempty"`
+	// SelfRestart, set only when Daemon is "deferred", says whether the
+	// running daemon restarts itself onto the new version when idle (R126);
+	// false means `chottag daemon restart` finishes the update (R129).
+	SelfRestart *bool `json:"selfRestart,omitempty"`
 	// Backups lists the files update copied before installing (R123).
 	Backups []string `json:"backups,omitempty"`
 }
@@ -1378,10 +1382,26 @@ func runUpdate(args []string, r *reporter) int {
 	if sessionsUnknown {
 		sessionsText = "session count unknown"
 	}
-	how := "run: chottag daemon restart"
-	if st, err := (store.Store{Dir: h}).Load(); err == nil && st.RestartOn() && daemonRestartsItselfOnto(daemonVer, ver) {
+	// R129: say plainly whether the restart happens on its own, so a person
+	// or an agent knows to finish the update with `chottag daemon restart`.
+	st, stErr := (store.Store{Dir: h}).Load()
+	restartOn := stErr == nil && st.RestartOn()
+	self := restartOn && daemonRestartsItselfOnto(daemonVer, ver)
+	res.SelfRestart = &self
+	const finish = "run chottag daemon restart once when convenient"
+	var how string
+	switch {
+	case self:
 		// R126: the daemon restarts itself once idle.
 		how = "the daemon restarts itself when idle, or run: chottag daemon restart"
+	case updatecheck.Parses(daemonVer) && updatecheck.Newer(restartLoopSince, daemonVer):
+		how = fmt.Sprintf("the running daemon (%s) can't restart itself: %s", daemonVer, finish)
+	case updatecheck.Parses(daemonVer) && !updatecheck.Newer(ver, daemonVer):
+		how = fmt.Sprintf("the running daemon (%s) is newer than %s and won't restart onto it: %s", daemonVer, ver, finish)
+	case !restartOn && updatecheck.Parses(daemonVer):
+		how = fmt.Sprintf("auto-restart is off, so the daemon keeps running %s: %s", daemonVer, finish)
+	default:
+		how = "the running daemon can't restart itself: " + finish
 	}
 	r.TextWarn(warnUpdateDeferred, fmt.Sprintf("chottag: daemon restart deferred: %s running; %s", sessionsText, how))
 	return r.OK(res)

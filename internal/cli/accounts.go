@@ -28,6 +28,9 @@ var ErrNoCandidate = errors.New("no account to switch to")
 type tagResult struct {
 	Serving  string `json:"serving"`
 	Previous string `json:"previous,omitempty"`
+	// Pin is the account new sessions are pinned to, set by `tag NAME` under
+	// spread (also when NAME has rotation off: it is stored, not used).
+	Pin string `json:"pin,omitempty"`
 }
 
 // nextResult is `tag` / `next --json`'s fields. skipped is always an array
@@ -97,19 +100,26 @@ func runTag(args []string, r *reporter) int {
 	fs := flag.NewFlagSet("tag", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
 	force := fs.Bool("force", false, "switch even past a limit, a switch point or a needs-login state (never past rotation)")
+	unpin := fs.Bool("unpin", false, "under spread, clear the pin")
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return r.FlagError(err)
 	}
 	if len(positional) > 1 {
-		return r.Usage("usage: chottag tag [NAME] [--force]")
+		return r.Usage("usage: chottag tag [NAME] [--force] | chottag tag --unpin")
+	}
+	if *unpin && (len(positional) != 0 || *force) {
+		return r.Usage("usage: chottag tag --unpin (takes no NAME and no --force)")
 	}
 	s, f, now, err := tagState()
 	if err != nil {
 		return r.FailErr(err)
 	}
+	if *unpin {
+		return runUnpin(s, r)
+	}
 	if len(positional) == 0 {
-		return runNext(s, &f, now, *force, r)
+		return runNextSerial(s, &f, now, *force, r)
 	}
 
 	// positional[0] is what the user typed at the prompt: Find's unique
@@ -124,12 +134,18 @@ func runTag(args []string, r *reporter) int {
 		}
 		previous = st.Serving
 		st.Serving = a.Name
+		if st.PolicySpread() {
+			st.SetPin(a.Name)
+		}
 		return nil
 	})
 	if err != nil {
 		return r.FailErr(err)
 	}
 	r.Text("serving: %s\n", st.Serving)
+	if st.PolicySpread() {
+		warnIfDaemonPredatesSpread(st, r)
+	}
 
 	// tag WARNS, it does not refuse (spec §5): an explicit tag is a
 	// deliberate override, and refusing it would take away the escape
@@ -142,9 +158,26 @@ func runTag(args []string, r *reporter) int {
 		}
 	}
 	if a, err := st.Find(st.Serving); err == nil && !a.Rotates() {
-		r.Warn(warnOutOfRotation, fmt.Sprintf("chottag: warning: %s is out of rotation; `chottag next` will skip it", st.Serving))
+		skips := "`chottag next` will skip it"
+		if st.PolicySpread() {
+			skips = "spread places no session on it"
+		}
+		r.Warn(warnOutOfRotation, fmt.Sprintf("chottag: warning: %s is out of rotation; %s", st.Serving, skips))
 	}
-	return r.OK(tagResult{Serving: st.Serving, Previous: previous})
+	if st.PolicySpread() {
+		// R90: the pin is stored either way, but placement never uses a
+		// pin on an account that is out of rotation.
+		if a, err := st.Find(st.Serving); err == nil && !a.Rotates() {
+			r.Text("new sessions won't be pinned to %s while its rotation is off\n", st.Serving)
+		} else {
+			r.Text("new sessions are pinned to %s\n", st.Serving)
+		}
+	}
+	pin := ""
+	if st.PolicySpread() {
+		pin = st.Pin
+	}
+	return r.OK(tagResult{Serving: st.Serving, Previous: previous, Pin: pin})
 }
 
 // runNextCmd is `chottag next [--force]`. Its only flag is --force, in any
@@ -165,7 +198,42 @@ func runNextCmd(args []string, r *reporter) int {
 	if err != nil {
 		return r.FailErr(err)
 	}
-	return runNext(s, &f, now, *force, r)
+	return runNextSerial(s, &f, now, *force, r)
+}
+
+// runNextSerial is `next` (and a bare `tag`): refused under spread, where
+// sessions sit on different accounts and a machine-wide "next" has no
+// meaning (M7 spec §5), and runNext otherwise.
+func runNextSerial(s store.Store, f *status.File, now time.Time, force bool, r *reporter) int {
+	st, err := s.Load()
+	if err != nil {
+		return r.FailErr(err)
+	}
+	if st.PolicySpread() {
+		return r.Fail(exit.Usage, codeSpreadNext, spreadNextMessage, nil)
+	}
+	return runNext(s, f, now, force, r)
+}
+
+// runUnpin is `tag --unpin`: it clears the pin, and only under spread,
+// the one policy where a pin has any effect.
+func runUnpin(s store.Store, r *reporter) int {
+	cur, err := s.Load()
+	if err != nil {
+		return r.FailErr(err)
+	}
+	if !cur.PolicySpread() {
+		return r.Fail(exit.Usage, codeUsage, "pins apply only under `chottag policy spread`", nil)
+	}
+	st, err := s.Update(func(st *store.State) error {
+		st.SetPin("")
+		return nil
+	})
+	if err != nil {
+		return r.FailErr(err)
+	}
+	r.Text("unpinned\n")
+	return r.OK(tagResult{Serving: st.Serving})
 }
 
 // runNext moves the serving role to the next eligible account in
@@ -425,7 +493,12 @@ func runAdopt(args []string, r *reporter) int {
 				}
 				a.Email, a.Org = email, org
 				prefillPlan(a, sub)
-				a.LoggedInAt = now
+				// F258: only a changed identity is evidence of a re-login. An
+				// unchanged slot confirms nothing new, and stamping it would
+				// clear a real needs-login on every `chottag update`.
+				if status == "updated" {
+					a.LoggedInAt = now
+				}
 				return nil
 			}
 			for i := range st.Accounts {
@@ -477,7 +550,12 @@ func runAdopt(args []string, r *reporter) int {
 					}
 					a.Email, a.Org = email, org
 					prefillPlan(a, sub)
-					a.LoggedInAt = now
+					// F258: only a changed identity is evidence of a re-login. An
+					// unchanged slot confirms nothing new, and stamping it would
+					// clear a real needs-login on every `chottag update`.
+					if status == "updated" {
+						a.LoggedInAt = now
+					}
 					return nil
 				}
 			}

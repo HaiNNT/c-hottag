@@ -67,13 +67,33 @@ Without arguments, work out what the user wants and use "Common tasks".
    account's login and asks for a typed word in a terminal. Tell the user the
    command instead.
 7. These refuse `--json` (they stream or run forever); don't run them for the
-   user: `daemon logs`, `daemon run`, `proxy run`, `trace run|env|mark|summarize`,
+   user: `daemon logs`, `daemon run`, `proxy run`, `trace run|env|mark|summarize`
+   (`summarize --all` prints the whole log),
    `help`. The daemon starts by itself when `claude` runs.
 8. **Only read-only commands and everyday switches run without a permission
    prompt**: `status`, `doctor --json`, `update --check --json`, `version`,
    `tag`, `next`, `remote`, `rotate`, `auto`, `notify`, `plan`. Everything
-   else (`login`, `logout`, `doctor --fix`, `update`, `rename`, `uninstall`)
+   else (`login`, `logout`, `doctor --fix`, `update`, `rename`, `uninstall`,
+   `policy`)
    asks the user first. That is deliberate; don't work around it.
+
+## Spreading sessions over accounts
+
+By default every session uses the one serving account. `chottag policy spread`
+places each new session on the account with the most headroom and keeps it
+there, moving it only near a switch point, on a limit, or when its prompt
+cache is already cold and another account is clearly better (`policy: spread`, and
+`pin: <name>` if one is pinned, show on `chottag status`). Offer it to a user
+with several accounts who runs many sessions at once. Ask before running
+`chottag policy spread`: it changes how every new session is placed. After
+`chottag update`, run `chottag daemon restart` before turning spread on: an
+older daemon ignores the policy and may reset it, and `chottag policy spread`
+warns `daemon_predates_spread` when it finds one. Under it
+`chottag next` is refused (`spread_next`); `chottag policy serial` goes back.
+`pin: <name> (not a candidate now)` means the pinned account can't take new
+sessions at the moment (limited, at a switch point, rotation off or needing a
+login), so they are placed normally. `bad_policy` means a value other than
+`serial` or `spread`.
 
 ## If `chottag` is not found
 
@@ -96,17 +116,20 @@ Without arguments, work out what the user wants and use "Common tasks".
 | show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <this session's account> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, `c» down` or `c» off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
+| spread sessions over accounts / pin new sessions | `chottag policy spread --json` (asks first: it changes how every new session is placed, and is not pre-approved); `chottag tag <name> --json` then pins new sessions to it (the pin is for new sessions only; on a rotation-off account it warns and is ignored); `chottag tag --unpin --json` clears the pin; `chottag policy serial --json` goes back to one serving account. Under spread `chottag next` is refused (`spread_next`) |
 | add or re-login an account | `chottag login <name> --json` (timeout 600000) |
 | set the account that owns new remote-control sessions, artifacts, routines | `chottag remote <name> --json` |
 | keep an account out of `next` | `chottag rotate <name> off --json` |
 | rename an account | `chottag rename <old> <new> --json` |
+| move one existing claude.ai object to another account, or see its owner | `chottag own <session\|environment\|artifact\|connector> <id> [account] --json` (asks first: it is not pre-approved) |
+| register slots that already hold a login | `chottag adopt [--claude PATH] --json` (asks first); `chottag setup --label NAME` and `chottag login <name> --claude PATH` also take the real `claude`'s path |
 | remove an account | `chottag logout <name> --json` (ask first; see below) |
 | check or repair the install | `chottag doctor --json`, then `chottag doctor --fix --json` if the user agrees |
 | desktop notifications | `chottag notify on --json` / `chottag notify off --json` |
 | automatic switching near a limit (on by default) | `chottag auto --json`; `chottag auto off --json` / `chottag auto on --json` |
 | auto-switch mode | `chottag auto mode balanced --json` or `chottag auto mode cache-optimize --json` |
-| tell chottag an account's plan size | `chottag plan <name> max20x --json` (tiers: `pro`, `max5x`, `max20x`, `team`) |
-| check for, or install, a newer chottag release | `chottag update --check --json`, then `chottag update --json` if the user agrees |
+| tell chottag an account's plan size | `chottag plan <name> max20x --json` (tiers: `pro`, `max5x`, `max20x`, `team`; `--units N` overrides the tier's capacity per 1%, and a later `plan` without it clears the override) |
+| check for, or install, a newer chottag release | `chottag update --check --json`, then `chottag update --json` if the user agrees (`--repo OWNER/NAME` names another repo; `--check` reads GitHub directly) |
 
 Accounts are named by name, email, or a unique name prefix.
 
@@ -123,7 +146,8 @@ the last three versions and verifies each download against the release's
 checksums. `--no-restart` installs and leaves the daemon running.
 
 The daemon also checks for a new release about once a day; `status` shows
-`update: <v> available`, and `status --json` has `update` and `updates`.
+`update: <v> available`, and `status --json` has `update` and `updates`, and `statusline --json` has
+`updateAvailable` (the newer version, when there is one) and `restartPending`.
 **Tell the user when one is available and offer `chottag update`.** The check
 is on by default and can be turned off with `chottag update --auto-check off`.
 `chottag update --auto-install on` lets the daemon install releases by itself
@@ -136,6 +160,20 @@ When a newer chottag is installed but the daemon still runs the old one,
 restarts itself onto it once the proxy is idle (no request in flight, none in
 the last 5 minutes); this is on by default and `chottag update --auto-restart
 off` turns it off. To switch at once, run `chottag daemon restart`.
+
+**Finish the update.** When `chottag update --json` returns `"daemon":
+"deferred"` with `"selfRestart": false` (the text says the running daemon
+"can't restart itself" or "won't restart onto it"), the new version is not in
+use yet and nothing will switch to it on its own. Tell the user, then run
+`chottag daemon restart` to finish the update they asked for: it takes a few
+seconds, and running sessions retry any request caught in the gap. With
+`"selfRestart": true`, nothing more is needed.
+
+If `chottag update` exits with `update_in_progress`, another update is
+running (the user's, or the daemon's automatic install). Wait, then check
+with `chottag update --check --json` or `chottag status --json`; don't retry
+in a loop. Setting `CHOTTAG_NO_UPDATE_CHECK=1` in the daemon's environment
+also switches the daily check off.
 
 ## Reading results
 
@@ -204,13 +242,18 @@ status line something to show. Ask first whether they already have one.
   To show only some of it, read fields instead:
   `chottag statusline --json | jq -r '.serving'` (fields: `session`,
   `daemon`, `serving`, `account`, `label`, `fiveHourPct`, `sevenDayPct`, `resetsAt`,
-  `okAccounts`, `rotationAccounts`).
+  `okAccounts`, `rotationAccounts`, `updateAvailable`, `restartPending`).
 - **They have none.** Offer chottag's line on its own; they add this to
   `~/.claude/settings.json` by hand:
 
   ```json
   {"statusLine":{"type":"command","command":"~/.chottag/bin/chottag statusline"}}
   ```
+
+The text line ends with ` · ↑<v>` when the update check found a newer
+release `<v>`, and ` · ⟳<v>` when `<v>` is installed but the daemon still
+runs the old one (it restarts itself when idle). The `off`, `down` and `up`
+lines never show them.
 
 `chottag statusline` only prints: it has no side effect. Offer the cmux
 sidebar pill only to a user who runs cmux, and add `--cmux` to the command

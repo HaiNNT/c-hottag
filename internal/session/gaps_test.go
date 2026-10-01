@@ -169,3 +169,41 @@ func TestDescribe(t *testing.T) {
 		}
 	}
 }
+
+// F259: the daemon keeps run/restart.json (and others) beside the entries;
+// their JSON has no pid, so Live must not mistake them for corrupt entries.
+func TestLiveDoesNotPruneNamedJSONFilesThatAreNotEntries(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run")
+	r, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	others := []string{"restart.json", "placements.json"}
+	for _, name := range others {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"notified":"0.6.0"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dead := filepath.Join(dir, "900009.json")
+	if err := os.WriteFile(dead, []byte(`{"pid":900009,"port":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Add(os.Getpid(), 47821); err != nil {
+		t.Fatal(err)
+	}
+	live, err := r.Live()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 1 || live[0].PID != os.Getpid() {
+		t.Fatalf("Live() = %+v, want only this process's entry", live)
+	}
+	for _, name := range others {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was deleted by Live: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(dead); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("dead entry not pruned (stat err %v)", err)
+	}
+}

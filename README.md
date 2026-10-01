@@ -33,8 +33,7 @@ serving: B
   from its next request: no logout, no restart.
 - **Auto-switch near a limit**, on by default, holding a warm prompt cache
   when a reset is close, and resending a request that hit a limit.
-- **Usage at a glance.** `chottag status` shows each account's 5-hour and
-  7-day usage and limits.
+- **Usage at a glance, and stays current.** `chottag status` shows each account's 5-hour and 7-day usage and limits, and a daily update check (shown in `status` and `statusline`, one notice per version), opt-in auto-install, and a daemon that restarts itself onto an installed update when idle ([Updating](docs/updating.md)).
 - **Local and scriptable.** A loopback proxy that needs a per-install
   secret; account and status commands answer in `--json`.
 
@@ -63,6 +62,7 @@ chottag own artifact <artifact-id> B  # move one object that already exists to B
 claude                 # Claude Code, through chottag (the daemon starts by itself)
 chottag status         # usage and limits per account; `chottag statusline` for a status line
 chottag next           # serving -> the next account that is not limited
+chottag policy spread  # or: spread new sessions over accounts (`chottag tag NAME` pins)
 chottag doctor         # check the install; --fix repairs what it safely can
 ```
 

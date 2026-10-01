@@ -55,6 +55,8 @@ const (
 	codeDoctorProblems            errCode = "doctor_problems"
 	codeUpdateFailed              errCode = "update_failed"
 	codeUpdateInProgress          errCode = "update_in_progress"
+	codeBadPolicy                 errCode = "bad_policy"
+	codeSpreadNext                errCode = "spread_next"
 )
 
 // errCodes is the closed list. TestCodeConstantsMatchTheClosedLists keeps
@@ -72,6 +74,8 @@ var errCodes = []errCode{
 	codeDoctorProblems,
 	codeUpdateFailed,
 	codeUpdateInProgress,
+	codeBadPolicy,
+	codeSpreadNext,
 }
 
 // warnCode is a warnings[].code: a line that reports something beyond the
@@ -101,6 +105,7 @@ const (
 	warnAttestationSkipped        warnCode = "attestation_skipped"
 	warnPreAttestation            warnCode = "pre_attestation"
 	warnUpdateCache               warnCode = "update_cache"
+	warnDaemonPredatesSpread      warnCode = "daemon_predates_spread"
 )
 
 var warnCodes = []warnCode{
@@ -111,6 +116,7 @@ var warnCodes = []warnCode{
 	warnAdoptFailed,
 	warnUpdateDeferred, warnRestartFailed, warnPruneFailed, warnInstallRecord,
 	warnAttestationSkipped, warnPreAttestation, warnUpdateCache,
+	warnDaemonPredatesSpread,
 }
 
 func validErrCode(c errCode) bool   { return slices.Contains(errCodes, c) }

@@ -205,12 +205,23 @@ chottag tag <name> --json                # switch to a named account
 chottag next --json                      # switch to the next account that is not limited
 chottag remote <name> --json             # set who owns new remote-control sessions, artifacts, routines
 chottag auto --json                      # auto-switch settings and last decision
+chottag policy spread --json              # one account per session, only if the user agrees
 chottag doctor --json                    # check the install
 chottag update --check --json            # is a newer release available
 chottag update --json                    # install it, only once the user agrees
 ```
 
 Every command, flag, exit code and JSON field: [Command reference](commands.md).
+
+chottag checks for a newer release daily and shows `update: <v> available`
+in `chottag status`. When you see it, tell the user and offer `chottag
+update`. If `update` exits with `update_in_progress`, another update is
+running: wait and re-check with `chottag update --check --json`; don't retry
+in a loop. If `update --json` returns `"daemon": "deferred"` with
+`"selfRestart": false`, the running daemon can't restart itself onto the new
+version (it predates 0.6.0, or auto-restart is off): tell the user and run
+`chottag daemon restart` to finish the update. Never turn on `chottag update --auto-install on` without the
+user's yes.
 
 ## Rules for the agent
 

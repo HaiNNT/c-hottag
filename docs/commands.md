@@ -216,8 +216,9 @@ then start the daemon (`chottag daemon start`).
   "installed": true,
   "pruned": ["v0.2.0"],
   "backups": ["/Users/alice/.chottag/backups/state.json.20261002T150405Z"],
-  "daemon": "restarted",
-  "liveSessions": 0
+  "daemon": "deferred",
+  "liveSessions": 2,
+  "selfRestart": false
 }
 ```
 
@@ -226,7 +227,12 @@ then start the daemon (`chottag daemon start`).
 itself once idle, unless `--auto-restart off`, or run `chottag daemon restart`
 yourself), `not-running`, `not-probed` (the daemon could not be
 asked), or `not-restarted` (`--no-restart`). It is left out when nothing was
-installed.
+installed. With `deferred`, `selfRestart` says whether the running daemon
+restarts itself onto the new version when idle; `false` (a daemon from before
+0.6.0, auto-restart off, or a daemon newer than what was installed) means the
+update finishes only with `chottag daemon restart`, and the text says so:
+`the running daemon (0.5.0) can't restart itself: run chottag daemon restart
+once when convenient`.
 
 ### `chottag uninstall`
 
@@ -411,6 +417,7 @@ flags: a stray flag is exit 2, never treated as `NAME` or `on`/`off`.
 
 ```sh
 chottag tag [NAME] [--force]
+chottag tag --unpin
 ```
 
 Sets the serving account: the one whose login the proxy hands to Claude
@@ -419,9 +426,18 @@ choice `chottag next` makes. `--force` switches even past a limit, a
 switch point, or a needs-login state — but never past rotation (a
 rotated-out account is never picked).
 
+Under [`chottag policy spread`](#chottag-policy), `tag NAME` also pins new
+sessions to `NAME` and prints a line saying so (`pin` in `--json`). If
+`NAME` has rotation off the pin is stored but not used while its rotation is
+off, and the line says that. A bare `tag` is refused under spread, as
+`next` is (`spread_next`). `tag --unpin` clears the pin; it takes no `NAME`
+and no `--force`, and under `serial` it is a usage error, because a pin has
+no effect there. Under `serial`, `tag` never touches the pin.
+
 | Flag | Meaning |
 |---|---|
 | `--force` | switch even past a limit, a switch point or a needs-login state (never past rotation) |
+| `--unpin` | under spread, clear the pin (no `NAME`) |
 
 ```json
 {
@@ -429,9 +445,12 @@ rotated-out account is never picked).
   "ok": true,
   "warnings": [],
   "serving": "work",
-  "previous": "personal"
+  "previous": "personal",
+  "pin": "work"
 }
 ```
+
+`pin` appears only under spread; `tag --unpin` answers with `serving` only.
 
 ### `chottag next`
 
@@ -439,7 +458,11 @@ rotated-out account is never picked).
 chottag next [--force]
 ```
 
-Moves the serving account to the next one in rotation.
+Moves the serving account to the next one in rotation. Under
+[`chottag policy spread`](#chottag-policy) it is refused with exit 2 and code
+`spread_next`: sessions sit on different accounts, so a machine-wide "next"
+has no meaning. Use `chottag tag NAME` to pin new sessions, or `chottag
+policy serial` to go back to one serving account.
 
 | Flag | Meaning |
 |---|---|
@@ -615,9 +638,21 @@ the account you chose. Also `chottag ls`. It takes no flags.
     "check": true,
     "auto": false,
     "restart": true
-  }
+  },
+  "policy": "spread",
+  "pin": "work"
 }
 ```
+
+`policy` and `pin` show how new sessions are placed (see [`chottag
+policy`](#chottag-policy)). `policy` is `"spread"` and is left out under
+`serial`, so a serial document is exactly what it was before; `pin` is the
+account `chottag tag NAME` pinned, left out when none is set or the policy is
+`serial`. The text form adds a line after `auto:` only under spread:
+`policy: spread`, or `policy: spread · pin: work`, and `(not a candidate now)`
+after the pin when that account cannot take a session at this moment (rotation
+off, needs a login, limited, or at a switch point). Under `serial` the text
+form has no such line.
 
 `update` is the daemon's release-check cache. It is left out until a check
 has run (the daemon's, or `chottag update --check`). `latest` is the newest
@@ -897,6 +932,40 @@ no verb it only prints the current setting. It takes no flags.
 }
 ```
 
+### `chottag policy`
+
+```sh
+chottag policy [serial|spread]
+```
+
+Shows or sets how new sessions are placed. `serial`, the default, is one
+serving account for every session. `spread` places each new session on the
+account with most headroom and keeps it there. With no value it prints the
+policy, and the pin under `spread` (`pin: NAME`). It takes no flags. Any
+other value is exit 2, code `bad_policy`. Switching policy changes nothing
+about rotation, and keeps a stored pin (which has no effect under `serial`).
+See [`chottag tag`](#chottag-tag) for pinning.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "policy": "spread",
+  "pin": "work"
+}
+```
+
+`pin` is always present, `""` when unset or when the policy is `serial`.
+
+When the running daemon is older than this `chottag` (or its version cannot
+be ordered), turning spread on adds the warning `daemon_predates_spread`:
+a daemon from before 0.7.0 ignores the policy and, the next time it writes
+`state.json`, drops it. Run `chottag daemon restart` first, then the policy
+takes effect. The warning does not refuse the change, and `tag NAME` under
+spread gives it too. No daemon, or one at the same or a newer version, gives
+none.
+
 ## Auto-switch
 
 ```sh
@@ -958,6 +1027,12 @@ accepts and what each mode does. `auto` takes no flags.
   }
 }
 ```
+
+Under `chottag policy spread` the `decision` is `spread: new sessions go to
+NAME` (the account a new session would get now, which is also `serving`), or
+`spread: no account can take a new session`. Auto-switch does not switch
+`serving` for a switch point then; see
+[how it works](how-it-works.md#spreading-sessions-spread).
 
 ## Daemon
 
@@ -1223,6 +1298,8 @@ does not support `--json`.
 | `doctor_problems` | 3 | `doctor` found one or more problems; `error.checks` and `error.problems` carry every row and the count |
 | `update_failed` | 1 | `chottag update` could not install the release (or back up `state.json` first), or `--check` could not reach GitHub |
 | `update_in_progress` | 1 | another `chottag update` holds the update lock (`run/update.lock`) |
+| `bad_policy` | 2 | `chottag policy` takes `serial` or `spread`, nothing else |
+| `spread_next` | 2 | `next` (or a bare `tag`) under `chottag policy spread`: chottag places sessions itself; pin with `chottag tag NAME`, or `chottag policy serial` |
 
 ## Warning codes
 
@@ -1250,3 +1327,4 @@ does not support `--json`.
 | `attestation_skipped` | release attestation verification was skipped |
 | `pre_attestation` | the release predates attestation and was installed without verifying one |
 | `update_cache` | `update --check` could not record its result in `status.json` |
+| `daemon_predates_spread` | `chottag policy spread` (or `tag NAME` under spread) found the running daemon older than this binary: it ignores the policy and may reset it to serial; run `chottag daemon restart` first |

@@ -24,8 +24,10 @@ commands:
   adopt [--claude PATH]         register the account slots that already hold a login
   login NAME [--claude PATH]    log a slot in (browser) and register it
   logout NAME [--force] [--yes] revoke a slot's login and remove it
-  tag [NAME] [--force]          set the serving account (no NAME: next in rotation)
-  next [--force]                serving account -> next in rotation
+  tag [NAME] [--force]          set the serving account (no NAME: next in rotation); under spread, also pin new sessions to NAME
+  tag --unpin                   under spread, clear the pin
+  next [--force]                serving account -> next in rotation (refused under spread)
+  policy [serial|spread]        show or set how new sessions are placed: one serving account, or spread over accounts
   remote [NAME]                 set or show the account that owns claude.ai objects
   own KIND ID [ACCOUNT]         re-attribute one claude.ai object, or print its owner
   rotate NAME [on|off]          include or exclude NAME from next rotation
@@ -232,6 +234,8 @@ func dispatch(args []string, r *reporter) int {
 		return runNextCmd(args[1:], r)
 	case "remote", "rc", "remote-control":
 		return runRemote(args[1:], r)
+	case "policy":
+		return runPolicy(args[1:], r)
 	case "rotate":
 		return runRotate(args[1:], r)
 	case "rename":

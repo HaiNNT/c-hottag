@@ -36,7 +36,8 @@ Every path below is relative to the chottag home (`~/.chottag` unless
 | `ca/` | Holds the CA and the proxy secret above. | `chottag setup`. | No, for the reasons above. |
 | `bin/` | Holds the `chottag` and `claude` symlinks that `setup` puts on `PATH`. | `chottag setup`. | No — removing it breaks the `claude` shim; re-run `chottag setup` to recreate it. |
 | `bin/claude` | A symlink to the `chottag` binary itself: this is the shim `claude` invocations actually run, ahead of the real Claude Code on `PATH`. | `chottag setup`. | No, for the reason above. |
-| `run/` | Holds the daemon's lock file, proving which process, if any, currently owns the daemon role. | `daemon run`. | Yes when no daemon is running; `chottag daemon stop` is the normal way to release it. |
+| `run/` | Holds the daemon's lock file, proving which process, if any, currently owns the daemon role, and the live-session records (one file per `claude` the shim launched). | `daemon run`, and the shim. | Yes when no daemon is running; `chottag daemon stop` is the normal way to release it. |
+| `run/placements.json` | Under `chottag policy spread`: the account each live session is placed on (session id, account, slot directory, when it was placed and last moved), so a daemon restart keeps every session where it was. Written with mode 0600, only by the daemon, and only while it holds placements (an earlier spread period's expire after their sessions end); never holds a token. | The daemon, within a few seconds of a change and at shutdown. | Yes — the sessions are placed again at their next request, which can put them on different accounts. |
 | `cache/` | Holds `cache/status.json` above. | `chottag setup`. | Yes, for the reason above. |
 
 ## state.json
@@ -78,6 +79,8 @@ an auto-switch.
     "cooldown": "5m"
   },
   "notify": true,
+  "policy": "spread",
+  "pin": "A",
   "label": "dev",
   "updates": {
     "check": true,
@@ -103,8 +106,10 @@ an auto-switch.
   - `noRotate` — keeps this account out of `chottag next` and auto-switch.
   - `plan`, `units` — the account's plan tier and any capacity override, for
     auto-switch.
-  - `loggedInAt` — when `chottag login` or `chottag adopt` last confirmed
-    this account is logged in.
+  - `loggedInAt` — when `chottag login` last confirmed this account
+    is logged in, or `chottag adopt` last found its slot's email or org
+    changed. Re-running adopt (or `update`) on an unchanged slot leaves it
+    alone, so it never clears a real needs-login.
 - `serving` — the account currently answering requests.
 - `remote` — the account that owns new claude.ai objects created from here
   on: remote-control sessions, environments, artifacts and connectors.
@@ -116,6 +121,11 @@ an auto-switch.
   and the `hold5h`/`hold7d`/`cooldown` durations. Absent means every
   default.
 - `notify` — desktop notifications on or off. Absent means on.
+- `policy` — how new sessions are placed: `spread` puts each on the account
+  with most headroom and keeps it there; absent means `serial`, one serving
+  account. Set it with `chottag policy`.
+- `pin` — the account `chottag tag NAME` pins new sessions to under
+  `spread`; it has no effect under `serial`. Absent means unpinned.
 - `label` — a short name for this install (`chottag setup --label NAME`),
   shown in `chottag status` and in notification titles. Absent means none.
 - `updates` — the update-check settings. `check` turns the daemon's release
@@ -126,7 +136,7 @@ an auto-switch.
 - `trace` — the trace-mode window; absent means tracing is off.
 
 Change these with `chottag` commands (`chottag plan`, `chottag auto`,
-`chottag notify`, `chottag trace`, and so on), not by hand: a command
+`chottag notify`, `chottag policy`, `chottag trace`, and so on), not by hand: a command
 validates what it writes, and a hand edit that gets the shape wrong is a
 corrupt `state.json` on the next read.
 

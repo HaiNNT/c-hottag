@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/autoswitch"
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/session"
@@ -221,11 +222,18 @@ func runStatus(home string, args []string, r *reporter) int {
 			u.Available = availableUpdate(f) != ""
 			f.Update = &u
 		}
-		return r.OK(statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st)})
+		doc := statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st)}
+		if st.PolicySpread() {
+			doc.Policy, doc.Pin = store.PolicySpread, st.Pin
+		}
+		return r.OK(doc)
 	}
 
 	renderStatusWith(r.Stdout(), f, now, accountCounts(rows))
 	fmt.Fprintln(r.Stdout(), autoStatusLine(st, f, now))
+	if line := policyStatusLine(st, f, now); line != "" {
+		fmt.Fprintln(r.Stdout(), line)
+	}
 	if v := availableUpdate(f); v != "" {
 		fmt.Fprintf(r.Stdout(), "update: %s available (run: chottag update)\n", v)
 	}
@@ -252,6 +260,31 @@ func autoStatusLine(st store.State, f status.File, now time.Time) string {
 		}
 	}
 	return strings.Join(parts, " · ")
+}
+
+// policyStatusLine is `chottag status`'s spread line (M7 spec §7):
+// "policy: spread", plus " · pin: B" and, when the pinned account could not
+// take a session now, " (not a candidate now)". Serial prints nothing, so
+// its output is unchanged.
+func policyStatusLine(st store.State, f status.File, now time.Time) string {
+	if !st.PolicySpread() {
+		return ""
+	}
+	line := "policy: spread"
+	if st.Pin == "" {
+		return line
+	}
+	line += " · pin: " + st.Pin
+	params := autoParams(st)
+	for _, a := range planAccounts(&st, &f, now) {
+		if strings.EqualFold(a.Name, st.Pin) {
+			if !autoswitch.Candidate(a, params, now) {
+				line += " (not a candidate now)"
+			}
+			return line
+		}
+	}
+	return line + " (not a candidate now)"
 }
 
 // lastSwitchText is "last C→A 09:12 (limit)"; the time is omitted when
@@ -378,6 +411,10 @@ type statusDocument struct {
 	status.File
 	Sessions []sessionRow   `json:"sessions,omitempty"`
 	Updates  updateSwitches `json:"updates"`
+	// Policy and Pin are the placement policy (M7): present only under
+	// spread, so a serial document is unchanged. Pin only when one is set.
+	Policy string `json:"policy,omitempty"`
+	Pin    string `json:"pin,omitempty"`
 }
 
 // sessionRow is one live registry entry. An unidentified one (an old shim's)
@@ -890,22 +927,28 @@ func (c *statusSink) setSessions(acts []sessions.Activity) {
 	c.queueLocked()
 }
 
+// liveKeep reports whether a sid is a live registry entry of home. A registry
+// that cannot be read keeps everything.
+func liveKeep(home string) func(sid string) bool {
+	live, err := liveSessions(home)
+	if err != nil {
+		return func(string) bool { return true }
+	}
+	set := make(map[string]bool, len(live))
+	for _, s := range live {
+		if s.SID != "" {
+			set[s.SID] = true
+		}
+	}
+	return func(sid string) bool { return set[sid] }
+}
+
 // stampSessions forgets the tracker's dead sessions past their grace, keeping
 // every sid a live registry entry of home names (a registry that cannot be
 // read keeps everything), then hands the snapshot to the sink. It returns the
 // snapshot.
 func stampSessions(sink *statusSink, tr *sessions.Tracker, home string, now time.Time) []sessions.Activity {
-	keep := func(string) bool { return true }
-	if live, err := liveSessions(home); err == nil {
-		set := make(map[string]bool, len(live))
-		for _, s := range live {
-			if s.SID != "" {
-				set[s.SID] = true
-			}
-		}
-		keep = func(sid string) bool { return set[sid] }
-	}
-	tr.Forget(keep, now, sessions.Grace)
+	tr.Forget(liveKeep(home), now, sessions.Grace)
 	snap := tr.Snapshot()
 	sink.setSessions(snap)
 	return snap

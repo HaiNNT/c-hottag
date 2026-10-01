@@ -1924,7 +1924,7 @@ func seedLiveSessions(t *testing.T, home string, n int) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(home, "run", fmt.Sprintf("fake-%d.json", i)), b, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(home, "run", fmt.Sprintf("%d.json", 900000+i)), b, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

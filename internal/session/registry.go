@@ -89,6 +89,22 @@ func (r *Registry) Remove(pid int) error {
 	return err
 }
 
+// isEntryName reports whether name is one Put writes: <digits>.json. The
+// directory is chottag's run/, shared with files that are not session entries
+// (run/restart.json, daemon.lock), which Live must never read or prune.
+func isEntryName(name string) bool {
+	digits, ok := strings.CutSuffix(name, ".json")
+	if !ok || digits == "" {
+		return false
+	}
+	for _, c := range digits {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Live returns every managed session whose process still exists, pruning the
 // entries of those that do not. Pruning on read is what keeps a crashed
 // session from holding the port forever.
@@ -99,7 +115,7 @@ func (r *Registry) Live() ([]Session, error) {
 	}
 	var out []Session
 	for _, e := range ents {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !isEntryName(e.Name()) {
 			continue
 		}
 		p := filepath.Join(r.dir, e.Name())

@@ -24,7 +24,7 @@ const (
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 
-// seedEntry writes one live registry entry under name. Every entry names this
+// seedEntry writes one live registry entry under name (digits: Live reads only <pid>.json). Every entry names this
 // test process's pid, which is certainly alive: alive() checks only that the
 // pid exists (the seedLiveSessions trick).
 func seedEntry(t *testing.T, home, name string, s session.Session) {
@@ -37,7 +37,7 @@ func seedEntry(t *testing.T, home, name string, s session.Session) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "run", "fake-"+name+".json"), b, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "run", name+".json"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -179,7 +179,7 @@ func TestStatuslineAccountFromProxyEnvSessionAndNoPasswordLeak(t *testing.T) {
 
 func TestStatuslineAccountFromRegistryEntryOfTheAncestor(t *testing.T) {
 	home, port := sessionLineEnv(t, map[int]int{os.Getppid(): os.Getpid()})
-	seedEntry(t, home, "me", session.Session{Port: port, SID: sidA1, Pool: "default", Started: t0})
+	seedEntry(t, home, "9", session.Session{Port: port, SID: sidA1, Pool: "default", Started: t0})
 	_, out, _ := runHome(t, home, "statusline")
 	if out != "c» other · 5h – · 7d – · 2/2 ok\n" {
 		t.Fatalf("line = %q", out)

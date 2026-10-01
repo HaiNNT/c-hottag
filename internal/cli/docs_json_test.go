@@ -37,6 +37,7 @@ var docsResultTypes = map[string]any{
 	"rotate":         rotateResult{},
 	"rename":         renameResult{},
 	"notify":         notifyResult{},
+	"policy":         policyResult{},
 	"auto":           autoResult{},
 	"plan":           planResult{},
 	"status":         statusDocument{},

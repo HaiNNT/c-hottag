@@ -248,3 +248,80 @@ func TestDisplayNamesSayCHottagAndIdsAreChottag(t *testing.T) {
 		t.Errorf("SKILL.md name %q, description %q; want name chottag and the display name c-hottag", fields["name"], fields["description"])
 	}
 }
+
+// usageConst is internal/cli/cli.go's usage const, read as text.
+func usageConst(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "internal", "cli", "cli.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const open = "const usage = `"
+	src := string(b)
+	i := strings.Index(src, open)
+	if i < 0 {
+		t.Fatal("cli.go has no usage const")
+	}
+	body := src[i+len(open):]
+	return body[:strings.Index(body, "`")]
+}
+
+// notInSkill lists usage items the plugin skill legitimately does not
+// document, each with a reason. Keep it short: add the line to the skill
+// instead (R128).
+var notInSkill = map[string]string{
+	"--listen": "trace env's flag; trace is a developer tool the skill tells the agent not to run (rule 7)",
+}
+
+// TestSkillAndCommandsPageCoverTheUsageText (R128): every top-level command
+// and every --flag in the usage text is named in both the plugin skill and
+// docs/commands.md, so a new command or flag cannot ship undocumented.
+func TestSkillAndCommandsPageCoverTheUsageText(t *testing.T) {
+	root := repoRoot(t)
+	docs := map[string]string{}
+	for _, rel := range []string{"plugin/skills/chottag/SKILL.md", "docs/commands.md"} {
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		docs[rel] = string(b)
+	}
+	cmdWord := regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	flagTok := regexp.MustCompile(`--[a-z][a-z-]*`)
+	cmds := map[string]bool{}
+	flags := map[string]bool{}
+	for _, l := range strings.Split(usageConst(t), "\n") {
+		rest, ok := strings.CutPrefix(l, "  ")
+		if !ok {
+			continue
+		}
+		syn, _, _ := strings.Cut(rest, "  ")
+		if f := strings.Fields(syn); len(f) > 0 && cmdWord.MatchString(f[0]) {
+			cmds[f[0]] = true
+		}
+		for _, f := range flagTok.FindAllString(syn, -1) {
+			flags[f] = true
+		}
+	}
+	if len(cmds) < 10 || len(flags) < 10 {
+		t.Fatalf("parsed %d commands and %d flags from the usage text: the parse is broken", len(cmds), len(flags))
+	}
+	for rel, text := range docs {
+		for c := range cmds {
+			if _, skip := notInSkill[c]; skip && strings.HasSuffix(rel, "SKILL.md") {
+				continue
+			}
+			if !regexp.MustCompile("(chottag |`)" + regexp.QuoteMeta(c) + `\b`).MatchString(text) {
+				t.Errorf("command %q from the usage text is not in %s: document it (R128)", c, rel)
+			}
+		}
+		for f := range flags {
+			if _, skip := notInSkill[f]; skip && strings.HasSuffix(rel, "SKILL.md") {
+				continue
+			}
+			if !strings.Contains(text, f) {
+				t.Errorf("flag %q from the usage text is not in %s: document it (R128)", f, rel)
+			}
+		}
+	}
+}

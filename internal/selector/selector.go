@@ -88,6 +88,20 @@ const (
 // request has no such cost, and waiting on it is exactly what F37 removed;
 // only remote/owner requests wait here.
 func (s *Selector) Choose(ctx context.Context, d router.Decision, bodyID string) Choice {
+	return s.choose(ctx, d, bodyID, nil)
+}
+
+// ChooseAs is Choose with serving standing in for state.json's serving
+// account, for a serving-class request only: the owner and remote routing
+// is unchanged and still comes first. The daemon's spread policy uses it to
+// send a placed session as the account it was placed on.
+func (s *Selector) ChooseAs(ctx context.Context, d router.Decision, bodyID, serving string) Choice {
+	return s.choose(ctx, d, bodyID, &serving)
+}
+
+// choose is Choose and ChooseAs: serving, when non-nil, replaces
+// st.Serving for the serving class.
+func (s *Selector) choose(ctx context.Context, d router.Decision, bodyID string, serving *string) Choice {
 	if d.Class == router.Untouched || d.Class == "" {
 		return Choice{}
 	}
@@ -97,6 +111,9 @@ func (s *Selector) Choose(ctx context.Context, d router.Decision, bodyID string)
 		return Choice{}
 	}
 
+	if serving != nil {
+		st.Serving = *serving
+	}
 	name, role := s.byClass(&st, d)
 	if owner, ok := s.owner(d, bodyID); ok {
 		if _, ok := findExact(&st, owner); ok {

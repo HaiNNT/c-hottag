@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/daemonlock"
+	"github.com/HaiNNT/c-hottag/internal/fsutil"
 	"github.com/HaiNNT/c-hottag/internal/notify"
 	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/proxy/proxytest"
@@ -196,6 +197,15 @@ func TestMain(m *testing.M) {
 	notify.SetRunForTest(func(context.Context, string, []string) error {
 		panic("osascript reached from internal/cli's test binary: call stubDaemonNotifier(t) in the test that runs the daemon")
 	})
+	// spreadWrite (spread.go) writes run/placements.json. Only a path under
+	// the OS temp dir (a test's t.TempDir) may be written: a placement
+	// engine pointed at a real home fails loudly instead of touching it.
+	spreadWrite = func(path string, data []byte, perm os.FileMode) error {
+		if !strings.HasPrefix(path, os.TempDir()) {
+			panic("spreadWrite reached " + path + " from internal/cli's test binary: placements.json may only be written under t.TempDir()")
+		}
+		return fsutil.WriteFileAtomic(path, data, perm)
+	}
 	// updateGH, updateChild and updateProbe (update.go) are `chottag
 	// update`'s three seams: the real ones would run gh, exec a downloaded
 	// or newly-placed chottag binary, and probe a real daemon's health
