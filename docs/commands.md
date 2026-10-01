@@ -540,14 +540,40 @@ session is alive.
 ### `chottag statusline`
 
 ```sh
-chottag statusline [--json]
+chottag statusline [--json] [--cmux]
 ```
 
 Prints one line for Claude Code's status line: whether the Claude Code
 session that runs it goes through chottag, which account serves it, its
-usage, its next reset and the pool's health. It takes no flags besides
-`--json`, never reads stdin, and always exits `0` (a bad argument is still
-exit `2`). It prints nothing secret: no token, email, path or proxy secret.
+usage, its next reset and the pool's health. It never reads stdin, and
+always exits `0` (a bad argument is still exit `2`). It prints nothing
+secret: no token, email, path or proxy secret.
+
+| Flag | Meaning |
+|---|---|
+| `--cmux` | also set the cmux sidebar pill (see below); off by default |
+
+`--json` (global) prints the fields instead of the line.
+
+It is meant to be **consumed by your own status line**, not to replace it:
+add its line to what your status-line script already prints, or read its
+fields from `--json`. It needs nothing from stdin, so a script can call it
+as it is:
+
+```sh
+#!/bin/sh
+# Your status line, with chottag's segment added at the end.
+input=$(cat)                                        # Claude Code's JSON for this session
+line=$(printf '%s' "$input" | YOUR_EXISTING_COMMAND)
+seg=$(~/.chottag/bin/chottag statusline 2>/dev/null)
+printf '%s  %s\n' "$line" "$seg"
+```
+
+Point `statusLine` at `chottag statusline` itself only when you have no
+status line of your own. Prefer it over `chottag status --json` in a status
+line: it knows whether the session running it goes through chottag, which
+`status --json` (the global view) does not, and it is built to run on every
+redraw.
 
 A session counts as routed when either holds: one of its first 8 ancestor
 processes is a live `claude` session chottag launched, or `HTTPS_PROXY` is
@@ -578,11 +604,13 @@ mark in every state: `c» dev off`, `c» dev · work · 5h 3% · …`.
   stdout is not a terminal, because Claude Code renders it; `NO_COLOR`
   turns it off.
 
-When `CMUX_WORKSPACE_ID` is set, the statusline also sets a cmux sidebar
-pill named `chottag` for that workspace, holding the same line without
-colour, when the line changed since the last one sent (remembered in
+The cmux sidebar pill is only set with `--cmux`; a bare `chottag statusline`
+has no side effect: it only prints, never calls cmux, and never touches
+`run/`. With `--cmux`, and only when `CMUX_WORKSPACE_ID` is set, it also
+sets a pill named `chottag` for that workspace, holding the same line
+without colour, when the line changed since the last one sent (remembered in
 `run/pill-<workspace>.txt`). The cmux call is bounded to 300 ms and its
-failure is ignored.
+failure is ignored. `--cmux` combines with `--json`.
 
 ```json
 {

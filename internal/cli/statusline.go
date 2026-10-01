@@ -112,16 +112,18 @@ type statuslineResult struct {
 // runStatusline prints one line for Claude Code's status line: whether this
 // session goes through chottag, which account serves it, and its usage. It
 // never reads stdin and always exits 0: a status line must never show an
-// error. Nothing secret ever reaches the output.
+// error. Nothing secret ever reaches the output. It has no side effect unless
+// --cmux asks for the cmux sidebar pill (R121).
 func runStatusline(args []string, r *reporter) int {
 	fs := flag.NewFlagSet("statusline", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
+	cmux := fs.Bool("cmux", false, "also set the cmux sidebar pill")
 	positional, err := parseInterspersed(fs, args)
 	if err != nil {
 		return r.FlagError(err)
 	}
 	if len(positional) != 0 {
-		return r.Usage("usage: chottag statusline [--json]")
+		return r.Usage("usage: chottag statusline [--json] [--cmux]")
 	}
 
 	rep := statuslineResult{Session: "home", Daemon: "unknown"}
@@ -129,16 +131,17 @@ func runStatusline(args []string, r *reporter) int {
 	if herr == nil {
 		rep = statuslineCheck(h)
 	}
+	// Without --cmux the command only prints: no cmux call, no throttle file.
+	if *cmux && herr == nil {
+		if ws := os.Getenv("CMUX_WORKSPACE_ID"); ws != "" {
+			sendPill(h, ws, renderStatusline(rep, brand.None), rep.Label)
+		}
+	}
 	if r.JSON() {
 		return r.OK(rep)
 	}
 	mode := brand.ModeFromEnv(os.Getenv)
 	fmt.Fprintln(r.Stdout(), renderStatusline(rep, mode))
-	if herr == nil {
-		if ws := os.Getenv("CMUX_WORKSPACE_ID"); ws != "" {
-			sendPill(h, ws, renderStatusline(rep, brand.None), rep.Label)
-		}
-	}
 	return r.OK(nil)
 }
 

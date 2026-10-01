@@ -149,17 +149,36 @@ line:
 
 With an install label the label follows the mark, as in `c» dev off`.
 
-To show it, add this to your own `~/.claude/settings.json` (chottag never
-edits that file for you):
+chottag doesn't replace your status line; it gives yours something to
+show. If you already have a status-line script, add the segment to what it
+prints:
+
+```sh
+seg=$(~/.chottag/bin/chottag statusline 2>/dev/null)
+printf '%s  %s\n' "$your_line" "$seg"
+```
+
+`chottag statusline` only prints: it has no side effect. If you use cmux,
+you can opt in to a sidebar pill with the same line by adding `--cmux`:
+
+```sh
+seg=$(~/.chottag/bin/chottag statusline --cmux 2>/dev/null)
+```
+
+To show only some of it, read fields instead, for example
+`chottag statusline --json | jq -r '.serving'` (see
+[Commands](commands.md#chottag-statusline)). Use `chottag statusline` rather
+than `chottag status --json` here: only `statusline` knows whether this
+session goes through chottag.
+
+If you have no status line yet, you can use chottag's on its own. Add this
+to your `~/.claude/settings.json` (chottag never edits that file for you):
 
 ```json
 {
   "statusLine": { "type": "command", "command": "~/.chottag/bin/chottag statusline" }
 }
 ```
-
-If you already have a status-line script, add the segment to its output
-instead: `$(~/.chottag/bin/chottag statusline 2>/dev/null)`.
 
 ### Or check from another terminal
 

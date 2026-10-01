@@ -160,20 +160,31 @@ its conversation (don't use a `!` command for this: its output lands in
 the chat):
 
 1. **The status line (recommended).** `chottag statusline` prints
-   `c» <serving account> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok` for a
-   session that goes through chottag, `c» down` when chottag is not
-   answering, and `c» off` for a Home session. Ask the user first, then
-   add this to their `~/.claude/settings.json`:
+   `c» <serving account> · 5h … · 7d …` for a session that goes through
+   chottag, `c» down` when chottag is not answering, and `c» off` for a
+   Home session. It never replaces the user's status line: ask whether
+   they have one first.
+   - **They have one:** add chottag's segment to what their script
+     prints, `$(~/.chottag/bin/chottag statusline 2>/dev/null)`, or read
+     fields from `chottag statusline --json`. Show them the change first.
+     The plugin skill has a ready-made wrapper script for a `statusLine`
+     that runs a plain command.
+   - **They have none:** offer chottag's line on its own, in their
+     `~/.claude/settings.json`:
 
-   ```json
-   { "statusLine": { "type": "command", "command": "~/.chottag/bin/chottag statusline" } }
-   ```
+     ```json
+     { "statusLine": { "type": "command", "command": "~/.chottag/bin/chottag statusline" } }
+     ```
 
-   If they already have a `statusLine`, don't replace it: append
-   `$(~/.chottag/bin/chottag statusline 2>/dev/null)` to their script's
-   output instead. This is the one edit under `~/.claude` this guide
-   allows, and only with the user's yes; chottag itself never writes
-   there.
+   `chottag statusline` only prints; it has no side effect. Offer the cmux
+   sidebar pill only to a user who runs cmux, and add `--cmux`
+   (`$(~/.chottag/bin/chottag statusline --cmux 2>/dev/null)`) only with
+   their yes.
+
+   Either way, edit only with the user's yes. This is the one edit under
+   `~/.claude` this guide allows; chottag itself never writes there. Use
+   `chottag statusline`, not `chottag status --json`: only `statusline`
+   knows whether this session goes through chottag.
 2. **From another terminal.** `chottag status` shows `live sessions: N`,
    which goes up by one when a session starts through chottag.
 

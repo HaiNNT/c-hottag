@@ -7,6 +7,14 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.5.1] - 2026-10-01
+
+### Changed
+
+- Status-line docs and the plugin skill add chottag's segment to your own status line instead of replacing it.
+- `chottag statusline` no longer changes anything: the cmux sidebar pill is now opt-in with `--cmux`.
+  See [release notes](docs/release-notes/v0.5.1.md).
+
 ## [0.5.0] - 2026-09-30
 
 ### Added
@@ -199,6 +207,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.5.1]: docs/release-notes/v0.5.1.md
 [0.5.0]: docs/release-notes/v0.5.0.md
 [0.4.10]: docs/release-notes/v0.4.10.md
 [0.4.9]: docs/release-notes/v0.4.9.md

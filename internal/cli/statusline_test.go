@@ -419,8 +419,8 @@ func TestStatuslinePillThrottle(t *testing.T) {
 	t.Setenv("CMUX_WORKSPACE_ID", "ws:1/a b")
 	t.Setenv("NO_COLOR", "")
 	writeCache(t, home, status.Account{Name: "work", Usage: usageOf(now, 10, 5, time.Time{}, time.Time{})})
-	runHome(t, home, "statusline")
-	runHome(t, home, "statusline")
+	runHome(t, home, "statusline", "--cmux")
+	runHome(t, home, "statusline", "--cmux")
 	if len(*calls) != 1 {
 		t.Fatalf("calls = %v", *calls)
 	}
@@ -432,7 +432,7 @@ func TestStatuslinePillThrottle(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeCache(t, home, status.Account{Name: "work", Usage: usageOf(now, 11, 5, time.Time{}, time.Time{})})
-	runHome(t, home, "statusline")
+	runHome(t, home, "statusline", "--cmux")
 	if len(*calls) != 2 {
 		t.Fatalf("a changed line must send again: %v", *calls)
 	}
@@ -441,7 +441,7 @@ func TestStatuslinePillThrottle(t *testing.T) {
 func TestStatuslinePillLabelColourAndNoEnv(t *testing.T) {
 	home, _ := v2Env(t)
 	calls := stubCmux(t, nil)
-	runHome(t, home, "statusline")
+	runHome(t, home, "statusline", "--cmux")
 	if len(*calls) != 0 {
 		t.Fatalf("no pill without CMUX_WORKSPACE_ID: %v", *calls)
 	}
@@ -449,7 +449,7 @@ func TestStatuslinePillLabelColourAndNoEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CMUX_WORKSPACE_ID", "w")
-	runHome(t, home, "statusline")
+	runHome(t, home, "statusline", "--cmux")
 	if len(*calls) != 1 || (*calls)[0].color != "#FFAF00" {
 		t.Fatalf("calls = %v", *calls)
 	}
@@ -459,11 +459,11 @@ func TestStatuslinePillErrorIgnoredAndNotCached(t *testing.T) {
 	home, _ := v2Env(t)
 	calls := stubCmux(t, fmt.Errorf("cmux gone"))
 	t.Setenv("CMUX_WORKSPACE_ID", "w")
-	code, out, _ := runHome(t, home, "statusline")
+	code, out, _ := runHome(t, home, "statusline", "--cmux")
 	if code != 0 || !strings.HasPrefix(out, "c» work") {
 		t.Fatalf("got %d %q", code, out)
 	}
-	runHome(t, home, "statusline")
+	runHome(t, home, "statusline", "--cmux")
 	if len(*calls) != 2 {
 		t.Fatalf("a failed send must not be cached: %v", *calls)
 	}
@@ -517,8 +517,43 @@ func TestStatuslinePillWorkspaceCannotEscapeRun(t *testing.T) {
 	home, _ := v2Env(t)
 	stubCmux(t, nil)
 	t.Setenv("CMUX_WORKSPACE_ID", "../../evil")
-	runHome(t, home, "statusline")
+	runHome(t, home, "statusline", "--cmux")
 	if _, err := os.Stat(filepath.Join(home, "run", "pill-______evil.txt")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStatuslineBareHasNoSideEffectInCmux(t *testing.T) {
+	home, _ := v2Env(t)
+	calls := stubCmux(t, nil)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws1")
+	for _, args := range [][]string{{"statusline"}, {"statusline", "--json"}} {
+		if code, _, _ := runHome(t, home, args...); code != 0 {
+			t.Fatalf("%v exit %d", args, code)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a bare statusline called cmux: %v", *calls)
+	}
+	if _, err := os.Stat(filepath.Join(home, "run")); err == nil {
+		entries, _ := os.ReadDir(filepath.Join(home, "run"))
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "pill-") {
+				t.Fatalf("throttle file written: %s", e.Name())
+			}
+		}
+	}
+}
+
+func TestStatuslineCmuxWithJSON(t *testing.T) {
+	home, _ := v2Env(t)
+	calls := stubCmux(t, nil)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws1")
+	code, out, _ := runHome(t, home, "statusline", "--cmux", "--json")
+	if code != 0 || !strings.Contains(out, `"serving": "work"`) && !strings.Contains(out, `"serving":"work"`) {
+		t.Fatalf("got %d %q", code, out)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %v", *calls)
 	}
 }

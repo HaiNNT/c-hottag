@@ -92,7 +92,7 @@ Without arguments, work out what the user wants and use "Common tasks".
 | the user wants | run |
 |---|---|
 | which account is serving, usage, limits | `chottag status --json` |
-| show in a status line whether this session goes through chottag | `chottag statusline` (one line: `c» <serving> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, `c» down` or `c» off`; never fails) |
+| show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <serving> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, `c» down` or `c» off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
 | add or re-login an account | `chottag login <name> --json` (timeout 600000) |
@@ -161,45 +161,45 @@ verifies each download against the release's checksums.
 
 ## Status line
 
-chottag must not edit `~/.claude/settings.json`, and neither do you. Offer
-the user the built-in status line first, and only with their yes: it prints
-the mark, the serving account, its 5h/7d usage, the next reset and pool
-health, and never fails. They add this to `~/.claude/settings.json` by hand:
+chottag must not edit `~/.claude/settings.json`, and neither do you. chottag
+never replaces the user's status line: `chottag statusline` gives their own
+status line something to show. Ask first whether they already have one.
 
-```json
-{"statusLine":{"type":"command","command":"~/.chottag/bin/chottag statusline"}}
-```
+- **They have one (the usual case).** Add chottag's segment to what their
+  script already prints. Show them the change and make it only with their
+  yes. If their `statusLine` runs a command rather than a script, give them
+  this script to save OUTSIDE `~/.chottag` (for example
+  `~/.local/bin/chottag-statusline.sh`: `chottag uninstall --purge` deletes
+  the whole `~/.chottag` tree), `chmod +x`, with their command in place of
+  `YOUR_EXISTING_COMMAND`, and let them point `statusLine` at it:
 
-To combine it with an existing status line, or to show the serving account
-another way, give them this script to save OUTSIDE
-`~/.chottag` (for example as `~/.local/bin/chottag-statusline.sh`, not
-anywhere under `~/.chottag`, since `chottag uninstall --purge` deletes that
-whole tree and would take the script with it), `chmod +x`, with their
-existing status line command in place of `YOUR_EXISTING_COMMAND`, and let
-them point `statusLine` at it themselves:
+  ```sh
+  #!/bin/sh
+  # Your status line, with chottag's segment added at the end.
+  input=$(cat)                                        # Claude Code's JSON for this session
+  line=$(printf '%s' "$input" | YOUR_EXISTING_COMMAND)
+  seg=$(~/.chottag/bin/chottag statusline 2>/dev/null)
+  printf '%s  %s\n' "$line" "$seg"
+  ```
 
-```sh
-#!/bin/sh
-# Wraps an existing Claude Code status line and appends chottag's serving account.
-input=$(cat)
-existing=$(printf '%s' "$input" | YOUR_EXISTING_COMMAND)
-serving=$(chottag status --json 2>/dev/null | jq -r '.serving // empty' 2>/dev/null)
-if [ -n "$serving" ]; then
-  printf '%s  ★ %s\n' "$existing" "$serving"
-else
-  printf '%s\n' "$existing"
-fi
-```
+  To show only some of it, read fields instead:
+  `chottag statusline --json | jq -r '.serving'` (fields: `session`,
+  `daemon`, `serving`, `label`, `fiveHourPct`, `sevenDayPct`, `resetsAt`,
+  `okAccounts`, `rotationAccounts`).
+- **They have none.** Offer chottag's line on its own; they add this to
+  `~/.claude/settings.json` by hand:
 
-The settings entry they add (in `~/.claude/settings.json`, by hand):
+  ```json
+  {"statusLine":{"type":"command","command":"~/.chottag/bin/chottag statusline"}}
+  ```
 
-```json
-"statusLine": { "type": "command", "command": "~/.local/bin/chottag-statusline.sh" }
-```
+`chottag statusline` only prints: it has no side effect. Offer the cmux
+sidebar pill only to a user who runs cmux, and add `--cmux` to the command
+(`seg=$(~/.chottag/bin/chottag statusline --cmux 2>/dev/null)`) only with
+their yes.
 
-`chottag status --json` reads a local cache only, so it is safe on every
-refresh. The script needs `jq`. Before `chottag uninstall --purge`, tell the
-user to remove this `statusLine` entry (or point it back at
-`YOUR_EXISTING_COMMAND`) first: `--purge` does not touch `settings.json`, and
-`chottag status` will be gone, so the ★ indicator would otherwise just
-disappear silently with no sign anything is wrong.
+Use `chottag statusline`, not `chottag status --json`, in a status line: it
+knows whether this session goes through chottag, and it is built for every
+redraw. It prints `c» off` rather than failing when chottag is gone, but
+before `chottag uninstall --purge`, tell the user to take the segment (or
+the `statusLine` entry) out.

@@ -34,7 +34,7 @@ commands:
   auto [VERB]                   show auto-switch (on by default); VERB: on, off, mode M, set KEY VALUE, reset
   plan NAME TIER [--units N]    set NAME's plan tier for auto-switch: pro, max5x, max20x or team
   status [--json] (alias ls)    print each account's usage and limit state
-  statusline [--json]           one line for Claude Code's status line: whether this session goes through chottag
+  statusline [--json] [--cmux]  one line for Claude Code's status line: whether this session goes through chottag
   doctor [--fix]                check the install; --fix repairs what it safely can
   proxy run [flags]             run the routing proxy in the foreground
   daemon run [--claude PATH]    run the daemon in the foreground (the shim starts it on demand)
