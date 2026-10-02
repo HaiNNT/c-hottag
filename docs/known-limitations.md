@@ -47,6 +47,17 @@ notice; a later `/v1/mcp_servers` listing on another account doesn't fix
 it (`owners.json` is first-writer-wins) — `chottag own <kind> <id>
 <account>` reassigns it.
 
+## Objects only Home's login can see
+
+A claude.ai object (artifact, Remote Control session, connector) that only
+Claude Code's own (Home) login can see, such as one created before chottag or
+by a `CHOTTAG_BYPASS=1` session, no longer works through chottag from 0.8.5.
+A request for it goes out as the remote account, which gets a 403 or 404, and
+chottag does not resend it on Home's login (that resend let an object act as
+the wrong account). Run `chottag remote <account>` for an account that can see
+it, or use it from a `CHOTTAG_BYPASS=1 claude` session. See
+[troubleshooting.md](troubleshooting.md).
+
 ## Linux
 
 Linux builds and passes CI, but has not been used for real yet.

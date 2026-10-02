@@ -7,6 +7,21 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.8.5] - 2026-10-02
+
+### Fixed
+
+- A Remote Control, connector, artifact or routine request whose remote or owner account has a stale token never goes out on Claude Code's own (Home) login: chottag waits up to 15 seconds for a refresh, then answers a 503 naming the account (`chottag login A`), with any number of pools (when a remote account is set). The safety net never resends such a request on Home's login, so an object only Home's login can see now gets the remote account's 403/404 (`chottag remote <account>`, see known limitations).
+
+### Added
+
+- The daemon keeps every pool's remote account's token fresh (refreshed when 6 minutes or less are left; a needs-login account is skipped and logged once).
+
+### Changed
+
+- The daemon log words a serving request sent on Home's own login and a refused remote request, each at most once a minute per account.
+  See [release notes](docs/release-notes/v0.8.5.md).
+
 ## [0.8.4] - 2026-10-02
 
 ### Fixed
@@ -301,6 +316,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.8.5]: docs/release-notes/v0.8.5.md
 [0.8.4]: docs/release-notes/v0.8.4.md
 [0.8.3]: docs/release-notes/v0.8.3.md
 [0.8.2]: docs/release-notes/v0.8.2.md

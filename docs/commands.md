@@ -1015,7 +1015,7 @@ Its checks, in the order they run:
 | `daemon-identity` | a running daemon proved it holds this install's proxy secret | `chottag daemon restart` |
 | `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
 | `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
-| `route-drift` | the running daemon resent a swapped request unchanged | `chottag trace on` |
+| `route-drift` | the running daemon saw a swapped request refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is) | `chottag trace on` |
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |

@@ -143,8 +143,9 @@ func TestSafetyNetPassesThroughAConnectorOwnersRefusal(t *testing.T) {
 
 // TestSafetyNetUnknownOwnerConnectorCallStillDrifts covers R96's other
 // half: a connector id the owner map does NOT know (the account came from
-// the remote pin, not the owner map) keeps today's safety net exactly —
-// refresh, then resend on the client's own login, counted as drift.
+// the remote pin, not the owner map) keeps the safety net's refresh and
+// counts as drift. Since R147 it is never resent on the client's own login
+// (Home's): a remote request must not go out as the wrong account.
 func TestSafetyNetUnknownOwnerConnectorCallStillDrifts(t *testing.T) {
 	var seen []string
 	var mu sync.Mutex
@@ -170,11 +171,11 @@ func TestSafetyNetUnknownOwnerConnectorCallStillDrifts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("client saw %d, want 200 (the safety net's resend on Home's login)", resp.StatusCode)
+	if resp.StatusCode != 404 {
+		t.Fatalf("client saw %d, want the upstream 404 (R147: never resent on Home's login)", resp.StatusCode)
 	}
 	mu.Lock()
-	wantLabels(t, seen, []string{"stale", "fresh", "original"})
+	wantLabels(t, seen, []string{"stale", "fresh"})
 	mu.Unlock()
 	if got := h.Server.RouteDrift(); got != 1 {
 		t.Fatalf("RouteDrift = %d, want 1 (an unrecorded connector id is a routing error, not the owner's own answer)", got)
@@ -183,9 +184,10 @@ func TestSafetyNetUnknownOwnerConnectorCallStillDrifts(t *testing.T) {
 
 // TestSafetyNetOwnerMappedAPIHostObjectStillDrifts pins F241/R96's scope
 // to MCPProxyHost: an owner-mapped object on api.anthropic.com (e.g. an
-// artifact) keeps today's safety net exactly, even though its account
-// also came from the owner map — the connector protocol reasoning behind
-// R96 does not apply there.
+// artifact) keeps the safety net's refresh and drift count, even though its
+// account also came from the owner map — the connector protocol reasoning
+// behind R96 does not apply there. Since R147 it is never resent on Home's
+// login.
 func TestSafetyNetOwnerMappedAPIHostObjectStillDrifts(t *testing.T) {
 	var calls int32
 	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,11 +208,11 @@ func TestSafetyNetOwnerMappedAPIHostObjectStillDrifts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("client saw %d, want 200 (the safety net's resend on Home's login)", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("client saw %d, want the upstream 404 (R147: never resent on Home's login)", resp.StatusCode)
 	}
-	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Fatalf("upstream saw %d requests, want 2 (swapped attempt + original-login resend)", got)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("upstream saw %d requests, want 1 (the swapped attempt; this chooser's refresh fails, and there is no Home resend)", got)
 	}
 	if got := h.Server.RouteDrift(); got != 1 {
 		t.Fatalf("RouteDrift = %d, want 1: an owner-mapped object still drifts outside MCPProxyHost", got)

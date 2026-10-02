@@ -69,7 +69,18 @@ type slot struct {
 	// is never read by Token's natural (StateStale) refresh path, so an
 	// ordinary expired token is refreshed immediately regardless of it.
 	forceNextTry time.Time
+	// awaitNextTry throttles the refresh Await forces through a backoff
+	// (R147): one attempt per MinBackoff, so a burst of remote requests for
+	// a slot whose login is broken does not spawn a claude per request: at most
+	// one forced attempt per forceEvery, measured from the last one.
+	awaitNextTry time.Time
+	// warmHold: Warm leaves the slot alone until then (see Warm).
+	warmHold time.Time
 }
+
+// forceEvery is the least time between two refreshes Await forces through a
+// backoff for one slot.
+const forceEvery = time.Minute
 
 // errSlotBusy means another holder (usually `chottag login`) has the slot
 // lock, so this refresh attempt did not happen.
@@ -151,6 +162,11 @@ func (m *Manager) Token(ctx context.Context, slotDir string) (string, creds.Stat
 // refresh itself by cancelling; Await still lets the refresh run detached
 // (via Token's own call below) and only waits, bounded by ctx, for it to
 // finish.
+//
+// R147: a slot backing off from a failed (or busy) refresh has nothing in
+// flight, but a remote or owner request must not go out on Home's login
+// either, so Await then forces one refresh past nextTry (single-flight, and
+// at most one per minute), waits for it under ctx, and re-reads.
 func (m *Manager) Await(ctx context.Context, slotDir string) (string, creds.Status, bool) {
 	tok, st, ok := m.Token(ctx, slotDir)
 	if ok || st.State == creds.StateNeedsLogin {
@@ -159,6 +175,17 @@ func (m *Manager) Await(ctx context.Context, slotDir string) (string, creds.Stat
 
 	s := m.slotFor(slotDir)
 	s.mu.Lock()
+	if !s.refreshing && m.cfg.Now().Before(s.nextTry) && !m.cfg.Now().Before(s.awaitNextTry) {
+		// R147: a remote or owner request must not go out on Home's login,
+		// so a slot backing off from a failed (or busy) refresh gets one
+		// forced attempt now, past nextTry: single-flight like any refresh
+		// (s.refreshing), detached from this caller, and awaited below under
+		// the caller's own bound. Throttled by awaitNextTry.
+		s.awaitNextTry = m.cfg.Now().Add(forceEvery)
+		s.refreshing = true
+		s.done = make(chan struct{})
+		go m.refreshDetached(context.WithoutCancel(ctx), s, slotDir)
+	}
 	if !s.refreshing {
 		// Nothing (else) to wait for: either backing off from a recent
 		// failure, or (the far narrower case) the Token call just above
@@ -230,6 +257,53 @@ func (m *Manager) ForceRefresh(ctx context.Context, slotDir string) (string, boo
 	return tok, ok
 }
 
+// Warm refreshes slotDir's token now, in this goroutine, when it is stale or
+// expires within the given window, so a remote account's token is fresh
+// before a request needs it (R147). It shares Token's single-flight flag and
+// failure backoff (a slot already refreshing, or backing off, is left
+// alone), never refreshes a needs-login slot, and runs the refresh under the
+// same panic guard as the background one. The refresh does not stop with ctx
+// (F49): the caller cancels only its own scheduling.
+//
+// The refresher is Claude Code itself, which renews its token only close to
+// expiry: a refresh that leaves ExpiresAt where it was is not a renewal, and
+// the slot is then left alone until it is inside creds.ExpiringWithin of
+// expiry (slot.warmHold), instead of spawning claude on every pass. It
+// reports the slot's status and whether the token was renewed.
+func (m *Manager) Warm(ctx context.Context, slotDir string, within time.Duration) (creds.Status, bool) {
+	s := m.slotFor(slotDir)
+	s.mu.Lock()
+	now := m.cfg.Now()
+	m.read(s, slotDir, now, false)
+	st := s.status
+	if st.State == creds.StateNeedsLogin {
+		s.mu.Unlock()
+		return st, false
+	}
+	due := st.State == creds.StateStale || s.tok.ExpiresAt.Sub(now) <= within
+	if !due || s.refreshing || now.Before(s.nextTry) || now.Before(s.warmHold) {
+		s.mu.Unlock()
+		return st, false
+	}
+	before := s.tok.ExpiresAt
+	s.refreshing = true
+	s.done = make(chan struct{})
+	s.mu.Unlock()
+	// WithoutCancel (F49, as in refreshDetached): shutdown must not SIGKILL
+	// claude mid-refresh, which can tear the token write.
+	st, ok := m.runRefresh(context.WithoutCancel(ctx), s, slotDir)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ok {
+		return st, false
+	}
+	if !s.tok.ExpiresAt.After(before) {
+		s.warmHold = s.tok.ExpiresAt.Add(-creds.ExpiringWithin)
+		return st, false
+	}
+	return st, true
+}
+
 // Status reports a slot's state without refreshing, so `chottag status`
 // never blocks on a login.
 func (m *Manager) Status(slotDir string) creds.Status {
@@ -258,6 +332,12 @@ func (m *Manager) read(s *slot, dir string, now time.Time, force bool) {
 // still propagates to the request goroutine, where net/http contains it —
 // that behaviour is deliberately unchanged.
 func (m *Manager) refreshDetached(ctx context.Context, s *slot, dir string) {
+	m.runRefresh(ctx, s, dir)
+}
+
+// runRefresh is one refresh under the panic guard: see refreshDetached. On a
+// panic it returns the zero Status and false, with the backoff set.
+func (m *Manager) runRefresh(ctx context.Context, s *slot, dir string) (st creds.Status, ok bool) {
 	defer func() {
 		if recover() == nil {
 			return
@@ -275,7 +355,8 @@ func (m *Manager) refreshDetached(ctx context.Context, s *slot, dir string) {
 		defer s.mu.Unlock()
 		m.setBackoff(s, m.cfg.Now())
 	}()
-	m.doRefresh(ctx, s, dir, false)
+	_, st, ok = m.doRefresh(ctx, s, dir, false)
+	return st, ok
 }
 
 // doRefresh runs one refresh attempt without holding s.mu: a refresh spawns

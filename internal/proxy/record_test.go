@@ -371,7 +371,8 @@ func TestNonSuccessResponseDoesNotRecordOwners(t *testing.T) {
 //
 // recorder never succeeds a Refresh (see recorder.Refresh), so a refusal on
 // the swapped token falls straight through to the original-login resend —
-// exactly the path that must record nothing.
+// exactly the path that must record nothing. Since R147 a remote or owner
+// request is not resent on Home's login at all: the refusal goes back.
 func TestDriftedResponseDoesNotRecordOwners(t *testing.T) {
 	rec := &recorder{token: "tok-C", account: "C"}
 	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -405,14 +406,14 @@ func TestDriftedResponseDoesNotRecordOwners(t *testing.T) {
 	}
 
 	resp1 := post("/v1/code/sessions", `{}`)
-	if resp1.StatusCode != http.StatusOK {
-		t.Fatalf("resp1 status = %d, want 200 (the safety net's resend on Home's login)", resp1.StatusCode)
+	if resp1.StatusCode != http.StatusForbidden {
+		t.Fatalf("resp1 status = %d, want 403 (R147: a remote request is never resent on Home's login)", resp1.StatusCode)
 	}
 	resp1.Body.Close()
 
 	resp2 := post("/api/frame/deploy/direct", `{"slug":"abc123","content":"<h1>hi</h1>"}`)
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("resp2 status = %d, want 200 (the safety net's resend on Home's login)", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("resp2 status = %d, want 403 (R147: a remote request is never resent on Home's login)", resp2.StatusCode)
 	}
 	resp2.Body.Close()
 

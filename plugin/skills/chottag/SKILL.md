@@ -144,8 +144,20 @@ gets the 503 as well. Claude Code retries it, so a fix lands by
 itself: `chottag pool` shows the members, then `chottag login`, `chottag
 rotate <name> on` or `chottag pool join`. `chottag doctor` has the matching
 warning: its `roles` row is `info` ("pool work has no account in rotation")
-for such a pool. With only `default` an unservable request still passes
+for such a pool. With only `default` an unservable serving request still passes
 through as before.
+
+**A remote or owner request never goes out on Home's login (0.8.5), with any
+number of pools, when a remote account is set.** If the remote account (or the
+object's owner) has no usable token after a 15-second wait for a refresh, chottag answers a 503, `chottag:
+account A (remote) has no usable login right now; run: chottag login A`, and
+the safety net never resends it on Home's login. The daemon keeps each pool's
+remote account's token fresh (refreshed when 6 minutes or less are left).
+The fix is `chottag login <name>`. After upgrading from before 0.8.5, run
+`chottag daemon restart` and reconnect Remote Control once. Cost: an object
+that only Home's login can see (made before chottag or by a `CHOTTAG_BYPASS=1`
+session) now gets the remote account's 403/404; `chottag remote <account>` for
+an account that can see it, or use it from a `CHOTTAG_BYPASS=1 claude` session.
 
 Warnings to relay: `identity_suspect` (`adopt` found a slot whose email moved onto a serving account's with the org unchanged, and left the stored identity alone: run `chottag login <name>` for it), `shared_account` (above), `pool_not_changed` (`login
 --pool` for an account that already exists), and `daemon_predates_pools`

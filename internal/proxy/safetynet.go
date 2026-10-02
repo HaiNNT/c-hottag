@@ -53,7 +53,8 @@ type safetyNet struct {
 	// -1 when unknown (chunked).
 	onUnreplayableRefusal func(contentLength int64)
 
-	// noOriginal: more than one pool exists (M8), so the client's own login,
+	// noOriginal: more than one pool exists (M8), or the request is remote
+	// class or owner-routed (R147), so the client's own login,
 	// which may be another pool's or none, is never used: a refused request
 	// returns the swapped account's refusal instead of the resend below.
 	noOriginal bool
@@ -146,6 +147,13 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	if s.noOriginal {
+		// The swapped account was refused twice and Home's login may not
+		// be used: nothing is resent, but it is still a refused swap, which
+		// is what the route-drift count (and `chottag doctor`) is about.
+		s.drift.Add(1)
+		if s.onDrift != nil {
+			s.onDrift()
+		}
 		s.finishWall(false, resp, err)
 		return resp, err
 	}

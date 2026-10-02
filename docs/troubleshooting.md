@@ -51,9 +51,34 @@ find it.
 ## STATE says passthrough:
 
 `passthrough: ` in the STATE column means requests meant for that account
-went out on Home's own login instead, because chottag could not use the
+went out on Home's own login instead (a serving request; since 0.8.5 a remote
+or owner request is refused with a 503 instead), because chottag could not use the
 slot's token. Fix the underlying account (usually a re-login with `chottag
 login <name>`) and the passthrough clears on the next successful request.
+
+## Remote Control or a connector acts as the wrong account after a resume
+
+Before 0.8.5, a Remote Control, connector or artifact request whose remote
+or owner account had a stale token went out on Home's own login (the log said
+`chottag: passthrough A stale`), so after a resume it could act as the wrong
+account. Upgrade (`chottag update`), run `chottag daemon restart`, and
+reconnect Remote Control once. From 0.8.5 such a request waits up to 15
+seconds for a refresh and, if the account still has no usable login, gets a
+503 that says `account A (remote) has no usable login right now; run:
+chottag login A` (the log says `chottag: refused a remote request: A's token
+is stale; run `chottag login A` if it persists`); never Home's login. Run `chottag login
+A`.
+
+## An object returns 403 or 404 after 0.8.5
+
+A claude.ai object that only Home's login can see (one created before
+chottag, or by a session run with `CHOTTAG_BYPASS=1`) used to work by
+accident: the remote account was refused and chottag resent the request on
+Home's login. From 0.8.5 that resend is gone for remote and owner requests,
+so Claude Code sees the 403 or 404. Either point `chottag remote <account>` at
+an account that can see the object, or use the object from a
+`CHOTTAG_BYPASS=1 claude` session. See also
+[Known limitations](known-limitations.md).
 
 ## A session gets 407
 

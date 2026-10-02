@@ -258,9 +258,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	dn := newDaemonNotify(cache.State, newDaemonNotifier())
 	defer dn.Close()
 
-	printEvent := throttle(10*time.Second, func(e selector.Event) {
-		fmt.Fprintf(stderr, "chottag: %s %s %s %s\n", e.Kind, e.Account, e.Status.State, e.Detail)
-	})
+	printEvent := newEventPrinter(stderr, timeNow)
 	sel := selector.New(newSelectorConfig(cache.State, tm, own, sink, printEvent, dn))
 	ch := newDaemonChooser(sel, own, tm, cache.State, dn)
 
@@ -341,6 +339,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Spread:     sp,
 			Update:     ul,
 			Restart:    rl,
+			Warm:       &remoteWarmer{state: cache.State, warm: tm.Warm, log: stderr, now: timeNow},
 			// nil in production: runDaemon's own RosterProcessed default.
 			RosterProcessed: rosterProcessedForTest,
 		})
@@ -798,6 +797,11 @@ type daemonDeps struct {
 	// sleep, and joins it before the sink closes. nil (a dev build, every
 	// test literal) never restarts the daemon.
 	Restart *restartLoop
+	// Warm, if non-nil, keeps every pool's remote account's token fresh
+	// (R147). The roster tick kicks it; at shutdown runDaemon cancels it
+	// and joins it for a bounded time (warmStopBound) before the owner map
+	// closes. nil (every test literal) warms nothing.
+	Warm *remoteWarmer
 }
 
 // rosterTickInterval is how often the roster watcher ticks in production.
@@ -938,6 +942,10 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		lastNotifyErrs                         uint64
 	)
 	stamp := func(now time.Time) {
+		// Keeping the remote accounts warm (R147) rides this tick too; kick
+		// rate-limits itself, never blocks and starts nothing once
+		// shutdown began. closeOwners cancels and joins it.
+		d.Warm.kick(watchCtx)
 		var drops uint64
 		if d.Chooser != nil {
 			drops = d.Chooser.OwnerWriteDrops()
@@ -1050,7 +1058,8 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		// Close does not reach disk, and the account it would have dropped
 		// stays attributed on the next daemon start (Task 4 review, F1).
 		stopWatch()
-		<-rosterDone
+		<-rosterDone // the last kick has happened
+		d.Warm.stop(warmStopBound)
 		<-pollDone
 		<-updateDone
 		<-restartDone
@@ -1731,11 +1740,21 @@ func (c *chooser) Choose(ctx context.Context, d router.Decision, bodyID string) 
 func (c *chooser) ChooseGuarded(ctx context.Context, d router.Decision, bodyID string) (string, string, bool, bool, string) {
 	ch, pool := c.choose(ctx, d, bodyID)
 	if ch.Account == "" {
-		if ch.StateErr && c.multi.Load() {
+		if ch.StateErr && (c.multi.Load() || d.Class == router.Remote || d.Object != "") {
+			// R147: a remote or owner request is refused whatever the pool
+			// count; the class is known even when the state is not.
 			ch.Refused = "state.json is unreadable"
+			if !c.multi.Load() {
+				return "", "", false, false, "chottag: cannot read state.json, so this remote request is refused (run: chottag doctor)"
+			}
 		}
 		if ch.Refused == "" {
 			return "", "", false, false, ""
+		}
+		if ch.RefusedAccount != "" {
+			// R147: a remote or owner request never goes out on Home's
+			// login; the selector event already logged why.
+			return "", "", false, false, remoteRefusal(ch.RefusedAccount, ch.RefusedRole)
 		}
 		return "", "", false, false, c.refuse(pool, ch.Refused)
 	}

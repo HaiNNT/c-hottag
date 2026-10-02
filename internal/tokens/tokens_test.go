@@ -1260,11 +1260,11 @@ func TestAwaitOnANeedsLoginSlotReturnsAtOnce(t *testing.T) {
 	}
 }
 
-// TestAwaitDuringBackoffReturnsAtOnceWithoutRefreshing: a slot already
-// backing off from a recent failure has no in-flight refresh to wait for,
-// so Await must return immediately (like Token) rather than block until its
-// caller's context expires.
-func TestAwaitDuringBackoffReturnsAtOnceWithoutRefreshing(t *testing.T) {
+// TestAwaitDuringBackoffTriesOneRefreshAndReturnsItsToken (R147): a slot in
+// backoff from a failed refresh has nothing in flight, but a remote or owner
+// request must not go out on Home's login, so Await tries one refresh
+// regardless of nextTry and waits for it.
+func TestAwaitDuringBackoffTriesOneRefreshAndReturnsItsToken(t *testing.T) {
 	clk := newSyncClock(time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC))
 	f := &fakeSlot{tok: tok(clk.now().Add(-time.Minute)), refreshErr: errors.New("network down")}
 	m := newManagerClock(f, clk, false)
@@ -1274,6 +1274,39 @@ func TestAwaitDuringBackoffReturnsAtOnceWithoutRefreshing(t *testing.T) {
 	}
 	waitFor(t, "the failed refresh attempt to back off", func() bool { return f.refreshCount() == 1 })
 
+	fresh := tok(clk.now().Add(time.Hour))
+	f.setOnRefresh(func(f *fakeSlot) { f.tok = fresh })
+	f.mu.Lock()
+	f.refreshErr = nil
+	f.mu.Unlock()
+
+	got, _, ok := m.Await(context.Background(), slot)
+	if !ok || got != fresh.AccessToken {
+		t.Fatalf("Await = %q, %v; want the freshly refreshed token", got, ok)
+	}
+	if f.refreshCount() != 2 {
+		t.Fatalf("refreshes = %d, want 2 (one forced past the backoff)", f.refreshCount())
+	}
+}
+
+// A forced attempt that fails is not repeated by every request: a second
+// Await inside MinBackoff returns at once without another refresh.
+func TestAwaitDuringBackoffFailsAndThrottlesTheNextForcedAttempt(t *testing.T) {
+	clk := newSyncClock(time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC))
+	f := &fakeSlot{tok: tok(clk.now().Add(-time.Minute)), refreshErr: errors.New("network down")}
+	m := newManagerClock(f, clk, false)
+
+	if _, _, ok := m.Token(context.Background(), slot); ok {
+		t.Fatal("failed refresh reported ok")
+	}
+	waitFor(t, "the failed refresh attempt to back off", func() bool { return f.refreshCount() == 1 })
+
+	if _, _, ok := m.Await(context.Background(), slot); ok {
+		t.Fatal("Await succeeded though the refresh fails")
+	}
+	if f.refreshCount() != 2 {
+		t.Fatalf("refreshes = %d, want 2", f.refreshCount())
+	}
 	done := make(chan bool, 1)
 	go func() {
 		_, _, ok := m.Await(context.Background(), slot)
@@ -1282,12 +1315,246 @@ func TestAwaitDuringBackoffReturnsAtOnceWithoutRefreshing(t *testing.T) {
 	select {
 	case ok := <-done:
 		if ok {
-			t.Fatal("Await succeeded during backoff")
+			t.Fatal("second Await succeeded")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Await blocked during backoff instead of returning at once")
+		t.Fatal("second Await blocked")
+	}
+	if f.refreshCount() != 2 {
+		t.Fatalf("refreshes = %d, want 2 (the forced attempt is throttled)", f.refreshCount())
+	}
+	// Natural refresh after the backoff (60s after the forced failure).
+	clk.advance(61 * time.Second)
+	if _, _, ok := m.Await(context.Background(), slot); ok {
+		t.Fatal("Await succeeded though the refresh fails")
+	}
+	if f.refreshCount() != 3 {
+		t.Fatalf("refreshes = %d, want 3 after the backoff lapsed", f.refreshCount())
+	}
+	// Backoff is now 120s. 61s later the forced throttle (60s from the last
+	// attempt) has lapsed but nextTry has not: only a forced attempt can run.
+	clk.advance(61 * time.Second)
+	if _, _, ok := m.Await(context.Background(), slot); ok {
+		t.Fatal("Await succeeded though the refresh fails")
+	}
+	if f.refreshCount() != 4 {
+		t.Fatalf("refreshes = %d, want 4 (a forced attempt once the 60s throttle lapsed)", f.refreshCount())
+	}
+	// Less than 60s after that attempt: no forced attempt.
+	clk.advance(30 * time.Second)
+	m.Await(context.Background(), slot)
+	if f.refreshCount() != 4 {
+		t.Fatalf("refreshes = %d, want 4 inside the 60s throttle", f.refreshCount())
+	}
+}
+
+// Concurrent Awaits in backoff coalesce into one forced refresh.
+func TestAwaitDuringBackoffCoalescesConcurrentCallers(t *testing.T) {
+	clk := newSyncClock(time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC))
+	f := &fakeSlot{tok: tok(clk.now().Add(-time.Minute)), refreshErr: errors.New("network down")}
+	m := newManagerClock(f, clk, false)
+	if _, _, ok := m.Token(context.Background(), slot); ok {
+		t.Fatal("failed refresh reported ok")
+	}
+	waitFor(t, "the failed refresh attempt to back off", func() bool { return f.refreshCount() == 1 })
+
+	release := make(chan struct{})
+	fresh := tok(clk.now().Add(time.Hour))
+	f.mu.Lock()
+	f.refreshFunc = func(ctx context.Context) error {
+		<-release
+		f.setToken(fresh)
+		return nil
+	}
+	f.mu.Unlock()
+	const n = 5
+	results := make(chan bool, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			_, _, ok := m.Await(context.Background(), slot)
+			results <- ok
+		}()
+	}
+	waitFor(t, "the forced refresh to start", func() bool { return f.refreshCount() == 2 })
+	close(release)
+	for i := 0; i < n; i++ {
+		select {
+		case ok := <-results:
+			if !ok {
+				t.Fatal("an Await failed")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("not all Awaits returned")
+		}
+	}
+	if f.refreshCount() != 2 {
+		t.Fatalf("refreshes = %d, want 2", f.refreshCount())
+	}
+}
+
+// Warm (R147) refreshes a token that expires within the window, before any
+// request needs it, with an injected clock.
+func TestWarmRefreshesATokenExpiringWithinTheWindow(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	f := &fakeSlot{tok: tok(now.Add(14 * time.Minute))} // OK to Assess, inside 15 minutes
+	fresh := tok(now.Add(time.Hour))
+	f.onRefresh = func(f *fakeSlot) { f.tok = fresh }
+	m := newManager(f, &now, false)
+
+	st, refreshed := m.Warm(context.Background(), slot, 15*time.Minute)
+	if !refreshed || st.State != creds.StateOK {
+		t.Fatalf("Warm = %+v, %v; want a refresh to an ok token", st, refreshed)
+	}
+	if f.refreshCount() != 1 || f.token().AccessToken != fresh.AccessToken {
+		t.Fatalf("refreshes = %d, token = %q", f.refreshCount(), f.token().AccessToken)
+	}
+}
+
+func TestWarmLeavesATokenOutsideTheWindowAlone(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	f := &fakeSlot{tok: tok(now.Add(16 * time.Minute))}
+	m := newManager(f, &now, false)
+	if _, refreshed := m.Warm(context.Background(), slot, 15*time.Minute); refreshed || f.refreshCount() != 0 {
+		t.Fatalf("refreshed a token 16 minutes from expiry: %d refreshes", f.refreshCount())
+	}
+}
+
+func TestWarmRefreshesAnAlreadyStaleToken(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	f := &fakeSlot{tok: tok(now.Add(-time.Minute))}
+	f.onRefresh = func(f *fakeSlot) { f.tok = tok(now.Add(time.Hour)) }
+	m := newManager(f, &now, false)
+	if _, refreshed := m.Warm(context.Background(), slot, 15*time.Minute); !refreshed {
+		t.Fatal("a stale token was not refreshed")
+	}
+}
+
+func TestWarmNeverRefreshesANeedsLoginSlot(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	f := &fakeSlot{err: creds.ErrNoLogin}
+	m := newManager(f, &now, false)
+	st, refreshed := m.Warm(context.Background(), slot, 15*time.Minute)
+	if refreshed || st.State != creds.StateNeedsLogin || f.refreshCount() != 0 {
+		t.Fatalf("Warm = %+v, %v, %d refreshes; want needs-login and no refresh", st, refreshed, f.refreshCount())
+	}
+}
+
+// Warm respects the failure backoff and shares the single-flight flag, so a
+// failing slot is not respawned on every pass.
+func TestWarmRespectsTheBackoffAndSingleFlight(t *testing.T) {
+	clk := newSyncClock(time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+	f := &fakeSlot{tok: tok(clk.now().Add(time.Minute)), refreshErr: errors.New("network down")}
+	m := newManagerClock(f, clk, false)
+	if _, refreshed := m.Warm(context.Background(), slot, 15*time.Minute); refreshed {
+		t.Fatal("a failed refresh reported refreshed")
+	}
+	if _, refreshed := m.Warm(context.Background(), slot, 15*time.Minute); refreshed || f.refreshCount() != 1 {
+		t.Fatalf("Warm inside the backoff refreshed again: %d refreshes", f.refreshCount())
+	}
+	clk.advance(31 * time.Second)
+	m.Warm(context.Background(), slot, 15*time.Minute)
+	if f.refreshCount() != 2 {
+		t.Fatalf("refreshes = %d after the backoff, want 2", f.refreshCount())
+	}
+}
+
+// I1: a panicking refresher does not escape Warm and leaves a backoff.
+func TestWarmRecoversFromAPanickingRefresherAndSetsABackoff(t *testing.T) {
+	clk := newSyncClock(time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+	f := &fakeSlot{tok: tok(clk.now().Add(time.Minute))}
+	f.refreshFunc = func(context.Context) error { panic("exec plumbing") }
+	m := newManagerClock(f, clk, false)
+	if _, refreshed := m.Warm(context.Background(), slot, 6*time.Minute); refreshed {
+		t.Fatal("a panicking refresh reported refreshed")
+	}
+	if _, refreshed := m.Warm(context.Background(), slot, 6*time.Minute); refreshed || f.refreshCount() != 1 {
+		t.Fatalf("Warm inside the backoff refreshed again: %d refreshes", f.refreshCount())
+	}
+}
+
+// I2: a refresh that leaves the token unchanged (Claude Code refreshes only
+// close to expiry) is not repeated on every pass: the slot is left alone
+// until it is inside creds.ExpiringWithin of expiry.
+func TestWarmDoesNotRespawnWhenTheTokenDidNotRenew(t *testing.T) {
+	clk := newSyncClock(time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+	exp := clk.now().Add(6 * time.Minute)
+	f := &fakeSlot{tok: tok(exp)} // the default refresher changes nothing
+	m := newManagerClock(f, clk, false)
+	win := creds.ExpiringWithin + time.Minute
+	if _, refreshed := m.Warm(context.Background(), slot, win); refreshed {
+		t.Fatal("an unchanged token reported refreshed")
+	}
+	for i := 0; i < 2; i++ { // 40s in: 5m20s left, still more than 5m
+		clk.advance(20 * time.Second)
+		m.Warm(context.Background(), slot, win)
 	}
 	if f.refreshCount() != 1 {
-		t.Fatalf("refreshes = %d, want 1 (Await must not force a refresh during backoff)", f.refreshCount())
+		t.Fatalf("refreshes = %d, want 1: no respawn while more than %v remain", f.refreshCount(), creds.ExpiringWithin)
+	}
+	clk.advance(2 * time.Minute) // inside the last 5 minutes
+	m.Warm(context.Background(), slot, win)
+	if f.refreshCount() != 2 {
+		t.Fatalf("refreshes = %d, want 2 once inside %v of expiry", f.refreshCount(), creds.ExpiringWithin)
+	}
+}
+
+// A refresh already in flight (single flight): Warm neither spawns nor blocks.
+func TestWarmNeitherSpawnsNorBlocksWhileARefreshIsInFlight(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	release := make(chan struct{})
+	f := &fakeSlot{tok: tok(now.Add(-time.Minute))}
+	f.refreshFunc = func(context.Context) error { <-release; return errors.New("down") }
+	m := newManager(f, &now, false)
+	m.Token(context.Background(), slot) // starts the background refresh
+	waitFor(t, "the refresh to start", func() bool { return f.refreshCount() == 1 })
+	done := make(chan struct{})
+	go func() {
+		m.Warm(context.Background(), slot, 6*time.Minute)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Warm blocked behind a refresh in flight")
+	}
+	close(release)
+	if f.refreshCount() != 1 {
+		t.Fatalf("refreshes = %d, want 1", f.refreshCount())
+	}
+}
+
+// M8 (F49): cancelling Warm's context (daemon shutdown) never cancels the
+// refresher: killing claude mid-refresh can tear the token write. The
+// refresh runs to its own end, and no backoff results.
+func TestWarmRefreshIsNotCancelledWithItsCallersContext(t *testing.T) {
+	clk := newSyncClock(time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+	f := &fakeSlot{tok: tok(clk.now().Add(time.Minute))}
+	release := make(chan struct{})
+	refresherCtxErr := make(chan error, 1)
+	fresh := tok(clk.now().Add(time.Hour))
+	f.refreshFunc = func(ctx context.Context) error {
+		<-release
+		refresherCtxErr <- ctx.Err()
+		f.setToken(fresh)
+		return nil
+	}
+	m := newManagerClock(f, clk, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	type res struct {
+		refreshed bool
+	}
+	done := make(chan res, 1)
+	go func() {
+		_, r := m.Warm(ctx, slot, 6*time.Minute)
+		done <- res{r}
+	}()
+	waitFor(t, "the refresh to start", func() bool { return f.refreshCount() == 1 })
+	cancel()
+	close(release)
+	if err := <-refresherCtxErr; err != nil {
+		t.Fatalf("the refresher's context was cancelled with the caller's: %v", err)
+	}
+	if r := <-done; !r.refreshed {
+		t.Fatal("the refresh did not complete")
 	}
 }

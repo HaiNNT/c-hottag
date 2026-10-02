@@ -282,7 +282,8 @@ func TestRemoteRoleWithoutAnAwaiterStillUsesToken(t *testing.T) {
 
 // TestAwaitFailureEmitsPassthroughLikeTokenDoes: Await giving up (its
 // timeout elapsed, or the refresh failed) must be reported the same way a
-// Token failure already is — a "passthrough" event and an empty Choice.
+// Token failure already is — a "passthrough" event; for a remote role the
+// Choice is a refusal (R147), never the zero Choice.
 func TestAwaitFailureEmitsPassthroughLikeTokenDoes(t *testing.T) {
 	var events []selector.Event
 	f := &fakeAwaiter{fakeTokens: fakeTokens{"/slots/C": "tok-C"}, awaitOK: false}
@@ -293,8 +294,8 @@ func TestAwaitFailureEmitsPassthroughLikeTokenDoes(t *testing.T) {
 		OnEvent: func(e selector.Event) { events = append(events, e) },
 	})
 	got := s.Choose(context.Background(), router.Decision{Class: router.Remote}, "")
-	if got != (selector.Choice{}) {
-		t.Fatalf("choice = %+v, want pass-through", got)
+	if got.Account != "" || got.Refused == "" {
+		t.Fatalf("choice = %+v, want a refusal", got)
 	}
 	if len(events) != 1 || events[0].Kind != "passthrough" || events[0].Account != "C" {
 		t.Fatalf("events = %+v", events)

@@ -255,6 +255,26 @@ the safety net: with more than one pool, a refused request is not resent on
 Claude Code's own login. An existing object whose owner cannot serve (it needs a
 login) gets the 503 too, rather than going out on Home's login.
 
+**Remote and owner requests never fall back to Home, with any number of
+pools, when a remote account is set.** A request about a claude.ai object
+(Remote Control, a connector, an artifact, a routine) goes out as the remote
+account, or as the object's owner. If that account has no usable token,
+chottag first waits up to 15 seconds for a refresh (and, if the account is
+backing off from a failed one, tries one more, at most once a minute per
+account), then answers the request itself with a 503 (`chottag: account A
+(remote) has no usable login right now; run: chottag login A`). An ordinary
+HTTP request is retried by Claude Code after a 503; a long poll or a client
+with a shorter timeout may give up first. The same holds when `state.json`
+cannot be read. The safety net never resends such a request on Claude Code's
+own login either. Before 0.8.5 it did, so an object could act as the wrong
+account; the cost is in [Known limitations](known-limitations.md). The
+daemon also keeps every pool's remote account's token fresh: it refreshes it
+when 6 minutes or less are left (Claude Code renews its token only inside the
+last 5), and skips an account that needs a login (logged once). A serving
+request is unchanged: with only `default`, one that cannot be served still
+goes out unchanged, and the daemon log says `chottag: sent on Home's own
+login: A's token is stale (serving)`.
+
 Run `chottag pool` to see each pool's members, then log in again
 (`chottag login`), put an account back in rotation (`chottag rotate`), or add
 a member (`chottag pool join`). With only the `default` pool nothing changes:

@@ -30,7 +30,7 @@ type Awaiter interface {
 
 // DefaultAwaitTimeout bounds how long Choose waits on an in-flight refresh
 // for a remote- or owner-routed request when Config.AwaitTimeout is unset.
-const DefaultAwaitTimeout = 20 * time.Second
+const DefaultAwaitTimeout = 15 * time.Second
 
 type Owners interface {
 	Lookup(kind router.Kind, id string) (string, bool)
@@ -43,6 +43,12 @@ type Event struct {
 	Account string
 	Detail  string
 	Status  creds.Status
+	// Role is the role the account was chosen for (RoleServing,
+	// RoleRemote, RoleOwner) when its token turned out unusable; "" for
+	// the other events. Refused reports that the request was refused (R147)
+	// instead of sent on the client's own login.
+	Role    string
+	Refused bool
 }
 
 type Config struct {
@@ -71,6 +77,11 @@ type Choice struct {
 	// pool or none. Account is "" then. With a single pool a request that
 	// cannot be served is the plain zero Choice, as before.
 	Refused string
+	// RefusedAccount and RefusedRole name the remote or owner account whose
+	// unusable token made the refusal (R147): such a request is refused with
+	// any number of pools, never sent on the client's own login (Home's).
+	// Refused is set then, and Account is "".
+	RefusedAccount, RefusedRole string
 	// StateErr reports that state.json could not be read: the caller, which
 	// may know that several pools exist, decides whether to refuse.
 	StateErr bool
@@ -184,7 +195,13 @@ func (s *Selector) choose(ctx context.Context, d router.Decision, bodyID, pool s
 	}
 	tok, status, ok := s.token(ctx, acct.Dir, role)
 	if !ok {
-		s.emit(Event{Kind: "passthrough", Account: acct.Name, Status: status})
+		never := role == RoleRemote || role == RoleOwner
+		s.emit(Event{Kind: "passthrough", Account: acct.Name, Status: status, Role: role, Refused: never || guarded})
+		if never {
+			// R147: a remote or owner request never goes out on Home's
+			// login, whatever the pool count.
+			return Choice{Refused: "no usable token", RefusedAccount: acct.Name, RefusedRole: role}
+		}
 		return deny("no usable token")
 	}
 	return Choice{Account: acct.Name, Token: tok, Role: role}

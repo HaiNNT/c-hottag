@@ -108,11 +108,11 @@ func routeDriftCheck() Check {
 		d := f.Daemon
 		switch {
 		case d.RouteDrift == 0:
-			return Finding{Status: StatusOK, Detail: "no swapped request had to be resent unchanged"}
+			return Finding{Status: StatusOK, Detail: "no swapped request was refused after its refresh and retry"}
 		case d.Running:
-			return Finding{Status: StatusProblem, Detail: fmt.Sprintf("the running daemon resent %d swapped request(s) unchanged: the route table may not match this Claude Code version", d.RouteDrift), Hint: "chottag trace on"}
+			return Finding{Status: StatusProblem, Detail: fmt.Sprintf("the running daemon saw %d swapped request(s) refused after a refresh and retry (resent on Home's login, or refused as is for a remote, owner or pooled request): the route table may not match this Claude Code version", d.RouteDrift), Hint: "chottag trace on"}
 		}
-		return Finding{Status: StatusInfo, Detail: fmt.Sprintf("the last daemon resent %d swapped request(s) unchanged; it is not running now", d.RouteDrift), Hint: "chottag trace on"}
+		return Finding{Status: StatusInfo, Detail: fmt.Sprintf("the last daemon saw %d swapped request(s) refused after a refresh and retry; it is not running now", d.RouteDrift), Hint: "chottag trace on"}
 	}}
 }
 

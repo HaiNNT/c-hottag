@@ -68,8 +68,12 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 	// stale MCP session id, an auth handshake), not a routing error — but
 	// only on MCPProxyHost, where the owner map's only object is a
 	// connector (mcpProxyRules). An owner-mapped object on api.anthropic.com
-	// (e.g. an artifact) keeps today's safety net unchanged.
+	// (e.g. an artifact) keeps the safety net's refresh and drift count (R147:
+	// but never a resend on Home's login, see neverHome).
 	ownerAnswer := false
+	// neverHome (R147): a remote-class or owner-routed request is never
+	// resent on the client's own login, whatever the pool count.
+	neverHome := false
 	refusal := ""
 	if s.cfg.Choose != nil && d.Class != router.Untouched && r.URL.Scheme == "https" && rec.Auth == "oauth-access" {
 		acct, tok, owner, ok, why := s.choose(r.Context(), d, bodyID)
@@ -79,6 +83,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			r.Header.Del("X-Api-Key")
 			rec.Swapped, rec.Account, account = true, acct, acct
 			ownerAnswer = owner && host == router.MCPProxyHost
+			neverHome = owner || d.Class == router.Remote
 		}
 	}
 
@@ -143,7 +148,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			pr.Out.URL.Host = r.URL.Host
 			pr.Out.Host = upstreamHostHeader(r)
 		},
-		Transport: s.transportFor(account, originalAuth, originalAPIKey, d, bodyID, ownerAnswer, &rec, func(to string) {
+		Transport: s.transportFor(account, originalAuth, originalAPIKey, d, bodyID, ownerAnswer, neverHome, &rec, func(to string) {
 			// The wall retry resent the request on another account (M4
 			// spec §4a): the response, its usage headers included, is that
 			// account's. Same goroutine as ModifyResponse, so no lock.
@@ -429,7 +434,7 @@ func writePoolRefusal(w http.ResponseWriter, msg string) {
 // serving-class request with no object owner is also armed for the wall
 // retry when Config.WallRetry is set (M4 spec §4a: never remote, never an
 // owner-routed request).
-func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d router.Decision, bodyID string, ownerAnswer bool, rec *tracelog.Record, onRetarget func(string)) http.RoundTripper {
+func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d router.Decision, bodyID string, ownerAnswer, neverHome bool, rec *tracelog.Record, onRetarget func(string)) http.RoundTripper {
 	if account == "" || s.cfg.Choose == nil {
 		return s.transport
 	}
@@ -444,7 +449,7 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 			rec.UnreplayableBytes = n
 		},
 	}
-	if g, ok := s.cfg.Choose.(PoolGuard); ok && g.Guarded() {
+	if g, ok := s.cfg.Choose.(PoolGuard); (ok && g.Guarded()) || neverHome {
 		sn.noOriginal = true
 	}
 	if s.cfg.WallRetry != nil && d.Class == router.Serving && d.Object == "" {
