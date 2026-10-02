@@ -312,7 +312,22 @@ func TestMain(m *testing.M) {
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
 		os.Unsetenv(k)
 	}
+	// login, logout and adopt now resolve the real claude from PATH when no
+	// --claude is given (issue #2, R145). Put a do-nothing stand-in first so
+	// the default resolves the same everywhere: a machine with no claude (CI)
+	// and one with a real claude (a developer's) must not differ, and a test
+	// that forgets --claude must never run the real one. It reports "not
+	// logged in" (exit 1). A test that cares sets its own PATH.
+	fakeClaudeDir, err := os.MkdirTemp("", "chottag-fakeclaude-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeClaudeDir, "claude"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		panic(err)
+	}
+	os.Setenv("PATH", fakeClaudeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	code := m.Run()
+	os.RemoveAll(fakeClaudeDir)
 	os.RemoveAll(safeHome)
 	os.Exit(code)
 }

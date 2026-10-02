@@ -38,6 +38,10 @@ var proxyEnv = []string{
 type Claude struct {
 	// Bin is the real claude binary (never chottag's shim).
 	Bin string
+	// Resolve, when set, finds the binary at the start of every Refresh and
+	// replaces Bin: a long-running daemon must follow a claude that moved or
+	// was installed after it started.
+	Resolve func() (string, error)
 	// Args defaults to DefaultArgs.
 	Args []string
 	// Timeout defaults to 90s.
@@ -67,13 +71,20 @@ func (c Claude) Refresh(ctx context.Context, slotDir string) error {
 	if waitDelay == 0 {
 		waitDelay = defaultWaitDelay
 	}
+	bin := c.Bin
+	if c.Resolve != nil {
+		var err error
+		if bin, err = c.Resolve(); err != nil {
+			return fmt.Errorf("refresh %s: %v", slotDir, err)
+		}
+	}
 	run := c.Run
 	if run == nil {
 		run = execRun(waitDelay, slotDir)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := run(ctx, c.Bin, args, ChildEnv(slotDir)); err != nil {
+	if err := run(ctx, bin, args, ChildEnv(slotDir)); err != nil {
 		// %v, not %w, and that is load-bearing: it keeps this timeout's own
 		// context.DeadlineExceeded (from the WithTimeout above) from
 		// satisfying errors.Is on whatever tokens.doRefresh receives, so a
@@ -83,7 +94,7 @@ func (c Claude) Refresh(ctx context.Context, slotDir string) error {
 		// tokens.doRefresh treats a *caller*-cancelled attempt. A future
 		// %v -> %w tidy-up would silently flip that: this refresher would
 		// stop ever backing off on a persistent hang.
-		return fmt.Errorf("refresh %s: %s %s: %v", slotDir, c.Bin, strings.Join(args, " "), err)
+		return fmt.Errorf("refresh %s: %s %s: %v", slotDir, bin, strings.Join(args, " "), err)
 	}
 	return nil
 }
@@ -91,16 +102,18 @@ func (c Claude) Refresh(ctx context.Context, slotDir string) error {
 // ChildEnv is the environment a process reading or renewing the login in
 // slotDir must run with: the parent's environment, minus the proxy and CA
 // variables (so the child talks to Anthropic directly, never back through
-// chottag), plus CLAUDE_CONFIG_DIR pointed at the slot.
+// chottag), plus CLAUDE_CONFIG_DIR pointed at the slot and CHOTTAG_BYPASS=1, so a child
+// that still reaches chottag's claude shim execs the real binary with no
+// proxy (issue #2, R145).
 func ChildEnv(slotDir string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if !contains(proxyEnv, name) {
+		if !contains(proxyEnv, name) && name != "CHOTTAG_BYPASS" {
 			env = append(env, kv)
 		}
 	}
-	return append(env, "CLAUDE_CONFIG_DIR="+slotDir)
+	return append(env, "CLAUDE_CONFIG_DIR="+slotDir, "CHOTTAG_BYPASS=1")
 }
 
 func contains(xs []string, s string) bool {

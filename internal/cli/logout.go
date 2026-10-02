@@ -162,7 +162,7 @@ func moveRolesOffEverywhere(st *store.State, name string) (servingTo, remoteTo s
 func runLogout(args []string, stdin io.Reader, r *reporter) int {
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
-	claudeBin := fs.String("claude", "claude", "path to the real claude binary")
+	claudeFlag := fs.String("claude", "", "path to the real claude binary (default: the real claude on PATH, never chottag's own shim)")
 	force := fs.Bool("force", false, "log out even if the account is serving or remote (moves the role first)")
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
 	// parseInterspersed (F2): `logout NAME --force --yes` must work exactly
@@ -298,7 +298,11 @@ func runLogout(args []string, stdin io.Reader, r *reporter) int {
 		return r.OK(logoutResult{Account: name, Removed: false, Dir: dir, MovedServing: movedServing, MovedRemote: movedRemote, MovedInPools: movedElsewhere})
 	}
 
-	if err := claudeAuthExec(*claudeBin, dir, "logout", stdin, r.ChildStdout(), r.Stderr()); err != nil {
+	claudeBin, err := realClaudeBin(*claudeFlag, h)
+	if err == nil {
+		err = claudeAuthExec(claudeBin, dir, "logout", stdin, r.ChildStdout(), r.Stderr())
+	}
+	if err != nil {
 		if !*force {
 			fmt.Fprintf(r.Stderr(), "chottag: could not revoke %s's login: %v\n"+
 				"chottag: nothing was deleted; fix the problem and run logout again, or use --force to remove it locally anyway\n", name, err)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,8 +15,67 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/exit"
 	"github.com/HaiNNT/c-hottag/internal/fsutil"
 	"github.com/HaiNNT/c-hottag/internal/refresh"
+	"github.com/HaiNNT/c-hottag/internal/shim"
 	"github.com/HaiNNT/c-hottag/internal/store"
 )
+
+// realClaudeBin is the claude every `claude auth` exec in this package runs:
+// an explicit --claude as given, otherwise the real claude on PATH, skipping
+// chottag's own bin dir (home/bin) the way the shim does. A bare "claude"
+// would resolve to the shim after `chottag setup` and, before the shim
+// bypassed `auth`, record the serving account's identity (issue #2, R145).
+func realClaudeBin(flagVal, home string) (string, error) {
+	if flagVal != "" {
+		return flagVal, nil
+	}
+	bin, err := shim.ResolveClaude(os.Getenv("PATH"), filepath.Join(home, "bin"), "")
+	if err != nil {
+		// The reporter adds its own "chottag: " prefix.
+		return "", errors.New(strings.TrimPrefix(err.Error(), "chottag: "))
+	}
+	return bin, nil
+}
+
+// newRefresher is the daemon's token refresher. Its binary is an explicit
+// --claude as given; otherwise state.json's cached real claude when that is
+// not under chottag's own bin dir, otherwise the real claude on PATH. Never
+// the shim: a refresh through it would pick up the proxy and have Claude
+// Code's profile fetch answered as the serving account, writing that
+// account's email into the slot (issue #2, R145). It is resolved on every
+// refresh; with no real claude the refresh fails, loudly, with the
+// resolution error.
+func newRefresher(flagVal, home string) refresh.Claude {
+	if flagVal != "" {
+		return refresh.Claude{Bin: flagVal}
+	}
+	// Resolved on every refresh, not once: the daemon outlives a claude that
+	// moves (npm to the native installer) or is installed after it started.
+	return refresh.Claude{Resolve: func() (string, error) { return resolveRefreshClaude(home) }}
+}
+
+func resolveRefreshClaude(home string) (string, error) {
+	cached := ""
+	if st, err := (store.Store{Dir: home}).Load(); err == nil {
+		cached = st.RealClaude
+	}
+	if cached != "" && sameDirPath(filepath.Dir(cached), filepath.Join(home, "bin")) {
+		cached = ""
+	}
+	return shim.ResolveClaude(os.Getenv("PATH"), filepath.Join(home, "bin"), cached)
+}
+
+// sameDirPath reports whether a and b are one directory, resolving symlinks.
+func sameDirPath(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		ra = filepath.Clean(a)
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		rb = filepath.Clean(b)
+	}
+	return ra == rb
+}
 
 // claudeAuthExec runs `claude auth <sub>` against one slot. It is a package
 // variable because this is the ONLY exec in the tree that inherits real
@@ -168,7 +228,7 @@ type loginResult struct {
 func runLogin(args []string, stdin io.Reader, r *reporter) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
-	claudeBin := fs.String("claude", "claude", "path to the real claude binary")
+	claudeFlag := fs.String("claude", "", "path to the real claude binary (default: the real claude on PATH, never chottag's own shim)")
 	poolFlag := fs.String("pool", "", "the pool a new account joins (default: default)")
 	// parseInterspersed (F2): `login NAME --claude PATH` must work exactly
 	// like `login --claude PATH NAME` — a bare fs.Parse(args) stops at the
@@ -259,12 +319,18 @@ func runLogin(args []string, stdin io.Reader, r *reporter) int {
 	}
 	defer unlock()
 
-	if err := claudeAuthExec(*claudeBin, dir, "login", stdin, r.ChildStdout(), r.Stderr()); err != nil {
+	claudeBin, err := realClaudeBin(*claudeFlag, h)
+	if err != nil {
+		cleanup()
+		return r.Fail(exit.Error, codeLoginFailed, err.Error(), nil)
+	}
+
+	if err := claudeAuthExec(claudeBin, dir, "login", stdin, r.ChildStdout(), r.Stderr()); err != nil {
 		cleanup()
 		return r.Fail(exit.Error, codeLoginFailed, fmt.Sprintf("login failed: %v", err), nil)
 	}
 
-	email, org, sub, loggedIn, err := slotEmail(*claudeBin, dir)
+	email, org, sub, loggedIn, err := slotEmail(claudeBin, dir)
 	if err != nil {
 		cleanup()
 		return r.Fail(exit.Error, codeLoginFailed, err.Error(), nil)

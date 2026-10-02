@@ -29,7 +29,6 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/redact"
-	"github.com/HaiNNT/c-hottag/internal/refresh"
 	"github.com/HaiNNT/c-hottag/internal/rotate"
 	"github.com/HaiNNT/c-hottag/internal/router"
 	"github.com/HaiNNT/c-hottag/internal/selector"
@@ -161,7 +160,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	}
 	listen := fs.String("listen", "127.0.0.1:"+strconv.Itoa(store.DefaultPort), "proxy address (loopback)")
 	logPath := fs.String("log", filepath.Join(h, "proxy.jsonl"), "request log")
-	claudeBin := fs.String("claude", "claude", "path to the real claude binary (used to refresh a slot login)")
+	claudeFlag := fs.String("claude", "", "path to the real claude binary used to refresh a slot login (default: the real claude on PATH, never chottag's own shim)")
 	upstream := fs.String("upstream-proxy", "", "route chottag's own upstream traffic through this proxy (e.g. http://127.0.0.1:3128)")
 	if fs.Parse(args[1:]) != nil {
 		return exit.Usage
@@ -222,7 +221,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	}
 	tm := tokens.New(tokens.Config{
 		Read:     read,
-		Refresh:  refresh.Claude{Bin: *claudeBin},
+		Refresh:  newRefresher(*claudeFlag, h),
 		LockPath: creds.LockPath,
 		TryLock:  fsutil.TryLock,
 	})

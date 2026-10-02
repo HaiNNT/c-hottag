@@ -29,6 +29,25 @@ for what to do next.
 A `needs-login` state on `chottag status` means the slot's login has
 expired or was revoked. Run `chottag login <name>` to log it back in.
 
+## An account shows another account's email
+
+Before 0.8.3, `chottag login` ran `claude` through chottag's own shim; before
+0.8.4 the daemon's background token refresh did. Either could make Claude Code
+record the serving account's email in another account's slot (its organisation
+stayed right). The symptom is several accounts on `chottag status` showing one
+email. Several accounts may share an email legitimately, when one login is in
+several orgs; `chottag doctor`'s `identities` row (info) lists them either way.
+Re-login only the accounts that are wrong. Reported in
+[#2](https://github.com/HaiNNT/c-hottag/issues/2).
+
+To repair it, upgrade (`chottag update`), run `chottag daemon restart`, then run
+`chottag login <name>` for each affected account (not the ones whose shared
+email is right). `chottag adopt` refuses to record a slot whose email moved onto
+a serving account's with its organisation unchanged, and warns `identity_suspect`.
+If the wrong email was already recorded before you upgraded, `adopt` sees no
+change and does not warn: use `chottag status` and doctor's `identities` row to
+find it.
+
 ## STATE says passthrough:
 
 `passthrough: ` in the STATE column means requests meant for that account

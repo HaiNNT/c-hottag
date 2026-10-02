@@ -22,7 +22,7 @@ const (
 // daemon-identity checks (public release design §2.4; F221, part 1 T11),
 // in order.
 func StateChecks() []Check {
-	return []Check{rolesCheck(), realClaudeCheck(), portCheck(), daemonCheck(), daemonVersionCheck(), daemonIdentityCheck()}
+	return []Check{rolesCheck(), identitiesCheck(), realClaudeCheck(), portCheck(), daemonCheck(), daemonVersionCheck(), daemonIdentityCheck()}
 }
 
 func portAddr(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }
@@ -186,6 +186,49 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+// identitiesCheck informs when two registered accounts record one email.
+// Before v0.8.4 the daemon's token refresh could run through chottag's own
+// shim and write the serving account's email into another account's slot
+// (issue #2, R145). But one login in several orgs legitimately shares an
+// email across accounts, so the row is info and never fails doctor.
+func identitiesCheck() Check {
+	return Check{
+		ID: "identities",
+		Detect: func(e *Env) Finding {
+			st, err := e.State()
+			if err != nil {
+				return Internal(err)
+			}
+			groups := map[string][]string{}
+			spelled := map[string]string{} // the first stored spelling, for display
+			var order []string
+			for _, a := range st.Accounts {
+				k := strings.ToLower(a.Email)
+				if k == "" {
+					continue
+				}
+				if _, seen := groups[k]; !seen {
+					order = append(order, k)
+				}
+				if _, ok := spelled[k]; !ok {
+					spelled[k] = a.Email
+				}
+				groups[k] = append(groups[k], a.Name)
+			}
+			var details []string
+			for _, k := range order {
+				if names := groups[k]; len(names) > 1 {
+					details = append(details, fmt.Sprintf("%s share the email %s", strings.Join(names, ", "), spelled[k]))
+				}
+			}
+			if len(details) == 0 {
+				return Finding{Status: StatusOK, Detail: "every account records its own email"}
+			}
+			return Finding{Status: StatusInfo, Detail: strings.Join(details, "; ") + ". That is expected when one login is in several orgs; otherwise run chottag login <name> for the account that is wrong (before 0.8.4 a background refresh could write one account's email into another's slot)"}
+		},
+	}
 }
 
 // realClaudeCheck is row 8, a reconcile. The shim re-resolves on every

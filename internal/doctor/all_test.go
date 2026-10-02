@@ -21,7 +21,7 @@ func TestAllIsInSpecOrder(t *testing.T) {
 			gates++
 		}
 	}
-	want := "setup tree ca proxy-secret bin rc-block path roles real-claude port daemon daemon-version daemon-identity token:A token:B owners route-drift limits version-drift plan-unknown"
+	want := "setup tree ca proxy-secret bin rc-block path roles identities real-claude port daemon daemon-version daemon-identity token:A token:B owners route-drift limits version-drift plan-unknown"
 	if got := strings.Join(ids, " "); got != want {
 		t.Fatalf("order = %s\nwant    %s", got, want)
 	}

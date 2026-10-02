@@ -20,7 +20,8 @@ func writeFakeClaude(t *testing.T, statusJSON string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claude")
-	script := "#!/bin/sh\ncat <<'EOF'\n" + statusJSON + "\nEOF\n"
+	// printf is a shell builtin: the fake needs nothing on PATH.
+	script := "#!/bin/sh\nprintf '%s\\n' '" + statusJSON + "'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

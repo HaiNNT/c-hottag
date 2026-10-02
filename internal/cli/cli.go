@@ -22,7 +22,7 @@ commands:
   setup [--label NAME]          install the shim: tree, CA, symlinks, PATH; then adopt
   uninstall [--purge]           remove the shim and restore the shell rc; --purge also deletes every login
   adopt [--claude PATH]         register the account slots that already hold a login
-  login NAME [--pool P] [--claude PATH]  log a slot in (browser) and register it, in pool P (default: default)
+  login NAME [--pool P] [--claude PATH]  log a slot in (browser) and register it, in pool P (default: default); --claude defaults to the real claude, never the shim
   logout NAME [--force] [--yes] revoke a slot's login and remove it
   tag [NAME] [--force] [--pool P] set the serving account (no NAME: next in rotation); under spread, also pin new sessions to NAME
   tag --unpin [--pool P]        under spread, clear the pin

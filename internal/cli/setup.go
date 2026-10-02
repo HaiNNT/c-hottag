@@ -29,7 +29,7 @@ func parseSetupArgs(args []string, r *reporter) (adoptArgs []string, label strin
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
 	labelFlag := fs.String("label", "", "label this install in notification titles and status")
-	claudeBin := fs.String("claude", "claude", "path to the real claude binary")
+	claudeBin := fs.String("claude", "", "path to the real claude binary (default: the real claude on PATH, never chottag's own shim)")
 	names := nameFlags{}
 	fs.Var(names, "name", "DIR=NAME: register the slot dir DIR under the account name NAME (repeatable)")
 	positional, err := parseInterspersed(fs, args)

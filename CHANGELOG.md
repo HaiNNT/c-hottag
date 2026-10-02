@@ -7,6 +7,15 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.8.4] - 2026-10-02
+
+### Fixed
+
+- `chottag login`, `logout`, `adopt` and the daemon's token refresh run the real `claude` (resolved from PATH, skipping chottag's own `bin/`), never chottag's shim, so an account's slot can no longer record the serving account's email.
+  Reported in [#2](https://github.com/HaiNNT/c-hottag/issues/2).
+- `adopt` no longer copies another account's email into an account when its email would move onto a serving account's with the org unchanged (warning `identity_suspect`), and `chottag doctor` has a new info row `identities` that lists accounts sharing an email (expected for one login in several orgs).
+  See [release notes](docs/release-notes/v0.8.4.md).
+
 ## [0.8.3] - 2026-10-02
 
 ### Changed
@@ -292,6 +301,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.8.4]: docs/release-notes/v0.8.4.md
 [0.8.3]: docs/release-notes/v0.8.3.md
 [0.8.2]: docs/release-notes/v0.8.2.md
 [0.8.1]: docs/release-notes/v0.8.1.md

@@ -90,7 +90,7 @@ of each name are kept.
 
 | Flag | Meaning |
 |---|---|
-| `--claude PATH` | path to the real `claude` binary, passed through to `adopt` |
+| `--claude PATH` | path to the real `claude` binary, passed through to `adopt` (default: the real `claude` on PATH, never chottag's own shim) |
 | `--label NAME` | label this install (1-16 characters of `a-z`, `0-9` and `-`; `""` clears it). It is stored as `label` in `state.json`, shows in `chottag status`, and turns notification titles into `chottag · NAME: ...`. A bare `setup` keeps the label. `scripts/dev-env` sets `dev` |
 | `--name DIR=NAME` | register the slot dir `DIR` under the account name `NAME` (repeatable), passed through to `adopt` |
 
@@ -129,7 +129,7 @@ already sitting in a slot chottag manages.
 
 | Flag | Meaning |
 |---|---|
-| `--claude PATH` | path to the real `claude` binary, used to read each slot's login |
+| `--claude PATH` | path to the real `claude` binary, used to read each slot's login (default: the real `claude` on PATH, never chottag's own shim) |
 | `--name DIR=NAME` | register the slot dir `DIR` under the account name `NAME` (repeatable) |
 
 ```json
@@ -142,6 +142,22 @@ already sitting in a slot chottag manages.
   "skipped": [{"dir": "c", "reason": "no login"}]
 }
 ```
+
+`adopt` refuses one shape of identity change, the one a slot damaged before
+0.8.4 shows: the slot's email would change to the email of an account that is
+serving (in any pool), and the stored organisation does not change (a blank
+stored organisation, or a slot that reports none, counts as unchanged). Then the stored email and
+organisation stay as they are, the account is not stamped as logged in, the
+entry goes under `skipped` with the reason `identity_suspect`, and an
+`identity_suspect` warning says to run `chottag login NAME` to repair it.
+Everything else is adopted as usual: an unchanged identity that shares an email
+(one login in several organisations), an email that moves together with the
+organisation, an email that moves to one no serving account has (so an account
+heals back to its true email even when a non-serving account shares it), a
+first fill of a blank stored email, and a new slot. If the wrong email was
+already recorded, `adopt` sees no change and does not warn: look at
+`chottag status` and doctor's `identities` row (see
+[troubleshooting](troubleshooting.md#an-account-shows-another-accounts-email)).
 
 ### `chottag update`
 
@@ -311,7 +327,7 @@ one login instead of logging it in twice; otherwise it keeps its older text. See
 | Flag | Meaning |
 |---|---|
 | `--pool POOL` | the pool a new account joins (default: `default`) |
-| `--claude PATH` | path to the real `claude` binary |
+| `--claude PATH` | path to the real `claude` binary (default: the real `claude` on PATH, never chottag's own shim) |
 
 ```json
 {
@@ -337,7 +353,7 @@ Its memberships in every pool go with it.
 
 | Flag | Meaning |
 |---|---|
-| `--claude PATH` | path to the real `claude` binary |
+| `--claude PATH` | path to the real `claude` binary (default: the real `claude` on PATH, never chottag's own shim) |
 | `--force` | log out even if the account is serving or remote (moves the role first) |
 | `--yes` | do not ask for confirmation |
 
@@ -991,6 +1007,7 @@ Its checks, in the order they run:
 | `rc-block` | your shell's rc file has the chottag PATH block | `--fix` writes it, copying the existing file to `backups/` first and printing the path on stderr |
 | `path` | this process's PATH already finds `claude` in `bin/` | open a new shell |
 | `roles` | the serving and remote roles name a registered account, in every pool: a pool's roles name one of its own members, and a pool with members has both | `--fix` gives a dangling role to the first registered account, and a dangling serving role to the first account in rotation (the row names the targets). In a pool other than `default` it uses that pool's members only, and leaves serving empty when none is in rotation |
+| `identities` | accounts that share an email are listed as `info` (expected when one login is in several orgs; before 0.8.4 a background refresh could also write the serving account's email into another account's slot). Never a problem | `chottag login NAME` for an account whose email is wrong |
 | `real-claude` | the cached real `claude` path is still what PATH resolves | `--fix` re-resolves and re-caches it |
 | `port` | the daemon's port answers, or is free | `--fix` moves state.json to a free port (only with no daemon and no live sessions) |
 | `daemon` | a daemon that holds `daemon.lock` also answers on its port | `chottag daemon restart` |
@@ -1434,7 +1451,7 @@ for development or a supervisor unit. does not support `--json`.
 
 | Flag | Meaning |
 |---|---|
-| `--claude PATH` | path to the real `claude` binary |
+| `--claude PATH` | path to the real `claude` binary (default: the cached real `claude`, else the one on PATH, looked up again on every refresh; never chottag's own shim) |
 | `--log PATH` | request log path; empty disables request logging |
 | `--upstream-proxy URL` | route chottag's own upstream traffic through this proxy (e.g. `http://127.0.0.1:3128`) |
 
@@ -1556,7 +1573,7 @@ does not support `--json`.
 |---|---|
 | `--listen ADDR` | proxy address (loopback) |
 | `--log PATH` | request log |
-| `--claude PATH` | path to the real claude binary (used to refresh a slot login) |
+| `--claude PATH` | path to the real claude binary used to refresh a slot login (default: the cached real `claude`, else the one on PATH, looked up again on every refresh; never chottag's own shim) |
 | `--upstream-proxy URL` | route chottag's own upstream traffic through this proxy (e.g. `http://127.0.0.1:3128`) |
 
 ## Error codes
@@ -1619,6 +1636,7 @@ does not support `--json`.
 | `pool_not_changed` | `login NAME --pool P` for an account that already exists and is not in `P`: `--pool` applies only to a new account; `chottag pool join` adds it |
 | `owners_recovered` | `owners.json` was corrupt and has been moved aside |
 | `email_registered` | the email logged in belongs to an account already registered |
+| `identity_suspect` | `adopt` (or `setup`, `update`) read a slot whose email changed to a serving account's with the organisation unchanged, and left the stored identity alone; run `chottag login NAME` to repair it |
 | `revoke_failed` | the revoke step failed, but the command continued |
 | `name_no_slot` | a name in `--name` matches no slot directory |
 | `left_in_place` | something that could have been removed was left in place |

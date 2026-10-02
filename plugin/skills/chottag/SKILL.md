@@ -147,7 +147,7 @@ warning: its `roles` row is `info` ("pool work has no account in rotation")
 for such a pool. With only `default` an unservable request still passes
 through as before.
 
-Warnings to relay: `shared_account` (above), `pool_not_changed` (`login
+Warnings to relay: `identity_suspect` (`adopt` found a slot whose email moved onto a serving account's with the org unchanged, and left the stored identity alone: run `chottag login <name>` for it), `shared_account` (above), `pool_not_changed` (`login
 --pool` for an account that already exists), and `daemon_predates_pools`
 (an error for `pool add`, a warning for `pool join`: the running daemon is
 older than 0.8.0 or reports no version, so it cannot read a version 2
@@ -183,7 +183,8 @@ the `pool add`). Once a pool exists the shim also refuses every session,
 | keep an account out of `next` | `chottag rotate <name> off --json` |
 | rename an account | `chottag rename <old> <new> --json` |
 | move one existing claude.ai object to another account, or see its owner | `chottag own <session\|environment\|artifact\|connector> <id> [account] --json` (asks first: it is not pre-approved) |
-| register slots that already hold a login | `chottag adopt [--claude PATH] --json` (asks first); `chottag setup --label NAME` and `chottag login <name> --claude PATH` also take the real `claude`'s path |
+| register slots that already hold a login | `chottag adopt [--claude PATH] --json` (asks first); `chottag setup --label NAME` and `chottag login <name> --claude PATH` also take the real `claude`'s path (by default the real `claude` on PATH, never chottag's own shim) |
+| several accounts show one email (legitimate when one login is in several orgs; before 0.8.3 a login, before 0.8.4 a refresh could also write the serving account's email into another account's slot; `doctor` lists them as an info `identities` row; `adopt` does not warn about a wrong email that was already recorded) | for the accounts that are wrong only: upgrade with `chottag update` (ask first), `chottag daemon restart` (tell the user first), then `chottag login <name>` for each affected account (the user does the browser step) |
 | remove an account | `chottag logout <name> --json` (ask first; see below) |
 | check or repair the install | `chottag doctor --json`, then `chottag doctor --fix --json` if the user agrees |
 | desktop notifications | `chottag notify on --json` / `chottag notify off --json` |

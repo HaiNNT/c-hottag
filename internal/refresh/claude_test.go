@@ -149,3 +149,22 @@ func TestRefreshTimesOut(t *testing.T) {
 		t.Fatalf("timeout not enforced: took %s", d)
 	}
 }
+
+// R145: a child that still reaches chottag's shim (an explicit --claude
+// pointing at it) must exec the real binary with no proxy.
+func TestChildEnvSetsBypassAndStillStripsTheProxy(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:47821")
+	env := refresh.ChildEnv("/slots/C")
+	var bypass int
+	for _, kv := range env {
+		if kv == "CHOTTAG_BYPASS=1" {
+			bypass++
+		}
+		if strings.HasPrefix(kv, "HTTPS_PROXY=") {
+			t.Errorf("proxy variable survives: %q", kv)
+		}
+	}
+	if bypass != 1 {
+		t.Errorf("CHOTTAG_BYPASS=1 appears %d times in %v, want once", bypass, env)
+	}
+}

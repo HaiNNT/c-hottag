@@ -231,7 +231,7 @@ func doctorRows(t *testing.T, out string) map[string]string {
 	return rows
 }
 
-var doctorIDs = []string{"setup", "tree", "ca", "proxy-secret", "bin", "rc-block", "path", "roles", "real-claude", "port", "daemon", "daemon-version", "daemon-identity", "token:A", "owners", "route-drift", "limits", "version-drift", "plan-unknown"}
+var doctorIDs = []string{"setup", "tree", "ca", "proxy-secret", "bin", "rc-block", "path", "roles", "identities", "real-claude", "port", "daemon", "daemon-version", "daemon-identity", "token:A", "owners", "route-drift", "limits", "version-drift", "plan-unknown"}
 
 func TestDoctorOnAHealthyInstallExitsZero(t *testing.T) {
 	doctorInstall(t)

@@ -367,10 +367,9 @@ func runDaemonRun(args []string, r *reporter) int {
 	// cwd runProxyWithSignal's own exec.LookPath (via refresh, which sets
 	// cmd.Dir to the slot dir) would otherwise resolve a raw relative
 	// --claude against, silently pointing it at the wrong binary or at
-	// nothing. A bare name with no separator (e.g. "claude", the default)
-	// is left alone: exec.LookPath searches PATH for it regardless of cwd,
-	// so absolutising it would only pin it to whatever happened to resolve
-	// from the ORIGINAL cwd, changing behaviour that was never broken.
+	// nothing. An empty value (the default) is left alone: the proxy
+	// resolves the real claude on every refresh (newRefresher), from
+	// state.json's cache or PATH, never from the cwd.
 	if *claudePath != "" && strings.ContainsRune(*claudePath, filepath.Separator) {
 		abs, err := filepath.Abs(*claudePath)
 		if err != nil {

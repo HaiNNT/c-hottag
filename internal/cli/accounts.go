@@ -393,7 +393,7 @@ func runRemote(args []string, r *reporter) int {
 
 // adoptEntry and adoptSkip are `adopt --json`'s array elements (spec §5.3).
 // A skip's reason is a token: invalid_slot | probe_failed | no_login |
-// register_failed | name_conflict.
+// register_failed | name_conflict | identity_suspect.
 type adoptEntry struct {
 	Dir  string `json:"dir"`
 	Name string `json:"name"`
@@ -417,7 +417,7 @@ type adoptResult struct {
 func runAdopt(args []string, r *reporter) int {
 	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr())
-	claudeBin := fs.String("claude", "claude", "path to the real claude binary")
+	claudeFlag := fs.String("claude", "", "path to the real claude binary (default: the real claude on PATH, never chottag's own shim)")
 	names := nameFlags{}
 	fs.Var(names, "name", "DIR=NAME: register the slot dir DIR under the account name NAME (repeatable)")
 	// parseInterspersed (spec §5.3): adopt takes no positional, and before
@@ -435,6 +435,7 @@ func runAdopt(args []string, r *reporter) int {
 		return r.FailErr(err)
 	}
 	s := store.Store{Dir: h}
+	claudeBin, binErr := realClaudeBin(*claudeFlag, h)
 	entries, err := os.ReadDir(filepath.Join(h, "accounts"))
 	if err != nil {
 		return r.Fail(exit.Error, codeNoSlots, fmt.Sprintf("no account slots: %v", err), nil)
@@ -479,7 +480,12 @@ func runAdopt(args []string, r *reporter) int {
 			}
 			name = override
 		}
-		email, org, sub, loggedIn, err := slotEmail(*claudeBin, dir)
+		var email, org, sub string
+		var loggedIn bool
+		err = binErr
+		if err == nil {
+			email, org, sub, loggedIn, err = slotEmail(claudeBin, dir)
+		}
 		if err != nil {
 			fmt.Fprintf(r.Stderr(), "chottag: skipping %s: %v\n", name, err)
 			res.Skipped = append(res.Skipped, adoptSkip{Dir: dir, Reason: "probe_failed"})
@@ -495,8 +501,8 @@ func runAdopt(args []string, r *reporter) int {
 		// (store/store.go), which would treat an unrelated account like
 		// "Alpha" as if it were the already-registered account "A" and
 		// silently drop the slot the user asked to adopt.
-		var status string // "added" | "unchanged" | "updated" | "conflict"
-		var existingDir, registeredName string
+		var status string // "added" | "unchanged" | "updated" | "conflict" | "suspect"
+		var existingDir, registeredName, suspectOwner string
 		if _, err := s.Update(func(st *store.State) error {
 			now := time.Now()
 			// Match by slot Dir FIRST (C1/F173): the Dir this slot resolves
@@ -519,6 +525,10 @@ func runAdopt(args []string, r *reporter) int {
 					continue
 				}
 				registeredName = a.Name
+				if suspectIdentity(st, a, email, org) {
+					status, suspectOwner = "suspect", servingOwnerOfEmail(st, a, email)
+					return nil
+				}
 				emailChanged := a.Email != "" && email != "" && !strings.EqualFold(a.Email, email)
 				orgChanged := a.Org != "" && org != "" && a.Org != org
 				if emailChanged || orgChanged {
@@ -576,6 +586,10 @@ func runAdopt(args []string, r *reporter) int {
 					// message, while the unconditional assignment below wipes
 					// the stored value — announcing an erasure as a
 					// deliberate, successful update.
+					if suspectIdentity(st, a, email, org) {
+						status, suspectOwner = "suspect", servingOwnerOfEmail(st, a, email)
+						return nil
+					}
 					emailChanged := a.Email != "" && email != "" && !strings.EqualFold(a.Email, email)
 					orgChanged := a.Org != "" && org != "" && a.Org != org
 					if emailChanged || orgChanged {
@@ -622,6 +636,9 @@ func runAdopt(args []string, r *reporter) int {
 		case "updated":
 			r.Text("updated %s (%s)\n", displayName, email)
 			res.Updated = append(res.Updated, adoptEntry{Dir: dir, Name: displayName})
+		case "suspect":
+			r.Warn(warnIdentitySuspect, fmt.Sprintf("chottag: %s's slot reports the email %s, which is %s's; its recorded identity looks like another account's, so it was not adopted. Run: chottag login %s to repair it", displayName, email, suspectOwner, displayName))
+			res.Skipped = append(res.Skipped, adoptSkip{Dir: dir, Reason: "identity_suspect"})
 		case "conflict":
 			fmt.Fprintf(r.Stderr(), "chottag: skipping %s: name %q is already registered for a different slot %s\n", dir, name, existingDir)
 			res.Skipped = append(res.Skipped, adoptSkip{Dir: dir, Reason: "name_conflict"})
@@ -638,6 +655,42 @@ func runAdopt(args []string, r *reporter) int {
 		return r.FailNoText(exit.Error, codeNoAccounts, "no account slot holds a login, so nothing is registered", nil)
 	}
 	return r.OK(res)
+}
+
+// suspectIdentity reports whether reading email and org from account a's slot
+// has the signature of the issue-#2 corruption: a's stored email would change
+// to the email of an account that is SERVING (in any pool), the stored org
+// would not move, and the slot's earlier email was known. The corruption
+// always copies a serving account's identity, and only the email; so this lets
+// an account heal back to its true email even when a non-serving account
+// shares it (one login in several orgs, F16). A blank stored org is unknown,
+// so it does not count as a moved org (the conservative choice); a blank
+// stored email is a first fill, not a change. Anything else is adopted.
+func suspectIdentity(st *store.State, a *store.Account, email, org string) bool {
+	if email == "" || a.Email == "" || strings.EqualFold(a.Email, email) {
+		return false
+	}
+	if a.Org != "" && org != "" && a.Org != org {
+		return false
+	}
+	return servingOwnerOfEmail(st, a, email) != ""
+}
+
+// servingOwnerOfEmail is the name of an account other than a that is serving
+// in some pool and records email, or "".
+func servingOwnerOfEmail(st *store.State, a *store.Account, email string) string {
+	for _, pool := range st.PoolNames() {
+		serving := st.PoolOf(pool).Serving
+		if serving == "" || strings.EqualFold(serving, a.Name) {
+			continue
+		}
+		for i := range st.Accounts {
+			if o := &st.Accounts[i]; strings.EqualFold(o.Name, serving) && strings.EqualFold(o.Email, email) {
+				return o.Name
+			}
+		}
+	}
+	return ""
 }
 
 // nameFlags collects repeated --name DIR=NAME options.

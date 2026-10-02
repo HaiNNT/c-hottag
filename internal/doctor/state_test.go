@@ -384,3 +384,38 @@ func TestRolesWarningHintNamesTheFirstWarnedPool(t *testing.T) {
 		t.Fatalf("detail = %q", r.Detail)
 	}
 }
+
+// Issue #2: a refresh through the shim wrote the serving account's email into
+// other accounts' slots. Accounts sharing an email may also be one login in
+// several orgs, so the row informs and never fails doctor.
+func TestIdentitiesInformsWhenAccountsShareAnEmail(t *testing.T) {
+	ti := newTestInstall(t)
+	ti.update(func(st *store.State) error {
+		st.Accounts[0].Email = "alice@example.com"
+		return st.Add(store.Account{Name: "B", Email: "Alice@Example.com", Dir: filepath.Join(ti.home, "accounts", "B")})
+	})
+	before := ti.snapshot()
+	r := rowByID(t, mustRun(t, ti.env, StateChecks(), true), "identities")
+	if r.Status != StatusInfo {
+		t.Fatalf("identities = %+v, want info", r)
+	}
+	if !strings.Contains(r.Detail, "alice@example.com") || !strings.Contains(r.Detail, "one login is in several orgs") || !strings.Contains(r.Detail, "chottag login <name>") {
+		t.Errorf("detail %q lacks the email or the explanation", r.Detail)
+	}
+	assertChangedOnly(t, before, ti.snapshot())
+}
+
+func TestIdentitiesIgnoresDistinctAndBlankEmails(t *testing.T) {
+	ti := newTestInstall(t)
+	ti.update(func(st *store.State) error {
+		st.Accounts[0].Email = "alice@example.com"
+		return st.Add(store.Account{Name: "B", Email: "bob@example.com", Dir: filepath.Join(ti.home, "accounts", "B")})
+	})
+	if r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "identities"); r.Status != StatusOK {
+		t.Fatalf("distinct emails: %+v, want ok", r)
+	}
+	ti.update(func(st *store.State) error { st.Accounts[0].Email, st.Accounts[1].Email = "", ""; return nil })
+	if r := rowByID(t, mustRun(t, ti.env, StateChecks(), false), "identities"); r.Status != StatusOK {
+		t.Fatalf("blank emails: %+v, want ok", r)
+	}
+}
