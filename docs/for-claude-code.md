@@ -298,7 +298,9 @@ user's yes.
 ## Rules for the agent
 
 - Never run `/login` or `/logout` inside a Claude Code session: they log
-  Home in or out, not a chottag account.
+  Home in or out, not a chottag account. (`claude auth ...` and `claude
+  setup-token` in a terminal skip chottag on their own; only a `/login`
+  needs that session started with `CHOTTAG_BYPASS=1 claude`.)
 - Never edit `~/.claude`, `~/.claude.json`, or anything under them, except
   the `statusLine` entry in step 8, and only after the user says yes.
 - Never run `chottag uninstall --purge` for the user: it deletes every

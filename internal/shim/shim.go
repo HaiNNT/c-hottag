@@ -218,13 +218,22 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 	// Step 1: the escape hatch. Nothing above this line may run, and
 	// nothing below it may run when this fires — not state.json, not the
 	// CA, not the daemon. It exists for when any of those is broken.
-	if envGet(env, "CHOTTAG_BYPASS") == "1" {
+	//
+	// `claude auth ...` and `claude setup-token` take the same path (R144),
+	// with chottag's own proxy variable removed so the login talks to
+	// Anthropic directly and Home records the right account.
+	explicit := envGet(env, "CHOTTAG_BYPASS") == "1"
+	if explicit || authSubcommand(args) {
 		real, err := ResolveClaude(envGet(env, "PATH"), filepath.Join(home, "bin"), "")
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return exit.Error
 		}
-		if err := execFn(real, args, env); err != nil {
+		childEnv := env
+		if !explicit {
+			childEnv = authBypassEnv(env)
+		}
+		if err := execFn(real, args, childEnv); err != nil {
 			fmt.Fprintln(stderr, "chottag:", err)
 			return exit.Error
 		}

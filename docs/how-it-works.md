@@ -47,6 +47,17 @@ the shim:
 directly, with whatever `HTTPS_PROXY`/`NODE_EXTRA_CA_CERTS` this shell
 already had.
 
+`claude auth ...` (`auth login`, `auth status` and the rest) and `claude
+setup-token` skip chottag on their own, with no `CHOTTAG_BYPASS=1`: the shim
+sees the subcommand (`auth` or `setup-token` as the first argument, matched exactly),
+execs the real binary without reading `state.json`, starting the daemon or
+registering a session, and drops chottag's own `HTTPS_PROXY`, so a login talks to Anthropic directly and Home records
+the right account. A proxy of your own is kept, and `NODE_EXTRA_CA_CERTS` is left as it is. A prompt that
+merely contains the word (`claude "auth flow"`, `claude -p auth`) is not
+affected, and neither is one with a flag first (`claude --debug auth login`
+still goes through chottag). The shim cannot see a slash command: for `/login` inside a session,
+start that session with `CHOTTAG_BYPASS=1 claude`.
+
 ## The proxy
 
 The chottag daemon listens on `127.0.0.1` only — nothing off the local

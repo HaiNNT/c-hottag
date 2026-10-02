@@ -7,6 +7,13 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.8.3] - 2026-10-02
+
+### Changed
+
+- `claude auth ...` and `claude setup-token` skip chottag on their own, without `CHOTTAG_BYPASS=1`, and no longer carry chottag's proxy variable, so a Home login or logout cannot pick up a chottag account's token.
+  See [release notes](docs/release-notes/v0.8.3.md).
+
 ## [0.8.2] - 2026-10-02
 
 ### Changed
@@ -285,6 +292,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.8.3]: docs/release-notes/v0.8.3.md
 [0.8.2]: docs/release-notes/v0.8.2.md
 [0.8.1]: docs/release-notes/v0.8.1.md
 [0.8.0]: docs/release-notes/v0.8.0.md

@@ -55,7 +55,10 @@ Without arguments, work out what the user wants and use "Common tasks".
    browser and blocks until the user finishes there. Tell the user a browser
    window is waiting for them before you run it.
 3. **Never run `/login` or `/logout` inside a Claude Code session.** They log
-   Home in or out, not a chottag account.
+   Home in or out, not a chottag account. (`claude auth ...` and `claude
+   setup-token` typed in a terminal skip chottag on their own; only a
+   `/login` inside a session needs that session started with
+   `CHOTTAG_BYPASS=1 claude`.)
 4. **`tag` and `next` take effect from the session's next request.** They
    change the account for every Claude Code session started through chottag's
    `claude` shim (its `HTTPS_PROXY` names `127.0.0.1`), including this one if

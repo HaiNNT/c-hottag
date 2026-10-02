@@ -6,6 +6,10 @@ straight against your normal Home login. For most other symptoms, start
 with `chottag doctor`, and `chottag doctor --fix` to repair what it can
 safely fix on its own.
 
+`claude auth ...` and `claude setup-token` already skip chottag by themselves,
+so logging Home in or out needs no variable. `/login` typed inside a session
+is not seen by the shim; start that session with `CHOTTAG_BYPASS=1 claude`.
+
 ## Claude won't start
 
 Check `chottag daemon logs` for the daemon's own error, or run `chottag

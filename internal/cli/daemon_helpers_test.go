@@ -26,20 +26,33 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/shim"
 )
 
-// closedPort returns a loopback port with nothing listening on it (the
-// kernel picks it, and it is released at once). Every daemon verb test
-// writes state.json with a test port first. With no state.json the port is
-// 47821, and the verbs' health probe would dial the developer's real
-// daemon.
+// closedPort returns a loopback port where no daemon ever answers. Every
+// daemon verb test writes state.json with a test port first. With no
+// state.json the port is 47821, and the verbs' health probe would dial the
+// developer's real daemon.
+//
+// The port stays reserved for the whole test: a listener holds it and drops
+// every connection unanswered, so a probe fails as it would on a closed port.
+// Releasing it at once (as this helper used to) let another package's test,
+// running in parallel, bind the same port and answer as a chottag daemon
+// (CI, linux/arm64, v0.8.2).
 func closedPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-	return port
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // fakeRecord is a lock record for a daemon process that does not exist.
