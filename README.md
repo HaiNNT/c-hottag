@@ -31,7 +31,7 @@ serving: B
 - **Switch mid-session.** `chottag tag B` moves every chottag session to B from its next request: no logout, no restart.
 - **Auto-switch near a limit**, on by default, holding a warm prompt cache
   when a reset is close, and resending a request that hit a limit.
-- **Usage at a glance, and stays current.** `chottag status` shows each account's 5-hour and 7-day usage and limits, and a daily update check (shown in `status` and `statusline`, one notice per version), opt-in auto-install, and a daemon that restarts itself onto an installed update when idle ([Updating](docs/updating.md)).
+- **Usage at a glance, and stays current.** `chottag status` shows each account's 5-hour and 7-day usage and limits, and an update check four times a day (shown in `status` and `statusline`, one notice per version), opt-in auto-install, and a daemon that restarts itself onto an installed update when idle ([Updating](docs/updating.md)).
 - **Local and scriptable.** A loopback proxy that needs a per-install
   secret; account and status commands answer in `--json`.
 

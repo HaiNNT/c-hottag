@@ -181,7 +181,7 @@ corrupt `state.json` on the next read.
 | `HTTPS_PROXY` | The `claude` shim, on every `claude` invocation it manages. | Points Claude Code's HTTPS traffic at chottag's local proxy; the URL also carries this session's proxy credential (`chottag.default.<sid>` and a password derived from the install's secret). |
 | `NODE_EXTRA_CA_CERTS` | The `claude` shim. | Points Node (and so Claude Code) at chottag's CA certificate, so the proxy's intercepted HTTPS connections validate. If you already had this set, the shim merges your CA into `ca/bundle.pem` and points there instead. |
 | `CHOTTAG_UPSTREAM_PROXY` | The `claude` shim, internally, to hand the daemon its upstream. | Not for you to set directly — see [An existing HTTPS_PROXY](#an-existing-https_proxy) and `daemon run --upstream-proxy`. |
-| `CHOTTAG_NO_UPDATE_CHECK` | You, in the daemon's environment. | `CHOTTAG_NO_UPDATE_CHECK=1` stops the daemon's daily check for a new release (see [Updating](updating.md#the-daily-check)); the same as `chottag update --auto-check off`, without changing `state.json`. |
+| `CHOTTAG_NO_UPDATE_CHECK` | You, in the daemon's environment. | `CHOTTAG_NO_UPDATE_CHECK=1` stops the daemon's update check for a new release (see [Updating](updating.md#the-update-check)); the same as `chottag update --auto-check off`, without changing `state.json`. |
 | `HOME` | Your shell. | Where `~/.chottag` resolves when `CHOTTAG_HOME` is unset, and where `setup`/`uninstall` look for your shell rc file. |
 | `PATH` | Your shell. | Where the shim finds the real `claude` binary to run, once its own `bin/` entry is skipped. |
 | `SHELL` | Your shell. | Tells `setup`/`uninstall` which rc file to edit: `~/.zshrc` for zsh, `~/.bashrc` for bash, and neither for anything else. |

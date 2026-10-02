@@ -203,7 +203,7 @@ backs up the shell rc file the same way before changing it. `update` keeps
 the last three versions and verifies each download against the release's
 checksums. `--no-restart` installs and leaves the daemon running.
 
-The daemon also checks for a new release about once a day; `status` shows
+The daemon also checks for a new release about every 6 hours (and `update --check` posts the one notice per version if it finds it first); `status` shows
 `update: <v> available`, and `status --json` has `update` and `updates`, and `statusline --json` has
 `updateAvailable` (the newer version, when there is one) and `restartPending`.
 **Tell the user when one is available and offer `chottag update`.** The check
@@ -231,7 +231,7 @@ If `chottag update` exits with `update_in_progress`, another update is
 running (the user's, or the daemon's automatic install). Wait, then check
 with `chottag update --check --json` or `chottag status --json`; don't retry
 in a loop. Setting `CHOTTAG_NO_UPDATE_CHECK=1` in the daemon's environment
-also switches the daily check off.
+also switches the update check off.
 
 ## Reading results
 

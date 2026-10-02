@@ -16,6 +16,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
+	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 	usagehdr "github.com/HaiNNT/c-hottag/internal/usage"
 )
 
@@ -742,9 +743,9 @@ func loadDiskUpdate(path string) *status.Update {
 // mergeCLIUpdateLocked keeps a check `chottag update --check` wrote to
 // status.json when it is newer (by CheckedAt) than the sink's own, so the
 // sink's next write does not overwrite it. It adopts only the fields the CLI
-// owns (Latest, PublishedAt, CheckedAt, Available, Error): Notified and
-// Auto stay the daemon's, since a CLI copy of them can predate the
-// daemon's own newer write. Call with c.mu held. It reports whether it
+// owns (Latest, PublishedAt, CheckedAt, Available, Error): Auto stays
+// the daemon's, since a CLI copy can predate the daemon's own newer write;
+// Notified is adopted only when newer. Call with c.mu held. It reports whether it
 // changed c.file.
 func (c *statusSink) mergeCLIUpdateLocked(d *status.Update) bool {
 	if d == nil {
@@ -758,6 +759,11 @@ func (c *statusSink) mergeCLIUpdateLocked(d *status.Update) bool {
 		u = *c.file.Update
 	}
 	u.Latest, u.PublishedAt, u.CheckedAt, u.Available, u.Error = d.Latest, d.PublishedAt, d.CheckedAt, d.Available, d.Error
+	// A notice `update --check` gave shows at once, but never moves Notified
+	// back: only a newer version replaces it (run/update-notified decides).
+	if d.Notified != "" && (u.Notified == "" || updatecheck.Newer(d.Notified, u.Notified)) {
+		u.Notified = d.Notified
+	}
 	c.file.Update = &u
 	return true
 }

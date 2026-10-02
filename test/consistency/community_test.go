@@ -221,10 +221,10 @@ func TestNoticeCarriesTheAttribution(t *testing.T) {
 	)
 }
 
-// TestRoadmapHasTheFourSections (spec part 4): Now, Next, Later, Not
-// planned, in that order, each with items; the self-restarting daemon is
-// under Later.
-func TestRoadmapHasTheFourSections(t *testing.T) {
+// TestRoadmapHasItsSections (spec part 4; R143): Shipped recently, Now,
+// Next, Later, Not planned, in that order, each with items; the macOS app is
+// planned under Next.
+func TestRoadmapHasItsSections(t *testing.T) {
 	md := read(t, "ROADMAP.md")
 	var got []string
 	for _, s := range doccheck.Sections(md) {
@@ -241,12 +241,12 @@ func TestRoadmapHasTheFourSections(t *testing.T) {
 			}
 		}
 	}
-	if want := []string{"Now", "Next", "Later", "Not planned"}; strings.Join(got, "|") != strings.Join(want, "|") {
+	if want := []string{"Shipped recently", "Now", "Next", "Later", "Not planned"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("ROADMAP.md sections %q, want %q", got, want)
 	}
-	later, _ := doccheck.Find(md, 2, "Later")
-	if !strings.Contains(flat(later.Body), "restarts itself") {
-		t.Error("ROADMAP.md ## Later lacks the self-restarting daemon")
+	next, _ := doccheck.Find(md, 2, "Next")
+	if !strings.Contains(flat(next.Body), "macOS app") {
+		t.Error("ROADMAP.md ## Next lacks the macOS app (R143)")
 	}
 	requirePhrases(t, "ROADMAP.md", "no dates", "issues/new/choose")
 }

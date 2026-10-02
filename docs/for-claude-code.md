@@ -117,7 +117,7 @@ can change later through the skill.
    account with the most room left and stays there, so its prompt cache
    stays warm, and only that session moves when its account nears a limit.
 6. **Should chottag install its own updates?** Default: no. chottag checks
-   for a new release once a day either way and says so in `chottag status`,
+   for a new release about four times a day either way and says so in `chottag status`,
    on the status line and in one notification. Yes lets the daemon install
    a release by itself (same major version, at least 24 hours old).
 7. **Do you keep work and personal accounts apart?** Ask only when there are
@@ -285,7 +285,7 @@ chottag update --json                    # install it, only once the user agrees
 
 Every command, flag, exit code and JSON field: [Command reference](commands.md).
 
-chottag checks for a newer release daily and shows `update: <v> available`
+chottag checks for a newer release about every 6 hours and shows `update: <v> available`
 in `chottag status`. When you see it, tell the user and offer `chottag
 update`. If `update` exits with `update_in_progress`, another update is
 running: wait and re-check with `chottag update --check --json`; don't retry

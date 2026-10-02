@@ -152,10 +152,11 @@ chottag update [--auto-check on|off] [--auto-install on|off] [--auto-restart on|
 
 Installs the latest release from the repo chottag was installed from.
 `--check` only reports whether a newer release exists; it installs
-nothing. It asks GitHub's API directly (one request, no `gh`, no token) and
+nothing, but, like the daemon's check, it posts the one desktop notice for a
+newer version it is the first to find (see [Updating](updating.md#the-update-check)). It asks GitHub's API directly (one request, no `gh`, no token) and
 also records the answer in `status.json`'s `update`, the same cache the
-daemon's daily check fills, only for the install's own repo and not for a
-`--repo` that names another (see [Updating](updating.md#the-daily-check)).
+daemon's update check fills, only for the install's own repo and not for a
+`--repo` that names another (see [Updating](updating.md#the-update-check)).
 
 The whole install, from the download through `setup`, holds the update lock,
 `run/update.lock`. A second `chottag update` at the same time exits `1` with
@@ -200,7 +201,7 @@ then start the daemon (`chottag daemon start`).
 | `--repo OWNER/NAME` | use this repo instead of `install.json`'s or the default |
 | `--restart` | restart the daemon even if a claude session is running |
 | `--no-restart` | install, but leave the daemon running (`daemon` is `not-restarted`); the daemon uses the new version after `chottag daemon restart`, or restarts itself when idle (unless `--auto-restart off`; daemons from 0.6.0 on). Not with `--restart` |
-| `--auto-check on\|off` | turn the daemon's daily update check on or off; sets the switch and exits |
+| `--auto-check on\|off` | turn the daemon's update check on or off; sets the switch and exits |
 | `--auto-install on\|off` | let the daemon install a new release by itself (opt-in, see [Updating](updating.md#automatic-install)); sets the switch and exits |
 | `--auto-restart on\|off` | let the daemon restart itself, when idle, onto an installed newer version (on by default, see [Updating](updating.md#restarting-onto-an-installed-update)); sets the switch and exits |
 
@@ -790,7 +791,7 @@ has run (the daemon's, or `chottag update --check`). `latest` is the newest
 release seen, `available` is whether it is newer than the version that ran the check (the daemon, or `update --check`), `notified`
 is the version a notification was last sent for, `error` is the last check's
 failure, and `auto` is the last auto-install attempt. `updates` is the two
-switches from `state.json`, always present: `check` (the daemon's daily check),
+switches from `state.json`, always present: `check` (the daemon's update check),
 `auto` (its automatic install) and `restart` (its restart when idle); see [`chottag update`](#chottag-update).
 
 The text form adds one line, `update: 0.6.0 available (run: chottag update)`,

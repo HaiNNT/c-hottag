@@ -50,7 +50,7 @@ commands:
   daemon restart [--force]      stop the daemon, then start it again
   daemon logs [-n N] [-f]       print the last N lines of daemon.log; -f follows it
   update [--check] [--version V] [--repo OWNER/NAME] [--restart|--no-restart]  install the latest release (from the repo you installed from); --check only reports
-  update [--auto-check on|off] [--auto-install on|off] [--auto-restart on|off]  turn the daily update check, automatic install, and restart when idle, on or off
+  update [--auto-check on|off] [--auto-install on|off] [--auto-restart on|off]  turn the update check, automatic install, and restart when idle, on or off
   trace [on [--for DUR]|off]    show or switch the daemon's trace mode (default 1h, at most 24h)
   trace mark TEXT...            add a marker to the trace log
   trace summarize [--all]       print the route table since the last trace on (--all: whole log)

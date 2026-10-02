@@ -1037,7 +1037,7 @@ func runUpdate(args []string, r *reporter) int {
 	repoFlag := fs.String("repo", "", "use this repo instead of install.json's or the default")
 	restart := fs.Bool("restart", false, "restart the daemon even if a claude session is running")
 	noRestart := fs.Bool("no-restart", false, "install, but leave the daemon running")
-	autoCheck := fs.String("auto-check", "", "turn the daemon's daily update check on or off")
+	autoCheck := fs.String("auto-check", "", "turn the daemon's update check on or off")
 	autoInstall := fs.String("auto-install", "", "turn the daemon's automatic install of a new release on or off")
 	autoRestart := fs.String("auto-restart", "", "turn the daemon's restart onto an installed update, when idle, on or off")
 	positional, err := parseInterspersed(fs, args)
@@ -1119,6 +1119,9 @@ func runUpdate(args []string, r *reporter) int {
 		// `--repo X` must not leave another repo's release in it.
 		if repo == updateRepo(h) {
 			recordUpdateCheck(h, rel, err, r)
+			if err == nil {
+				noticeUpdateFromCLI(h, rel, r)
+			}
 		}
 		if err != nil {
 			return r.Fail(exit.Error, codeUpdateFailed, err.Error(), nil)

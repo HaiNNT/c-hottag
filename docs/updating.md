@@ -7,15 +7,22 @@ installing it. `chottag update`, with no flags, checks and — if a newer
 release exists — downloads, verifies and installs it. Only one update runs at
 a time: a second `chottag update` exits with `update_in_progress`.
 
-## The daily check
+## The update check
 
 The daemon looks for a newer release by itself: 2 minutes after it starts,
-then about once a day. The result is shown in `chottag status` (`update: 0.6.0
+then about every 6 hours (four times a day). The result is shown in `chottag status` (`update: 0.6.0
 available (run: chottag update)`) and at the end of `chottag statusline` (`·
 ↑0.6.0`). `chottag update --check` runs the same check and refreshes the same
 cache (`update` in `status.json`).
 
-- **Privacy.** The check is one HTTPS request a day to `api.github.com`
+- **One notice per version.** The first check that finds a newer release posts
+  one desktop notification, `chottag <version> is available. Run: chottag
+  update`, and no check posts it again for that version: the daemon's, or
+  `chottag update --check`, whichever finds it first. The next newer release
+  posts again. With notifications off (`chottag notify off`) the version
+  still counts as told, so turning them on later does not replay it.
+
+- **Privacy.** The check is about four HTTPS requests a day to `api.github.com`
   (`GET /repos/<repo>/releases/latest`). It sends no token and nothing
   beyond the request itself, and needs no `gh`. The daemon sends it through
   its upstream proxy, if it has one; `chottag update --check` uses your
@@ -24,6 +31,8 @@ cache (`update` in `status.json`).
   `CHOTTAG_NO_UPDATE_CHECK=1` in the daemon's environment. A development
   build (a version that is not a release number, such as `dev`) never checks.
   Turning the check off also turns auto-install off.
+  `chottag update --check` still checks when you run it, and still posts the
+  notice for a version no check has posted yet.
 
 ## Automatic install
 

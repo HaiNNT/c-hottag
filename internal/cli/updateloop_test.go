@@ -462,8 +462,8 @@ func TestLoopRunScheduleAndShutdown(t *testing.T) {
 	}
 	fire <- time.Time{}
 	<-processed
-	if d := <-waits; d != 24*time.Hour+17*time.Minute {
-		t.Fatalf("second wait = %v, want 24h plus the jitter", d)
+	if d := <-waits; d != 6*time.Hour+17*time.Minute {
+		t.Fatalf("second wait = %v, want 6h plus the jitter", d)
 	}
 	if h.fetches != 1 {
 		t.Fatalf("fetches = %d after the first fire", h.fetches)

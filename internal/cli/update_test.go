@@ -48,6 +48,7 @@ func updateHome(t *testing.T) string {
 	h := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", h)
 	writeStateWithPort(t, h, closedPort(t))
+	stubDaemonNotifier(t) // `update --check` may post the update notice (R139)
 	return h
 }
 

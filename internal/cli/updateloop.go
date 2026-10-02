@@ -1,7 +1,7 @@
 package cli
 
-// The daemon's update loop (R124, spec §2, §3, §5): a daily check of the
-// repo's latest release, one notification per new version, and, only when
+// The daemon's update loop (R124, spec §2, §3, §5): a check of the repo's
+// latest release about four times a day, one notification per new version, and, only when
 // the user opted in, an install through the very same `chottag update` a
 // person runs. The daemon never restarts itself here: the child runs with
 // --no-restart on every path.
@@ -32,10 +32,10 @@ const (
 	// updateFirstCheck is how long after the daemon starts the first check runs.
 	updateFirstCheck = 2 * time.Minute
 	// updateInterval separates two checks, before the jitter.
-	updateInterval = 24 * time.Hour
+	updateInterval = 6 * time.Hour
 	// updateJitterMax bounds the random extra wait, so installs don't all
 	// ask GitHub at once.
-	updateJitterMax = time.Hour
+	updateJitterMax = 15 * time.Minute
 	// updateSoak is how old a release must be before the daemon installs it,
 	// and how long a tried version waits before it is tried again.
 	updateSoak = 24 * time.Hour
@@ -49,7 +49,7 @@ const (
 // default: a test sets its own.
 var updateLoopClock = time.Now
 
-// updateJitter is the random extra wait after a 24 h interval, in
+// updateJitter is the random extra wait after a 6 h interval, in
 // [0, updateJitterMax). TestMain installs a panicking default.
 var updateJitter = func() time.Duration {
 	return time.Duration(rand.Int64N(int64(updateJitterMax)))
@@ -295,8 +295,8 @@ func newUpdateLoop(h string, upstream *url.URL, state func() (store.State, error
 	return l
 }
 
-// Run checks 2 minutes after it starts, then every 24 h plus a random
-// 0-60 min, until ctx ends. A tick in flight is cancelled with ctx.
+// Run checks 2 minutes after it starts, then every 6 h plus a random
+// 0-15 min, until ctx ends. A tick in flight is cancelled with ctx.
 func (l *updateLoop) Run(ctx context.Context) {
 	if l == nil {
 		return
@@ -364,13 +364,21 @@ func (l *updateLoop) tick(ctx context.Context) {
 	u.PublishedAt = rel.PublishedAt
 	u.Available = releaseAvailable(rel, l.version, l.installedOrUnknown())
 	auto := u.Available && st.AutoUpdateOn() && l.autoAllowed(u, rel, now)
-	// An install about to run is its own news: no "run chottag update" first.
-	if u.Available && u.Notified != rel.Version && !auto {
-		l.post("chottag: update available", fmt.Sprintf("chottag %s is available. Run: chottag update", rel.Version))
-		u.Notified = rel.Version
-	}
-	if auto {
-		u.Notified = rel.Version
+	if u.Available {
+		// One record shared with `update --check` (update_notice.go): the
+		// claimer posts. An install about to run is its own news, so there
+		// the version is recorded without "run chottag update".
+		claimed, cerr := claimUpdateNotice(l.home, rel.Version, u.Notified)
+		switch {
+		case cerr != nil:
+			l.logf("could not record the update notice: %v", cerr)
+		case claimed && !auto:
+			title, body := updateNoticeText(rel.Version)
+			l.post(title, body)
+			u.Notified = rel.Version
+		default:
+			u.Notified = rel.Version
+		}
 	}
 	l.sink.setUpdate(&u)
 	if auto {

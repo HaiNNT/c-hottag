@@ -7,6 +7,14 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.8.2] - 2026-10-02
+
+### Changed
+
+- The desktop notice for a new release is posted by whichever check finds it first (the daemon's or `chottag update --check`), once per version, even across a daemon restart.
+- The daemon checks for a new release about every 6 hours (four requests a day) instead of daily.
+  See [release notes](docs/release-notes/v0.8.2.md).
+
 ## [0.8.1] - 2026-10-01
 
 ### Changed
@@ -277,6 +285,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.8.2]: docs/release-notes/v0.8.2.md
 [0.8.1]: docs/release-notes/v0.8.1.md
 [0.8.0]: docs/release-notes/v0.8.0.md
 [0.7.1]: docs/release-notes/v0.7.1.md
