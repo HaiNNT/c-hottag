@@ -2,7 +2,7 @@
 // check before a release: the repo's gate never runs the real claude). They
 // drive the module with a fake `$`, so no chottag, network or session is used.
 import { expect, test } from 'claude-code/testing'
-import { CT_HELP, GUARD_LOGIN, GUARD_LOGOUT, bandModel, displayWidth, formatReset, layoutCard, parseCt, register } from './chottag-mod.js'
+import { CT_HELP, GUARD_LOGIN, GUARD_LOGOUT, MOD_VERSION, bandModel, displayWidth, formatReset, layoutCard, parseCt, pluginBehind, register, versionNewer } from './chottag-mod.js'
 
 const ROUTED = 'http://chottag.default.0123456789abcdef0123456789abcdef:x@127.0.0.1:47850'
 const HOUR = 3600000
@@ -17,7 +17,7 @@ function doc(extra: any = {}): any {
   }
 }
 
-type Opts = { env?: any, run?: (argv: string[]) => any, store?: Map<string, any>, now?: number }
+type Opts = { ctVersion?: string, env?: any, run?: (argv: string[]) => any, store?: Map<string, any>, now?: number }
 
 // harness registers the module against a fake `$` and returns handles on it.
 function harness(opts: Opts = {}) {
@@ -26,10 +26,13 @@ function harness(opts: Opts = {}) {
   register(on)
   const env: any = { HOME: '/Users/alice', HTTPS_PROXY: ROUTED, ...(opts.env || {}) }
   const store = opts.store || new Map<string, any>()
-  const out: any = { opts: [] as any[], toasts: [] as string[], logs: [] as string[], runs: [] as string[][], registered: [] as any[], timers: [] as any[], now: opts.now ?? 0, invalidated: 0 }
+  const out: any = { opts: [] as any[], toasts: [] as string[], logs: [] as string[], runs: [] as string[][], versionRuns: [] as string[][], registered: [] as any[], timers: [] as any[], now: opts.now ?? 0, invalidated: 0 }
   const $: any = {
     env: { get: async (k: string) => env[k] },
-    process: { run: async (argv: string[], o: any) => { out.runs.push(argv); out.opts.push(o); return opts.run ? opts.run(argv) : { exitCode: 0, stdout: '', stderr: '' } } },
+    process: { run: async (argv: string[], o: any) => {
+      // The version check is its own channel, so a test counting `runs` counts only the rest.
+      if (argv[1] === 'version') { out.versionRuns.push(argv); return { exitCode: 0, stdout: opts.ctVersion ? JSON.stringify({ version: 1, ok: true, warnings: [], chottag: opts.ctVersion }) : '', stderr: '' } }
+      out.runs.push(argv); out.opts.push(o); return opts.run ? opts.run(argv) : { exitCode: 0, stdout: '', stderr: '' } } },
     store: { get: async (k: string) => store.get(k), set: async (k: string, v: any) => { store.set(k, v) } },
     clock: { now: async () => out.now, every: (_ms: number, fn: any) => { out.timers.push(fn) } },
     ui: {
@@ -57,8 +60,10 @@ function harness(opts: Opts = {}) {
   }
   // start fires session.start, then waits on the refresh it began: the timer's
   // callback returns the refresh in flight, so nothing waits on a fixed count.
-  const tick = async () => { await out.timers[0]() }
-  return { $, env, store, out, fire, handlers, start: async () => { await fire('session.start', {}); await tick() }, tick }
+  // The version check runs after the refresh, off it: flush it before a test looks.
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+  const tick = async () => { await out.timers[0](); await flush() }
+  return { $, env, store, out, fire, handlers, start: async () => { await fire('session.start', {}); await tick() }, tick, flush }
 }
 
 const statuslineRun = (docs: any[]) => {
@@ -737,4 +742,129 @@ test('rendered from the real 0.8.5 JSON shape: no remote, no "none"', async () =
   expect(text).toContain('11%')
   expect(text).not.toContain('Remote')
   expect(h.out.toasts).toEqual([])
+})
+
+// ---- the card's top padding (R155) ----
+
+test('the card has one empty line above it, in every shape', async () => {
+  const wide = harness({ run: statuslineRun([doc()]) })
+  await wide.start()
+  const two = (await wide.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 120 } })).children[0]
+  expect(two.flexDirection).toBe('column')
+  expect(two.marginTop).toBe(1)
+  expect(two.children.length).toBe(2) // the rows are unchanged: the padding is a margin, not a row
+
+  const narrow = await wide.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 30 } })
+  expect(narrow.children[0].marginTop).toBe(1) // the one-line form
+
+  const off = harness({ env: { HTTPS_PROXY: '' }, run: statuslineRun([doc()]) })
+  await off.start()
+  const note = await off.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 100 } })
+  expect(note.children[0].marginTop).toBe(1) // a note line too
+})
+
+// ---- the plugin behind chottag (R156) ----
+
+test('MOD_VERSION and the version comparison', () => {
+  expect(MOD_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
+  expect(versionNewer('0.10.0', '0.9.9')).toBe(true)
+  expect(versionNewer('0.9.0', '0.9.0')).toBe(false)
+  expect(versionNewer('0.8.9', '0.9.0')).toBe(false)
+  expect(versionNewer('dev', '0.9.0')).toBe(false)
+  expect(versionNewer('0.9.1-3-gabc', '0.9.0')).toBe(true)
+  expect(pluginBehind('99.0.0')).toBe('99.0.0')
+  expect(pluginBehind(MOD_VERSION)).toBe('')
+  expect(pluginBehind('')).toBe('')
+})
+
+test('a chottag newer than the plugin toasts once per version and puts a segment on the card', async () => {
+  const store = new Map<string, any>()
+  const h = harness({ store, ctVersion: '99.0.1', run: statuslineRun([doc()]) })
+  await h.start()
+  expect(h.out.versionRuns[0].slice(1)).toEqual(['version', '--json'])
+  expect(h.out.toasts).toEqual(['chottag 99.0.1 is installed but this plugin is ' + MOD_VERSION + '. Ask Claude Code to update the chottag plugin.'])
+  expect(store.get('plugin-told')).toBe('99.0.1')
+  const text = rowsOf(await h.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 160 } })).join('\n')
+  expect(text).toContain('plugin ' + MOD_VERSION + ' · chottag 99.0.1: update the plugin')
+
+  // a second session on the same store: the card says it, the toast does not repeat
+  const again = harness({ store, ctVersion: '99.0.1', run: statuslineRun([doc()]) })
+  await again.start()
+  expect(again.out.toasts).toEqual([])
+  expect(rowsOf(await again.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 160 } })).join('\n')).toContain('update the plugin')
+
+  // a newer chottag later: one more toast
+  const later = harness({ store, ctVersion: '99.0.2', run: statuslineRun([doc()]) })
+  await later.start()
+  expect(later.out.toasts.length).toBe(1)
+})
+
+test('no segment and no toast when the plugin is current, when chottag is a dev build, or when the version is unreadable', async () => {
+  for (const ctVersion of [MOD_VERSION, 'dev', '', '0.0.1']) {
+    const h = harness({ ctVersion, run: statuslineRun([doc()]) })
+    await h.start()
+    expect(h.out.toasts).toEqual([])
+    expect(rowsOf(await h.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 160 } })).join('\n')).not.toContain('update the plugin')
+  }
+})
+
+test('the version is asked again only after ten minutes', async () => {
+  const h = harness({ ctVersion: '99.0.1', run: statuslineRun([doc()]) })
+  await h.start()
+  await h.tick()
+  expect(h.out.versionRuns.length).toBe(1)
+  h.out.now += 11 * 60000
+  await h.tick()
+  expect(h.out.versionRuns.length).toBe(2)
+})
+
+test('the padding counts as a row: with short rows it is dropped before any content row', async () => {
+  const h = harness({ run: statuslineRun([doc()]) })
+  await h.start()
+  const at = async (maxRows: number, bodyColumns = 120) => (await h.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns, maxRows } })).children[0]
+  const one = await at(1)
+  expect(one.marginTop).toBeUndefined() // one row: the content takes it
+  expect(rowsOf({ children: [one] }).length).toBe(1)
+  const two = await at(2)
+  expect(two.marginTop).toBeUndefined() // two content rows fill it
+  expect(two.children.length).toBe(2)
+  const three = await at(3)
+  expect(three.marginTop).toBe(1) // two content rows and the padding
+  expect(three.children.length).toBe(2)
+  expect((await at(undefined as any)).marginTop).toBe(1)
+  // the one-line form fits two rows with its padding
+  const line = await at(2, 30)
+  expect(line.marginTop).toBe(1)
+})
+
+test('a render never waits for the version check', async () => {
+  let release: any
+  const gate = new Promise((r) => { release = r })
+  const base = statuslineRun([doc()])
+  const h = harness({ run: base })
+  const orig = h.$.process.run
+  h.$.process.run = async (argv: string[], o: any) => {
+    if (argv[1] === 'version') { await gate; return { exitCode: 0, stdout: JSON.stringify({ ok: true, chottag: '99.0.1' }), stderr: '' } }
+    return orig(argv, o)
+  }
+  await h.fire('session.start', {})
+  await h.out.timers[0]() // the refresh is done; the version run is still held
+  const before = h.out.invalidated
+  const tree = await h.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 160 } })
+  expect(rowsOf(tree).join('\n')).not.toContain('update the plugin')
+  release()
+  await h.flush()
+  expect(h.out.invalidated).toBeGreaterThan(before) // redrawn when the version arrived
+  expect(h.out.toasts.length).toBe(1)
+  expect(rowsOf(await h.fire('ui.render', { component: 'AbovePrompt', props: { bodyColumns: 160 } })).join('\n')).toContain('update the plugin')
+})
+
+test('a chottag pre-release, a dirty-text or a non-version answer does not flag the plugin', async () => {
+  expect(versionNewer('0.99.0-rc.1', '0.9.0')).toBe(false)
+  expect(versionNewer('0.99.0-3-gabc1234', '0.9.0')).toBe(true)
+  for (const ctVersion of ['99.0.1-rc.1', '99.0.1\u202e', '99.0.1 now', '\x1b[31m99.0.1']) {
+    const h = harness({ ctVersion, run: statuslineRun([doc()]) })
+    await h.start()
+    expect(h.out.toasts).toEqual([])
+  }
 })

@@ -142,6 +142,12 @@ type slot struct {
 	// a slot whose login is broken does not spawn a claude per request: at most
 	// one forced attempt per forceEvery, measured from the last one.
 	awaitNextTry time.Time
+	// renewals counts refreshes that moved the token's expiry on, and
+	// renewedAt is when the last one finished: ForceRefresh uses them to
+	// hand back the token a refresh in flight (or one that just ended) made,
+	// instead of declining or refreshing a second time (R158).
+	renewals  int
+	renewedAt time.Time
 	// warmHold: Warm leaves the slot alone until then (see Warm).
 	warmHold time.Time
 	// notRenewing counts refreshes that exited 0 and left the token expired,
@@ -327,11 +333,36 @@ func (m *Manager) Await(ctx context.Context, slotDir string) (string, creds.Stat
 // zero for Token's benefit. The cooldown is a separate field precisely so
 // it never delays Token's own (StateStale) refresh of a genuinely expired
 // token.
+//
+// R158: a refresh already in flight is waited for instead (bounded by ctx),
+// and its renewed token is returned, because the request that was refused
+// was probably sent with the token it is replacing. The same goes for a
+// renewal that finished within recentRenewal: no second refresh, the cached
+// token is returned. A refresh that renewed nothing returns ok=false.
 func (m *Manager) ForceRefresh(ctx context.Context, slotDir string) (string, bool) {
 	s := m.slotFor(slotDir)
 	s.mu.Lock()
 	now := m.cfg.Now()
-	if s.refreshing || now.Before(s.nextTry) || now.Before(s.forceNextTry) {
+	if s.refreshing {
+		done, gen := s.done, s.renewals
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-done:
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.renewals > gen {
+			return s.renewedToken()
+		}
+		return "", false
+	}
+	if !s.renewedAt.IsZero() && now.Sub(s.renewedAt) < recentRenewal {
+		defer s.mu.Unlock()
+		return s.renewedToken()
+	}
+	if now.Before(s.nextTry) || now.Before(s.forceNextTry) {
 		s.mu.Unlock()
 		return "", false
 	}
@@ -340,6 +371,22 @@ func (m *Manager) ForceRefresh(ctx context.Context, slotDir string) (string, boo
 	s.mu.Unlock()
 	tok, _, ok := m.doRefresh(context.WithoutCancel(ctx), s, slotDir, true, TriggerForced)
 	return tok, ok
+}
+
+// recentRenewal is how long after a renewal ForceRefresh still treats the
+// cached token as the answer to a refusal, without refreshing again.
+const recentRenewal = 30 * time.Second
+
+// renewedToken is the cached token when it is usable. Caller holds s.mu.
+func (s *slot) renewedToken() (string, bool) {
+	if s.err != nil || s.tok.AccessToken == "" {
+		return "", false
+	}
+	switch s.status.State {
+	case creds.StateOK, creds.StateExpiring:
+		return s.tok.AccessToken, true
+	}
+	return "", false
 }
 
 // Warm refreshes slotDir's token now, in this goroutine, when it is stale or
@@ -584,6 +631,8 @@ func (m *Manager) attempt(ctx context.Context, s *slot, dir string, forced bool,
 				s.forceNextTry = now.Add(m.cfg.MinBackoff)
 			}
 			if s.tok.ExpiresAt.After(before) {
+				s.renewals++
+				s.renewedAt = now
 				ev.Outcome = OutcomeRenewed
 			} else {
 				ev.Outcome, ev.Detail = OutcomeNotRenewed, "token unchanged, not yet due"

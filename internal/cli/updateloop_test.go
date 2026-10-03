@@ -563,6 +563,13 @@ func TestRunAutoUpdateChildAgainstAShellFake(t *testing.T) {
 	}
 }
 
+func TestRunAutoUpdateChildMarksItselfTheDaemons(t *testing.T) {
+	self, _ := shChild(t, `[ "$CHOTTAG_AUTO_UPDATE" = 1 ] && echo '{"ok":true,"installed":true}' || echo '{"ok":false}'`)
+	if got := runAutoUpdateChild(context.Background(), self, "v0.6.0"); !got.OK {
+		t.Fatalf("the child did not see CHOTTAG_AUTO_UPDATE=1: %+v", got)
+	}
+}
+
 func TestRunAutoUpdateChildFailureKeepsACappedSanitizedStderrLine(t *testing.T) {
 	self, _ := shChild(t, `echo 'noise' >&2; echo 'gh: fetch https://u:pw@example.com/a?token=SECRET failed' >&2; exit 1`)
 	got := runAutoUpdateChild(context.Background(), self, "v0.6.0")

@@ -8,6 +8,8 @@ import (
 
 const api, mcp = "api.anthropic.com", "mcp-proxy.anthropic.com"
 
+// fb is the Serving decision of a route the table does not list.
+func fb() router.Decision              { return router.Decision{Class: router.Serving, Fallback: true} }
 func d(c router.Class) router.Decision { return router.Decision{Class: c} }
 func obj(c router.Class, k router.Kind, id string) router.Decision {
 	return router.Decision{Class: c, Object: k, ObjectID: id}
@@ -24,24 +26,24 @@ func TestRoute(t *testing.T) {
 		want                      router.Decision
 	}{
 		// serving (M0 confirmed)
-		{"GET", api, "/api/claude_cli/bootstrap", "entrypoint=cli", d(S)},
-		{"GET", api, "/api/claude_code/notification/preferences", "", d(S)},
-		{"GET", api, "/api/claude_code_grove", "", d(S)},
-		{"GET", api, "/api/claude_code_penguin_mode", "", d(S)},
-		{"POST", api, "/api/eval/sdk-zAZezfDKGoZuXXKe", "", d(S)},
-		{"POST", api, "/api/event_logging/v2/batch", "", d(S)},
-		{"GET", api, "/api/oauth/account/settings", "", d(S)},
+		{"GET", api, "/api/claude_cli/bootstrap", "entrypoint=cli", fb()},
+		{"GET", api, "/api/claude_code/notification/preferences", "", fb()},
+		{"GET", api, "/api/claude_code_grove", "", fb()},
+		{"GET", api, "/api/claude_code_penguin_mode", "", fb()},
+		{"POST", api, "/api/eval/sdk-zAZezfDKGoZuXXKe", "", fb()},
+		{"POST", api, "/api/event_logging/v2/batch", "", fb()},
+		{"GET", api, "/api/oauth/account/settings", "", fb()},
 		{"GET", api, "/api/oauth/organizations/org-1/marketplaces", "", d(U)}, // F218
-		{"GET", api, "/api/oauth/organizations/org-1/plugins/list-plugins", "limit=100", d(S)},
-		{"GET", api, "/api/oauth/organizations/org-1/plugins/pl-1/download", "", d(S)},
-		{"GET", api, "/api/oauth/organizations/org-1/skills/list-skills", "entrypoint=cli", d(S)},
-		{"GET", api, "/api/oauth/organizations/org-1/skills/sk-1/download", "", d(S)},
-		{"GET", api, "/api/oauth/organizations/org-1/sync/github/auth", "", d(S)},
-		{"GET", api, "/api/oauth/usage", "", d(S)},
+		{"GET", api, "/api/oauth/organizations/org-1/plugins/list-plugins", "limit=100", fb()},
+		{"GET", api, "/api/oauth/organizations/org-1/plugins/pl-1/download", "", fb()},
+		{"GET", api, "/api/oauth/organizations/org-1/skills/list-skills", "entrypoint=cli", fb()},
+		{"GET", api, "/api/oauth/organizations/org-1/skills/sk-1/download", "", fb()},
+		{"GET", api, "/api/oauth/organizations/org-1/sync/github/auth", "", fb()},
+		{"GET", api, "/api/oauth/usage", "", fb()},
 		{"GET", api, "/api/organizations/org-1/model_selector/cc", "", d(U)}, // F218
 		{"POST", api, "/v1/messages", "beta=true", d(S)},
-		{"GET", api, "/v1/ultrareview/quota", "", d(S)},
-		{"GET", api, "/some/new/route", "", d(S)},
+		{"GET", api, "/v1/ultrareview/quota", "", fb()},
+		{"GET", api, "/some/new/route", "", fb()},
 		{"POST", "API.Anthropic.com:443", "/v1/messages", "", d(S)},
 		// RC sessions
 		{"POST", api, "/v1/code/sessions", "", rec(router.KindSession, "session.id")},
@@ -70,7 +72,7 @@ func TestRoute(t *testing.T) {
 		{"GET", api, "/mcp-registry/v0/servers", "limit=100", d(U)},
 		// Org-bound to the login Claude Code started with: every swap is refused (F203).
 		{"GET", api, "/api/claude_code/settings", "", d(U)},
-		{"GET", api, "/api/claude_code/policy_limits", "", d(S)},
+		{"GET", api, "/api/claude_code/policy_limits", "", fb()},
 		// `claude remote-control` server
 		{"POST", api, "/api/oauth/validate", "", d(S)}, // MITM form: a REPL validating its own login
 		{"POST", api, "/v1/environments/bridge", "", rec(router.KindEnvironment, "environment_id")},

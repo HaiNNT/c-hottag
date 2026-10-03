@@ -34,6 +34,9 @@ func newNoticeEnv(t *testing.T, running, tag string) *noticeEnv {
 	t.Helper()
 	h := newLoopHarness(t, running, aged(tag, time.Hour), nil)
 	t.Setenv("CHOTTAG_HOME", h.home)
+	origReleases := updateReleases
+	updateReleases = func(context.Context, *url.URL, string) ([]updatecheck.Release, error) { return nil, nil }
+	t.Cleanup(func() { updateReleases = origReleases })
 	writeStateWithPort(t, h.home, closedPort(t))
 	e := &noticeEnv{loopHarness: h, cli: stubDaemonNotifier(t)}
 	h.loop.notify = func(title, body string) {

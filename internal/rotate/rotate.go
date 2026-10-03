@@ -11,7 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+// StampLayout is the local timestamp a stamped log line starts with.
+const StampLayout = "2006-01-02 15:04:05"
 
 // ErrClosed is returned by Write once Close has been called. Without this
 // guard, a Write after Close that happens to cross MaxBytes would rotate:
@@ -23,6 +27,10 @@ type Config struct {
 	Path     string // the live log
 	MaxBytes int64  // rotate once the live log reaches this size
 	Keep     int    // how many rotated files to keep (.1 .. .Keep)
+	// Stamp, when set, is the clock for a local timestamp
+	// ("2006-01-02 15:04:05" and a space) put at the start of every line
+	// written. nil writes lines as given.
+	Stamp func() time.Time
 }
 
 type Writer struct {
@@ -31,6 +39,9 @@ type Writer struct {
 	f      *os.File
 	size   int64
 	closed bool
+	// midLine is true when the last byte written was not a newline, so the
+	// next write continues a line and gets no stamp.
+	midLine bool
 }
 
 // Open appends to cfg.Path (0600), creating parent dirs (0700) as needed.
@@ -62,7 +73,12 @@ func (w *Writer) Write(p []byte) (int, error) {
 	if w.closed {
 		return 0, ErrClosed
 	}
-	if w.size+int64(len(p)) > w.cfg.MaxBytes {
+	stamped := w.cfg.Stamp != nil && len(p) > 0
+	out, starts, plen := p, []int(nil), 0
+	if stamped {
+		out, starts, plen = w.stamp(p, w.midLine)
+	}
+	if w.size+int64(len(out)) > w.cfg.MaxBytes {
 		if err := w.rotateLocked(); err != nil {
 			// Rotation didn't complete, but w.f is guaranteed to still be a
 			// valid, open handle (rotateLocked never closes it before a
@@ -71,10 +87,57 @@ func (w *Writer) Write(p []byte) (int, error) {
 			// so the next Write retries rotation instead of wedging.
 			return 0, err
 		}
+		// The new file starts a line, whatever the old one ended with.
+		w.midLine = false
+		if stamped {
+			out, starts, plen = w.stamp(p, false)
+		}
 	}
-	n, err := w.f.Write(p)
+	n, err := w.f.Write(out)
 	w.size += int64(n)
-	return n, err
+	if n > 0 {
+		w.midLine = out[n-1] != '\n'
+	}
+	if err != nil {
+		// n counts stamped bytes: report only how much of p was written.
+		wrote, prefixBytes := n, 0
+		for _, st := range starts {
+			if in := wrote - st; in > 0 {
+				prefixBytes += min(in, plen)
+			}
+		}
+		n = wrote - prefixBytes
+		return n, err
+	}
+	return len(p), nil
+}
+
+// stamp returns p with the timestamp at the start of each line (the first
+// one too unless midLine), where each prefix begins in the result, and the
+// prefix's length. Caller holds mu.
+func (w *Writer) stamp(p []byte, midLine bool) (out []byte, starts []int, plen int) {
+	prefix := w.cfg.Stamp().Format(StampLayout) + " "
+	out = make([]byte, 0, len(p)+len(prefix))
+	atStart := !midLine
+	for len(p) > 0 {
+		if atStart {
+			starts = append(starts, len(out))
+			out = append(out, prefix...)
+		}
+		i := 0
+		for i < len(p) && p[i] != '\n' {
+			i++
+		}
+		if i < len(p) {
+			i++
+			atStart = true
+		} else {
+			atStart = false
+		}
+		out = append(out, p[:i]...)
+		p = p[i:]
+	}
+	return out, starts, len(prefix)
 }
 
 func rotatedPath(path string, n int) string {

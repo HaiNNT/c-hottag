@@ -238,8 +238,10 @@ func bareUpdateGH(t *testing.T, base func(context.Context, ...string) ([]byte, e
 // through t.Cleanup (F130).
 func stubUpdateSeams(t *testing.T, gh func(context.Context, ...string) ([]byte, error), child func(context.Context, string, ...string) error, probe func(int) (bool, string)) {
 	t.Helper()
-	origGH, origChild, origProbe, origFetch := updateGH, updateChild, updateProbe, updateFetch
+	origGH, origChild, origProbe, origFetch, origReleases := updateGH, updateChild, updateProbe, updateFetch, updateReleases
 	updateGH, updateChild, updateProbe = gh, child, probe
+	// No releases list by default: a test about what's new calls stubReleases.
+	updateReleases = func(context.Context, *url.URL, string) ([]updatecheck.Release, error) { return nil, nil }
 	stubInstalled(t, "") // a test that cares overrides this after
 	if gh != nil {
 		// `update --check` asks updateFetch, not gh (R124). Answer it from the
@@ -256,7 +258,7 @@ func stubUpdateSeams(t *testing.T, gh func(context.Context, ...string) ([]byte, 
 		}
 	}
 	t.Cleanup(func() {
-		updateGH, updateChild, updateProbe, updateFetch = origGH, origChild, origProbe, origFetch
+		updateGH, updateChild, updateProbe, updateFetch, updateReleases = origGH, origChild, origProbe, origFetch, origReleases
 	})
 }
 

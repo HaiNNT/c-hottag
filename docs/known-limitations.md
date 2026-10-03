@@ -40,7 +40,9 @@ a published API, so a Claude Code update can change it. `chottag doctor`'s
 `route-drift` row and the desktop notice flag it when it happens; see
 [troubleshooting.md](troubleshooting.md) for the fix. A claude.ai
 connector's own 401/403/404 from its owner account (a stale MCP session,
-an auth handshake) is passed through as is and never counted as drift. If
+an auth handshake) is passed through as is and never counted as drift, and neither is a
+401 or 403 on `/v1/messages` or `POST /api/oauth/validate`: that is an account login refusal, with its own
+notice (see troubleshooting). If
 that recorded owner can no longer see the connector at all (removed from
 the org, say), every call to it now just fails, quietly, with no drift
 notice; a later `/v1/mcp_servers` listing on another account doesn't fix

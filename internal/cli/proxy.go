@@ -283,6 +283,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 
 	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, autoUsageHook(as, newUsageHook(cache.State, sink, dn)), upstreamURL)
 	cfg.WallRetry = as.wallRetry
+	cfg.OnServingRefusal = servingRefusalHook(stderr, dn)
 	// Test hooks only (proxy.Config's own doc comment: nil = the real
 	// net.Dialer and the system roots). Both are nil in every production
 	// build; a wiring test sets them to redirect every upstream dial to a

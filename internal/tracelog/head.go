@@ -38,7 +38,7 @@ func HeadOf(r Record) Record {
 		Form: r.Form, Method: r.Method, Host: r.Host, Path: r.Path,
 		PathIDs: r.PathIDs, QueryKeys: r.QueryKeys,
 		Class: r.Class, Auth: r.Auth,
-		Swapped: r.Swapped, Account: r.Account, Drift: r.Drift,
+		Swapped: r.Swapped, Account: r.Account, Drift: r.Drift, Refused: r.Refused,
 		Status: r.Status, ReqType: r.ReqType, RespType: r.RespType,
 		RespHeaderNames: r.RespHeaderNames, RespLimitHeaders: r.RespLimitHeaders,
 		RespErrorType: r.RespErrorType, RespResetAt: r.RespResetAt,

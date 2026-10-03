@@ -227,6 +227,10 @@ func TestMain(m *testing.M) {
 	updateFetch = func(context.Context, *url.URL, string) (updatecheck.Release, error) {
 		panic("updateFetch reached from internal/cli's test binary: a test must stub it with stubFetch")
 	}
+	// updateReleases (update.go) is the what's new summary's one HTTP request.
+	updateReleases = func(context.Context, *url.URL, string) ([]updatecheck.Release, error) {
+		panic("updateReleases reached from internal/cli's test binary: a test must stub it (stubUpdateSeams does)")
+	}
 	// The update loop's clock, jitter, timer and child (updateloop.go).
 	updateLoopClock = func() time.Time {
 		panic("updateLoopClock reached from internal/cli's test binary: a test must stub it")

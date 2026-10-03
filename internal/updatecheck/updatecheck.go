@@ -10,9 +10,12 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // APIBase is the GitHub REST API root.
@@ -28,6 +31,10 @@ type Release struct {
 	PublishedAt time.Time
 	Draft       bool
 	Prerelease  bool
+	// Body and URL are set by List only: the release notes text and the
+	// release's html_url.
+	Body string
+	URL  string
 }
 
 // Latest fetches {apiBase}/repos/{repo}/releases/latest. A non-200 status,
@@ -309,4 +316,153 @@ func comparePrecedence(a, b versionPrecedence) int {
 		}
 	}
 	return 0
+}
+
+// maxListBody caps the releases list: 20 releases with their notes.
+const maxListBody = 4 << 20
+
+// listQuery is the releases list's path and query.
+const listQuery = "/releases?per_page=20"
+
+// List fetches {apiBase}/repos/{repo}/releases?per_page=20: the 20 newest
+// releases with their notes (Body) and page (URL). Status, size and decode
+// errors are errors; an entry with no tag_name is skipped.
+func List(ctx context.Context, c *http.Client, apiBase, repo string) ([]Release, error) {
+	url := apiBase + "/repos/" + repo + listQuery
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("updatecheck: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("updatecheck: fetch releases: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("updatecheck: releases: unexpected status %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("updatecheck: read releases: %w", err)
+	}
+	if len(body) > maxListBody {
+		return nil, fmt.Errorf("updatecheck: releases response exceeds 4 MiB")
+	}
+	var raw []struct {
+		TagName     string    `json:"tag_name"`
+		PublishedAt time.Time `json:"published_at"`
+		Draft       bool      `json:"draft"`
+		Prerelease  bool      `json:"prerelease"`
+		Body        string    `json:"body"`
+		HTMLURL     string    `json:"html_url"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("updatecheck: decode releases: %w", err)
+	}
+	var out []Release
+	for _, r := range raw {
+		if r.TagName == "" {
+			continue
+		}
+		out = append(out, Release{
+			Tag: r.TagName, Version: strings.TrimPrefix(r.TagName, "v"),
+			PublishedAt: r.PublishedAt, Draft: r.Draft, Prerelease: r.Prerelease,
+			Body: r.Body, URL: r.HTMLURL,
+		})
+	}
+	return out, nil
+}
+
+// Note is one release's entry in a "what's new" summary.
+type Note struct {
+	Version string `json:"version"`
+	Summary string `json:"summary"`
+	URL     string `json:"url"`
+}
+
+// SummaryMax is the most runes a Note's summary keeps (before its ellipsis).
+const SummaryMax = 400
+
+// MaxNotes is the most releases a summary covers.
+const MaxNotes = 5
+
+// WhatsNew picks, from releases, the published ones newer than since and not
+// newer than upTo (when upTo is not empty), newest first, at most MaxNotes.
+// Drafts, prereleases and versions that do not parse are skipped.
+func WhatsNew(releases []Release, since, upTo string) []Note {
+	var picked []Release
+	for _, r := range releases {
+		if r.Draft || r.Prerelease || !Parses(r.Version) || IsPrerelease(r.Version) || !Newer(r.Version, since) {
+			continue
+		}
+		if upTo != "" && Parses(upTo) && Newer(r.Version, upTo) {
+			continue
+		}
+		picked = append(picked, r)
+	}
+	sort.SliceStable(picked, func(i, j int) bool { return Newer(picked[i].Version, picked[j].Version) })
+	if len(picked) > MaxNotes {
+		picked = picked[:MaxNotes]
+	}
+	notes := make([]Note, 0, len(picked))
+	for _, r := range picked {
+		notes = append(notes, Note{Version: CleanText(r.Version), Summary: Lead(r.Body), URL: releaseURL(r.URL)})
+	}
+	return notes
+}
+
+var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)?|\x1b.?")
+
+// releaseURLPrefix is where a release page lives: the API's html_url for
+// api.github.com always starts with it.
+const releaseURLPrefix = "https://github.com/"
+
+// releaseURL is u when it is a github.com page with nothing odd in it, else "".
+func releaseURL(u string) string {
+	if !strings.HasPrefix(u, releaseURLPrefix) || CleanText(u) != u || strings.ContainsRune(u, ' ') {
+		return ""
+	}
+	return u
+}
+
+// CleanText strips ANSI sequences and control characters, turns every run of
+// whitespace into one space and trims the ends.
+func CleanText(s string) string {
+	s = ansiPattern.ReplaceAllString(s, "")
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case unicode.IsSpace(r):
+			b.WriteByte(' ')
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError:
+			// dropped: controls, and format characters (bidi overrides and
+			// isolates, zero-width characters, the byte order mark)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// Lead is the first paragraph of a release body, cleaned (CleanText) and cut
+// to SummaryMax runes on a rune boundary, with an ellipsis when cut.
+func Lead(body string) string {
+	body = strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
+	var para []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) == "" {
+			if len(para) > 0 {
+				break
+			}
+			continue
+		}
+		para = append(para, line)
+	}
+	s := CleanText(strings.Join(para, " "))
+	if utf8.RuneCountInString(s) <= SummaryMax {
+		return s
+	}
+	r := []rune(s)
+	return strings.TrimRight(string(r[:SummaryMax]), " ") + "…"
 }

@@ -117,13 +117,14 @@ func TestRosterTickStampsTheDaemonObject(t *testing.T) {
 	// Refresh always declines, so each one falls straight through to the
 	// original-login resend and increments drift exactly once, without an
 	// extra retry round trip.
+	// An object route: a refused ordinary request is not route drift (R158).
 	driftUpstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusForbidden)
 	})
 	ph := proxytest.Start(t, driftUpstream, proxytest.Options{Choose: fixedServingChooser{account: "A", token: "tok-A"}})
 	for i := 0; i < 2; i++ {
-		req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader("{}"))
+		req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/sessions/sess-1/events", strings.NewReader("{}"))
 		if err != nil {
 			t.Fatal(err)
 		}

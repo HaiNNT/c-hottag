@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"strings"
@@ -243,6 +245,36 @@ func notifyUsageHook(dn *daemonNotify, next func(string, int, http.Header)) func
 			dn.events.AccountOK(account)
 		}
 	}
+}
+
+// servingRefusalHook is proxy.Config.OnServingRefusal (R158): a swapped
+// serving request whose account's login was refused twice. Every one gets a
+// daemon.log line with the account, the first refused status, the method and
+// the templated path (never a token, a body, a query or a proxy setting);
+// the notice is limited to one per account per hour inside notify.Events.
+// dn may be nil (a daemon built without notifications).
+func servingRefusalHook(log io.Writer, dn *daemonNotify) func(account string, status int, resent bool, method, path string) {
+	return func(account string, status int, resent bool, method, path string) {
+		fate := "sent on Home's own login"
+		if !resent {
+			fate = "not resent"
+		}
+		fmt.Fprintf(log, "chottag: %s's login was refused (%d) on %s %s; %s\n", account, status, cleanLogField(method), cleanLogField(path), fate)
+		if dn != nil {
+			dn.events.ServingRefused(account, status, resent)
+		}
+	}
+}
+
+// cleanLogField makes a request-derived value safe for a one-line log entry:
+// a control character becomes "?".
+func cleanLogField(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // limitsAt is the roll-up at now, with RollUpAt's rule: a reset that has

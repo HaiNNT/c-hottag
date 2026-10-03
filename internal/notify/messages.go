@@ -49,6 +49,17 @@ func routeDriftMessage() (title, body string) {
 		"The daemon resent a swapped request unchanged; the route table may not match this Claude Code version. Run: chottag trace on"
 }
 
+// servingRefusedMessage is the notice for a swapped serving request that the
+// account's login had refused twice (R158). resent says the request then went
+// out on the client's own (Home) login.
+func servingRefusedMessage(account string, status int, resent bool) (title, body string) {
+	title = fmt.Sprintf("chottag: %s's login was refused (%d)", account, status)
+	if resent {
+		return title, "This request went out on your own (Home) login. If it repeats, run chottag login " + account + "."
+	}
+	return title, "This request was not resent on your own login. If it repeats, run chottag login " + account + "."
+}
+
 // switchedMessage is the auto-switch notice (M4 spec §7).
 func switchedMessage(s Switch) (title, body string) {
 	title = poolTitle(s.Pool, "switched to "+s.To)

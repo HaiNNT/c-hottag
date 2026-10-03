@@ -34,8 +34,8 @@ at least three times in a row, over at least 10 minutes, yet the token stays
 expired (a dead refresh token, say). The daemon log says, in two lines:
 
 ```
-chottag: refresh C: claude exited 0 but the token is still expired; retry in 15m
-chottag: refresh C: still expired after 6 tries over 16m; it needs a login (run: chottag login C)
+2026-10-03 09:15:02 chottag: refresh C: claude exited 0 but the token is still expired; retry in 15m
+2026-10-03 09:31:02 chottag: refresh C: still expired after 6 tries over 16m; it needs a login (run: chottag login C)
 ```
 
 and you get a notice (the numbers are the tries so far and the minutes they
@@ -54,7 +54,8 @@ after your Mac wakes (prompts sent in those 10 seconds plus the refresh still
 go out on Home's own login, and only those two accounts are covered, not
 every rotating member). `chottag daemon logs` says what each refresh did, one
 line per outcome (the same line at most every 10 minutes, a different one
-always):
+always). Since 0.9.1 every daemon log line starts with the local time,
+`2006-01-02 15:04:05` (the lines below are shown without it):
 
 - `chottag: refresh C: renewed, expires in 7h59m (request, 5.2s)`: it worked.
   The word in parentheses is what started it: `request`, `warm`, `forced` or
@@ -145,10 +146,31 @@ environment from.
 running one. Run `chottag daemon restart` after `chottag update` to pick
 up the new binary.
 
+## An account's login was refused (401)
+
+A desktop notice `chottag: C's login was refused (401)` (or 403) means a
+request that chottag sent as account C on a conversation route
+(`/v1/messages`, or `POST /api/oauth/validate`) was refused by Anthropic, even after
+chottag refreshed C's token and tried again, so the request went out once on
+your own (Home) login instead. It is not route drift. Since 0.9.1 the notice
+comes at most once an hour per account, and the daemon log has a line for each
+one: `2026-10-03 17:28:23 chottag: C's login was refused (401) on POST
+/v1/messages; sent on Home's own login` (with more than one pool, the line
+ends `; not resent`, and so does the notice's text: nothing goes out on Home's
+login). If it was a one-off (for example C's token was renewed at that moment),
+nothing is needed: since 0.9.1 a request refused while C's refresh is running
+waits for it and retries with the new token. If it repeats, run `chottag login
+C`.
+
 ## Route drift after a Claude Code update
 
-`chottag doctor`'s `route-drift` row and the desktop notice mean Claude
-Code's traffic no longer matches the route table chottag learned. Run
+`chottag doctor`'s `route-drift` row and the desktop notice
+`chottag: route drift` mean Claude Code's traffic no longer matches the route
+table chottag learned. Since 0.9.1 these count: a request about a claude.ai
+object (Remote Control, a connector, an artifact, a routine), a request to a
+route chottag's table does not list (what a new Claude Code route looks
+like), and any 404. A 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is the notice above
+instead. Run
 `chottag trace on`, reproduce the drifted request, then `chottag trace
 summarize`, and open an issue with that output — it holds route shapes,
 never tokens. (A claude.ai connector's own 401/403/404 from the account

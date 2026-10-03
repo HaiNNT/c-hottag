@@ -298,7 +298,16 @@ running: wait and re-check with `chottag update --check --json`; don't retry
 in a loop. If `update --json` returns `"daemon": "deferred"` with
 `"selfRestart": false`, the running daemon can't restart itself onto the new
 version (it predates 0.6.0, or auto-restart is off): tell the user and run
-`chottag daemon restart` to finish the update. Never turn on `chottag update --auto-install on` without the
+`chottag daemon restart` to finish the update.
+
+After a successful `chottag update`, relay its "What's new" summary (the
+`whatsNew` array in `--json`: version, summary, link) to the user, then ask
+whether to update the Claude Code plugin too. The update does not touch it,
+and a plugin older than chottag can miss new commands and card fields. On a
+yes, run the two commands in `plugin.commands` in order (`claude plugin
+marketplace update c-hottag`, then `claude plugin update chottag@c-hottag`)
+and tell the user to run `/reload-plugins` in their open sessions (or restart
+them). Don't run them without the yes. Never turn on `chottag update --auto-install on` without the
 user's yes.
 
 ## Rules for the agent

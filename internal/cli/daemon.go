@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/daemonlock"
 	"github.com/HaiNNT/c-hottag/internal/exit"
@@ -60,6 +61,10 @@ var daemonRunSubArgsForTest func(sub []string)
 // guard follows it rather than silently stopping short of the family it
 // protects.
 const daemonLogKeep = 5
+
+// daemonLogClock stamps every daemon.log line with local time (R158). A
+// variable so a test can fix it.
+var daemonLogClock = time.Now
 
 // sameFile reports whether a and b name the same file. Lexical comparison
 // (after filepath.Abs) catches the common case — a literal or
@@ -399,6 +404,7 @@ func runDaemonRun(args []string, r *reporter) int {
 		Path:     filepath.Join(h, "daemon.log"),
 		MaxBytes: 8 << 20,
 		Keep:     daemonLogKeep,
+		Stamp:    daemonLogClock,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "chottag:", err)

@@ -189,3 +189,116 @@ func TestIsPrerelease(t *testing.T) {
 		}
 	}
 }
+
+func TestListAndWhatsNew(t *testing.T) {
+	const body = `[
+	 {"tag_name":"v0.9.2","html_url":"https://github.com/Acme/chottag/releases/tag/v0.9.2","body":"Lead two.\n\nMore.","draft":false,"prerelease":false},
+	 {"tag_name":"v1.0.0-rc.1","html_url":"https://github.com/Acme/chottag/releases/tag/rc","body":"RC","prerelease":true},
+	 {"tag_name":"v0.9.3","html_url":"https://github.com/Acme/chottag/releases/tag/v0.9.3","body":"Draft","draft":true},
+	 {"tag_name":"v0.9.1","html_url":"https://github.com/Acme/chottag/releases/tag/v0.9.1","body":"Lead\r\none \u001b[31mred\u001b[0m\u0007 and\ttab.\r\n\r\nSecond.","draft":false},
+	 {"tag_name":"v0.9.0","html_url":"https://github.com/Acme/chottag/releases/tag/v0.9.0","body":"Old"},
+	 {"tag_name":"","body":"no tag"}
+	]`
+	var gotURI string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.URL.RequestURI()
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	rels, err := List(context.Background(), srv.Client(), srv.URL, "Acme/chottag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotURI != "/repos/Acme/chottag/releases?per_page=20" {
+		t.Errorf("uri = %q", gotURI)
+	}
+	if len(rels) != 5 {
+		t.Fatalf("got %d releases, want 5 (the one without a tag skipped)", len(rels))
+	}
+	notes := WhatsNew(rels, "0.9.0", "")
+	if len(notes) != 2 || notes[0].Version != "0.9.2" || notes[1].Version != "0.9.1" {
+		t.Fatalf("notes = %+v", notes)
+	}
+	if notes[1].Summary != "Lead one red and tab." || notes[1].URL != "https://github.com/Acme/chottag/releases/tag/v0.9.1" {
+		t.Errorf("note = %+v", notes[1])
+	}
+	if got := WhatsNew(rels, "0.9.0", "0.9.1"); len(got) != 1 || got[0].Version != "0.9.1" {
+		t.Errorf("upTo 0.9.1: %+v", got)
+	}
+	if got := WhatsNew(rels, "dev", ""); len(got) != 0 {
+		t.Errorf("a dev build has no newer release: %+v", got)
+	}
+}
+
+func TestWhatsNewKeepsFiveNewestFirst(t *testing.T) {
+	var rels []Release
+	for _, v := range []string{"0.9.1", "0.9.10", "0.9.2", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7"} {
+		rels = append(rels, Release{Tag: "v" + v, Version: v, Body: "x"})
+	}
+	notes := WhatsNew(rels, "0.9.0", "")
+	var got []string
+	for _, n := range notes {
+		got = append(got, n.Version)
+	}
+	if strings.Join(got, " ") != "0.9.10 0.9.7 0.9.6 0.9.5 0.9.4" {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestListErrors(t *testing.T) {
+	for name, h := range map[string]http.HandlerFunc{
+		"status": func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) },
+		"json":   func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{")) },
+		"big":    func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(make([]byte, 5<<20)) },
+	} {
+		srv := httptest.NewServer(h)
+		if _, err := List(context.Background(), srv.Client(), srv.URL, "A/b"); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+		srv.Close()
+	}
+}
+
+func TestLead(t *testing.T) {
+	if got := Lead("\n\n  First line\nsecond line\n\nNext para"); got != "First line second line" {
+		t.Errorf("got %q", got)
+	}
+	long := strings.Repeat("é", 450)
+	got := Lead(long)
+	if r := []rune(got); len(r) != SummaryMax+1 || r[len(r)-1] != '…' {
+		t.Errorf("cut to %d runes: %q...", len(r), string(r[:5]))
+	}
+	if got := Lead("a\x00b\x1b]0;title\x07c\u202e"); strings.ContainsAny(got, "\x00\x1b\x07") || strings.Contains(got, "title") {
+		t.Errorf("not cleaned: %q", got)
+	}
+	// Bidi overrides and isolates, zero-width characters and the BOM are format characters.
+	if got := Lead("a\u202ab\u202ec\u2066d\u2069e\u200bf\u200fg\ufeffh"); got != "abcdefgh" {
+		t.Errorf("format characters kept: %q", got)
+	}
+	if Lead("") != "" {
+		t.Error("empty body")
+	}
+}
+
+func TestWhatsNewCleansVersionAndChecksTheURL(t *testing.T) {
+	rels := []Release{
+		{Tag: "v0.9.2+a\u202eb", Version: "0.9.2+a\u202eb", Body: "x", URL: "https://github.com/Acme/chottag/releases/tag/v0.9.2"},
+		{Tag: "v0.9.1", Version: "0.9.1", Body: "x", URL: "javascript:alert(1)"},
+		{Tag: "v0.9.3", Version: "0.9.3", Body: "x", URL: "https://evil.example.com/x"},
+	}
+	notes := WhatsNew(rels, "0.9.0", "")
+	if len(notes) != 3 {
+		t.Fatalf("notes = %+v", notes)
+	}
+	for _, n := range notes {
+		if strings.ContainsRune(n.Version, '\u202e') {
+			t.Errorf("version not cleaned: %q", n.Version)
+		}
+		if n.Version != "0.9.2+ab" && n.URL != "" {
+			t.Errorf("a non-github.com URL kept: %+v", n)
+		}
+	}
+	if notes[1].URL == "" {
+		t.Errorf("a github.com URL dropped: %+v", notes)
+	}
+}

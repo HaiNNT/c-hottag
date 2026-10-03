@@ -378,20 +378,32 @@ func TestForceRefreshRunsEvenWhenCachedTokenAssessesFine(t *testing.T) {
 	}
 }
 
+// waitProbe is a context that reports when its holder first selects on
+// Done: ForceRefresh does that only once it is waiting for a refresh.
+type waitProbe struct {
+	context.Context
+	once    sync.Once
+	waiting chan struct{}
+}
+
+func newWaitProbe() *waitProbe {
+	return &waitProbe{Context: context.Background(), waiting: make(chan struct{})}
+}
+
+func (p *waitProbe) Done() <-chan struct{} {
+	p.once.Do(func() { close(p.waiting) })
+	return p.Context.Done()
+}
+
 // A 401 burst across several in-flight requests for the same slot must
 // coalesce onto one refresh, not stampede the real claude binary once per
-// request.
-//
-// The in-flight refresh is held open on release until every other
-// concurrent caller has already returned, so this cannot rely on scheduling
-// timing: the winner can only finish once we close release, so any result
-// collected beforehand is provably a decline from a caller that found the
-// refresh already in flight, not a second, independent refresh.
+// request. R158: the others wait for it and all get the renewed token.
 func TestForceRefreshCoalescesConcurrentCalls(t *testing.T) {
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
-	release := make(chan struct{})
+	started, release := make(chan struct{}), make(chan struct{})
 	f := &fakeSlot{tok: tok(now.Add(time.Hour))}
 	f.onRefresh = func(f *fakeSlot) {
+		close(started)
 		<-release
 		f.tok = tok(now.Add(2 * time.Hour))
 	}
@@ -399,24 +411,85 @@ func TestForceRefreshCoalescesConcurrentCalls(t *testing.T) {
 
 	const n = 5
 	results := make(chan bool, n)
-	for i := 0; i < n; i++ {
-		go func() {
-			_, ok := m.ForceRefresh(context.Background(), slot)
+	go func() {
+		_, ok := m.ForceRefresh(context.Background(), slot)
+		results <- ok
+	}()
+	<-started // the winner's refresh is in flight
+	probes := make([]*waitProbe, n-1)
+	for i := range probes {
+		probes[i] = newWaitProbe()
+		go func(p *waitProbe) {
+			_, ok := m.ForceRefresh(p, slot)
 			results <- ok
-		}()
+		}(probes[i])
 	}
-	for i := 0; i < n-1; i++ {
-		if ok := <-results; ok {
-			t.Fatal("a concurrent ForceRefresh call succeeded while another was still in flight")
-		}
+	for _, p := range probes {
+		<-p.waiting // every other caller is waiting on the refresh
 	}
 	close(release)
-	if ok := <-results; !ok {
-		t.Fatal("the in-flight ForceRefresh call did not succeed")
+	for i := 0; i < n; i++ {
+		if ok := <-results; !ok {
+			t.Fatal("a concurrent ForceRefresh call did not get the renewed token")
+		}
 	}
-
 	if f.refreshCount() != 1 {
 		t.Fatalf("refreshes = %d, want 1 (concurrent ForceRefresh calls must coalesce)", f.refreshCount())
+	}
+}
+
+// R158: a 401 that arrives while the slot's refresh is in flight waits for
+// that refresh and gets its new token, with no second refresh.
+func TestForceRefreshWaitsForARefreshInFlight(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	started, release := make(chan struct{}), make(chan struct{})
+	f := &fakeSlot{tok: tok(now.Add(time.Hour))}
+	f.onRefresh = func(f *fakeSlot) {
+		close(started)
+		<-release
+		f.tok = tok(now.Add(2 * time.Hour))
+	}
+	m := newManager(f, &now, false)
+
+	first := make(chan string, 1)
+	go func() { got, _ := m.ForceRefresh(context.Background(), slot); first <- got }()
+	<-started // the refresh is in flight now
+	second := make(chan bool, 1)
+	var got2 string
+	probe := newWaitProbe()
+	go func() {
+		var ok bool
+		got2, ok = m.ForceRefresh(probe, slot)
+		second <- ok
+	}()
+	<-probe.waiting // the 401's caller is waiting on the refresh
+	close(release)
+	<-first
+	if !<-second || got2 != f.token().AccessToken {
+		t.Fatalf("the waiting ForceRefresh = %q, want the renewed token %q", got2, f.token().AccessToken)
+	}
+	if f.refreshCount() != 1 {
+		t.Fatalf("refreshes = %d, want 1", f.refreshCount())
+	}
+}
+
+// R158: a refresh that renewed the token just before the 401 arrived is
+// the answer: no second refresh.
+func TestForceRefreshAfterARecentRenewalReturnsItsToken(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	f := &fakeSlot{tok: tok(now.Add(time.Minute))}
+	f.onRefresh = func(f *fakeSlot) { f.tok = tok(now.Add(8 * time.Hour)) }
+	m := newManager(f, &now, false)
+	if _, renewed := m.Warm(context.Background(), slot, time.Hour); !renewed {
+		t.Fatal("the warm refresh did not renew")
+	}
+	now = now.Add(10 * time.Second)
+	got, ok := m.ForceRefresh(context.Background(), slot)
+	if !ok || got != f.token().AccessToken {
+		t.Fatalf("ForceRefresh after a renewal = %q, %v", got, ok)
+	}
+	if f.refreshCount() != 1 {
+		t.Fatalf("refreshes = %d, want 1", f.refreshCount())
 	}
 }
 
@@ -460,6 +533,13 @@ func TestForceRefreshThrottlesRepeatedForcingAfterSuccess(t *testing.T) {
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 	f := &fakeSlot{tok: tok(now.Add(time.Hour))} // always assesses fine locally
 	m := newManager(f, &now, false)
+	// Load the token first, so the refresh below moves nothing: this is the
+	// cooldown's case, a refresh that renews nothing. (A refresh that does
+	// renew is answered from the cache for 30s, see
+	// TestForceRefreshAfterAForcedRenewalReturnsItsTokenWithoutRefreshing.)
+	if _, _, ok := m.Token(context.Background(), slot); !ok {
+		t.Fatal("Token did not load the cached token")
+	}
 
 	if _, ok := m.ForceRefresh(context.Background(), slot); !ok {
 		t.Fatal("first ForceRefresh did not succeed")
@@ -1557,4 +1637,52 @@ func TestWarmRefreshIsNotCancelledWithItsCallersContext(t *testing.T) {
 	if r := <-done; !r.refreshed {
 		t.Fatal("the refresh did not complete")
 	}
+}
+
+// R158: a forced renewal counts as recent too. A refusal that lands just
+// after it (a burst sent with the old token) gets the new token and starts
+// no second refresh; past the window, forcing is allowed again.
+func TestForceRefreshAfterAForcedRenewalReturnsItsTokenWithoutRefreshing(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	f := &fakeSlot{tok: tok(now.Add(time.Minute))}
+	f.onRefresh = func(f *fakeSlot) { f.tok = tok(now.Add(8 * time.Hour)) }
+	m := newManager(f, &now, false)
+	first, ok := m.ForceRefresh(context.Background(), slot)
+	if !ok {
+		t.Fatal("first ForceRefresh failed")
+	}
+	now = now.Add(10 * time.Second)
+	got, ok := m.ForceRefresh(context.Background(), slot)
+	if !ok || got != first {
+		t.Fatalf("second ForceRefresh = %q, %v, want the renewed token", got, ok)
+	}
+	if f.refreshCount() != 1 {
+		t.Fatalf("refreshes = %d, want 1", f.refreshCount())
+	}
+	now = now.Add(31 * time.Second)
+	f.onRefresh = func(f *fakeSlot) { f.tok = tok(now.Add(16 * time.Hour)) }
+	if _, ok := m.ForceRefresh(context.Background(), slot); !ok || f.refreshCount() != 2 {
+		t.Fatalf("past the window: ok=%v refreshes=%d, want a real second refresh", ok, f.refreshCount())
+	}
+}
+
+// R158: the wait for a refresh in flight ends with the caller's context.
+func TestForceRefreshWaitEndsWithTheCallersContext(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	started, release := make(chan struct{}), make(chan struct{})
+	f := &fakeSlot{tok: tok(now.Add(time.Hour))}
+	f.onRefresh = func(f *fakeSlot) { close(started); <-release }
+	m := newManager(f, &now, false)
+	go m.ForceRefresh(context.Background(), slot)
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	probe := &waitProbe{Context: ctx, waiting: make(chan struct{})}
+	res := make(chan bool, 1)
+	go func() { _, ok := m.ForceRefresh(probe, slot); res <- ok }()
+	<-probe.waiting
+	cancel()
+	if ok := <-res; ok {
+		t.Fatal("a cancelled waiter got a token")
+	}
+	close(release)
 }

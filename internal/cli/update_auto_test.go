@@ -32,12 +32,14 @@ import (
 func stubFetch(t *testing.T, rel updatecheck.Release, err error) *[]string {
 	t.Helper()
 	repos := &[]string{}
-	orig := updateFetch
+	orig, origReleases := updateFetch, updateReleases
 	updateFetch = func(_ context.Context, _ *url.URL, repo string) (updatecheck.Release, error) {
 		*repos = append(*repos, repo)
 		return rel, err
 	}
-	t.Cleanup(func() { updateFetch = orig })
+	// A manual `update --check` also asks for the releases list (R157).
+	updateReleases = func(context.Context, *url.URL, string) ([]updatecheck.Release, error) { return nil, nil }
+	t.Cleanup(func() { updateFetch, updateReleases = orig, origReleases })
 	return repos
 }
 

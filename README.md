@@ -46,7 +46,7 @@ gh repo clone HaiNNT/c-hottag && cd c-hottag && ./install.sh
 gh api -H 'Accept: application/vnd.github.raw' repos/HaiNNT/c-hottag/contents/install.sh | sh
 ```
 
-`install.sh` checks the release against its checksums (and, from v0.4.0, its build attestation), puts the binary under `~/.chottag/versions/` (or `$CHOTTAG_HOME`), and runs `chottag setup`, which adds one PATH block to your shell rc. Open a new shell afterwards. Other ways to install: [Getting started](docs/getting-started.md). Later versions: `chottag update` ([Updating](docs/updating.md)).
+`install.sh` checks the release against its checksums (and, from v0.4.0, its build attestation), puts the binary under `~/.chottag/versions/` (or `$CHOTTAG_HOME`), and runs `chottag setup`, which adds one PATH block to your shell rc. Open a new shell afterwards. Other ways to install: [Getting started](docs/getting-started.md). Later versions: `chottag update` ([Updating](docs/updating.md)), which also says what's new and how to update the Claude Code plugin.
 
 ## Quick start
 

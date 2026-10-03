@@ -137,6 +137,10 @@ var updateChildWaitDelay = 5 * time.Second
 // updateChildStderrTail is how much of the child's stderr is kept.
 const updateChildStderrTail = 4 << 10
 
+// autoUpdateEnv marks the daemon's own install child: it makes no what's new
+// request and prints no plugin step.
+const autoUpdateEnv = "CHOTTAG_AUTO_UPDATE"
+
 // autoUpdateArgs is the install child's argv after the binary: the same
 // `chottag update` a person runs, never restarting the daemon.
 func autoUpdateArgs(tag string) []string {
@@ -156,6 +160,8 @@ func runAutoUpdateChild(ctx context.Context, self, tag string) autoRun {
 	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, self, autoUpdateArgs(tag)...)
 	cmd.Stdin = nil
+	// The child skips the what's new and plugin extras: nobody reads them here.
+	cmd.Env = append(os.Environ(), autoUpdateEnv+"=1")
 	var out bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &out, left: updateChildLimit}
 	errTail := &tailWriter{max: updateChildStderrTail}

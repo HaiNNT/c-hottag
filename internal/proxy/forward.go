@@ -441,8 +441,15 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 	sn := &safetyNet{
 		base: s.transport, chooser: s.cfg.Choose, account: account,
 		original: originalAuth, originalAPIKey: originalAPIKey, drift: &s.drift,
-		ownerAnswer:   ownerAnswer,
-		onDrift:       func() { rec.Drift = true },
+		ownerAnswer: ownerAnswer,
+		onDrift:     func() { rec.Drift = true },
+		serving:     d.Class == router.Serving && d.Object == "" && !d.Fallback,
+		onRefused:   func(status int) { rec.Refused = status },
+		onServingRefusal: func(acct string, status int, resent bool) {
+			if s.cfg.OnServingRefusal != nil {
+				s.cfg.OnServingRefusal(acct, status, resent, rec.Method, rec.Path)
+			}
+		},
 		onOwnerAnswer: func() { rec.OwnerRefused = true },
 		onUnreplayableRefusal: func(n int64) {
 			rec.Unreplayable = true

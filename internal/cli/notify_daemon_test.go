@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -543,5 +544,46 @@ func TestRunProxyWiresNotifications(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the daemon's startup tick never posted the all-limited notice; stderr %q", errb.String())
+	}
+}
+
+// R158: a refused serving request writes one daemon.log line per refusal,
+// with the account, status, method and templated path and nothing else, and
+// posts one notice per account per hour.
+func TestServingRefusalHookLogsEveryRefusalAndNotifiesOnce(t *testing.T) {
+	n := newRecordingNotifier()
+	dn := newDaemonNotify(notifyTestState("A", "B"), n)
+	defer dn.Close()
+	var log bytes.Buffer
+	hook := servingRefusalHook(&log, dn)
+	hook("B", 401, true, "POST", "/v1/messages")
+	hook("B", 403, true, "POST", "/v1/messages")
+	wantLog := "chottag: B's login was refused (401) on POST /v1/messages; sent on Home's own login\n" +
+		"chottag: B's login was refused (403) on POST /v1/messages; sent on Home's own login\n"
+	if log.String() != wantLog {
+		t.Fatalf("log = %q\nwant %q", log.String(), wantLog)
+	}
+	got := drainNotices(t, dn, n)
+	if len(got) != 1 || got[0].title != "chottag: B's login was refused (401)" {
+		t.Fatalf("notices = %+v, want exactly one, for the first refusal", got)
+	}
+}
+
+// The line names no credential, body or proxy setting, and a request-derived
+// field cannot start a second log line.
+func TestServingRefusalHookLineCarriesNoSecretsOrLineBreaks(t *testing.T) {
+	// The hook reads no environment; this guards a future change that would
+	// start echoing the proxy setting.
+	t.Setenv("HTTPS_PROXY", "http://user:proxy-secret@127.0.0.1:1")
+	var log bytes.Buffer
+	servingRefusalHook(&log, nil)("B", 401, false, "POST", "/v1/messages\nchottag: forged")
+	out := log.String()
+	for _, secret := range []string{"proxy-secret", "HTTPS_PROXY", "Bearer", "sk-ant"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("log line carries %q: %q", secret, out)
+		}
+	}
+	if strings.Count(out, "\n") != 1 || !strings.HasSuffix(out, "; not resent\n") {
+		t.Fatalf("log = %q, want one line ending \"; not resent\"", out)
 	}
 }

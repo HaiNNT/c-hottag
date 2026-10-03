@@ -69,6 +69,10 @@ type Events struct {
 	lastAllSent  time.Time // when the last all-limited notice fired (attempted)
 	pendingAll   bool      // the flap guard suppressed this episode's notice; it is still owed
 	driftSent    bool
+	// refusedAt is when each account's last serving-refusal notice was
+	// attempted (lowercased name), for the hourly limit.
+	refusedAt    map[string]time.Time
+	refusedCount atomic.Int32 // len(refusedAt), for AccountOK's lock-free fast path
 	// noCandSent holds the pools whose no-candidate episode's notice was
 	// attempted (M4); one episode per pool, "" for a single-pool install (M8).
 	noCandSent map[string]bool
@@ -85,7 +89,7 @@ func NewEvents(cfg Config) *Events {
 	if cfg.Location == nil {
 		cfg.Location = time.Local
 	}
-	return &Events{cfg: cfg, needsLogin: map[string]bool{}, noCandSent: map[string]bool{}}
+	return &Events{cfg: cfg, needsLogin: map[string]bool{}, noCandSent: map[string]bool{}, refusedAt: map[string]time.Time{}}
 }
 
 // NeedsLogin reports that the selector found account's token needs a
@@ -112,11 +116,19 @@ func (e *Events) NeedsLogin(account string) {
 // orders this call before a concurrent NeedsLogin, which is race-free by
 // construction since pendingCount is only ever changed under mu.
 func (e *Events) AccountOK(account string) {
-	if e.pendingCount.Load() == 0 {
+	if e.pendingCount.Load() == 0 && e.refusedCount.Load() == 0 {
 		return
 	}
 	key := strings.ToLower(account)
 	e.mu.Lock()
+	// An account that answers on its own login again, at least
+	// RefusedRearmAfter after its last notice, is recovered: a later refusal
+	// is news, whatever the hourly limit says. Sooner than that, an account
+	// alternating refusals and successes would notify on every refusal.
+	if at, ok := e.refusedAt[key]; ok && e.cfg.Now().Sub(at) >= RefusedRearmAfter {
+		delete(e.refusedAt, key)
+		e.refusedCount.Add(-1)
+	}
 	if e.needsLogin[key] {
 		delete(e.needsLogin, key)
 		e.pendingCount.Add(-1)
@@ -138,6 +150,37 @@ func (e *Events) RouteDrift(n uint64) {
 	e.driftSent = true
 	e.mu.Unlock()
 	e.fire(routeDriftMessage())
+}
+
+// RefusedEvery is the least time between two serving-refusal notices for one
+// account.
+const RefusedEvery = time.Hour
+
+// RefusedRearmAfter is how long after a serving-refusal notice an OK answer
+// from the account re-arms the notice ahead of RefusedEvery.
+const RefusedRearmAfter = 5 * time.Minute
+
+// ServingRefused reports that a swapped serving request as account was
+// refused with status twice (R158). It is not route drift. It fires at most
+// once per account per RefusedEvery; resent says the request went out on the
+// client's own login afterwards.
+func (e *Events) ServingRefused(account string, status int, resent bool) {
+	if account == "" {
+		return
+	}
+	key := strings.ToLower(account)
+	now := e.cfg.Now()
+	e.mu.Lock()
+	if at, ok := e.refusedAt[key]; ok && now.Sub(at) < RefusedEvery {
+		e.mu.Unlock()
+		return
+	}
+	if _, ok := e.refusedAt[key]; !ok {
+		e.refusedCount.Add(1)
+	}
+	e.refusedAt[key] = now
+	e.mu.Unlock()
+	e.fire(servingRefusedMessage(account, status, resent))
 }
 
 // Limits reports the roll-up.

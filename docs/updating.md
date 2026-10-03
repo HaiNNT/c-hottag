@@ -185,9 +185,21 @@ read `state.json`, so `chottag daemon restart` is required.
 
 ## The plugin
 
-The plugin and skill update separately from the binary: `claude plugin
-marketplace update c-hottag`, then restart the Claude Code session so it
-picks up the new skill.
+The plugin and skill update separately from the binary. `chottag update` (and
+`update --check` when a newer release exists) ends with the step: `claude
+plugin marketplace update c-hottag`, `claude plugin update chottag@c-hottag`,
+then `/reload-plugins` in each open Claude Code session. chottag never runs
+`claude` itself; if you asked Claude Code to update chottag, it asks whether to
+update the plugin too and runs the two commands on a yes. A plugin older than
+chottag also shows a toast once per version and `plugin X · chottag Y: update
+the plugin` on the card.
+
+## What's new
+
+`chottag update` and `update --check` print a short "What's new" block: for each
+release newer than the one you ran, up to the one found or installed (at most
+5), the lead paragraph of its release notes and its link. A failed fetch only
+leaves the block out.
 
 ## Another way
 

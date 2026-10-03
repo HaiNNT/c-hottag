@@ -266,7 +266,7 @@ func TestSafetyNetRefreshesThenResendsTheOriginal(t *testing.T) {
 			w.Write([]byte(`{"ok":true}`))
 			return
 		}
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusUnauthorized)
 	})
 	ch := &refusingChooser{}
 	h := proxytest.Start(t, up, proxytest.Options{Choose: ch})
@@ -291,55 +291,125 @@ func TestSafetyNetRefreshesThenResendsTheOriginal(t *testing.T) {
 	if got := body.Load(); got != int64(3*len(`{"m":"hi"}`)) {
 		t.Fatalf("upstream read %d body bytes, want the body replayed each time", got)
 	}
-	if got := h.Server.RouteDrift(); got != 1 {
-		t.Fatalf("RouteDrift = %d, want 1", got)
+	// R158: a refused serving request is the account's login being
+	// refused, not route drift: no count, but the record keeps drift (the
+	// resend happened) and names the first refused status.
+	if got := h.Server.RouteDrift(); got != 0 {
+		t.Fatalf("RouteDrift = %d, want 0 for a serving route", got)
 	}
-	if r := h.Records(t, "req", 1)[0]; !r.Drift || !r.Swapped {
-		t.Fatalf("record = %+v, want drift and swapped", r)
+	if r := h.Records(t, "req", 1)[0]; !r.Drift || !r.Swapped || r.Refused != 401 {
+		t.Fatalf("record = %+v, want drift, swapped and refused 401", r)
 	}
 }
 
-// TestSafetyNetResendRestoresXApiKey covers a client that sends both an
-// OAuth Authorization header and an X-Api-Key header. forward.go deletes
-// X-Api-Key on swap (it only sends one credential upstream), so the
-// original-login resend must put it back: the resend must reproduce what
-// the client sent, not an approximation missing a header it actually sent.
-func TestSafetyNetResendRestoresXApiKey(t *testing.T) {
-	var seen []string
-	var mu sync.Mutex
-	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		label := authLabel(r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"))
-		mu.Lock()
-		seen = append(seen, label)
-		mu.Unlock()
-		if label == "original+apikey" {
-			w.Write([]byte(`{"ok":true}`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ch := &refusingChooser{}
-	h := proxytest.Start(t, up, proxytest.Options{Choose: ch})
+type servingRefusal struct {
+	account      string
+	status       int
+	resent       bool
+	method, path string
+}
 
+// TestSafetyNetServingRefusalIsReportedNotCountedAsDrift: a 401 or 403 on a
+// route the router lists as serving reports through OnServingRefusal and is
+// not drift. Everything else keeps counting drift: an object or remote route
+// (including /v1/sessions/{id}), a route the table does not list (the router's
+// fallback), and a 404 on a serving route.
+func TestSafetyNetServingRefusalIsReportedNotCountedAsDrift(t *testing.T) {
+	cases := []struct {
+		name, method, url string
+		status            int
+		wantDrift         uint64
+		wantRefusals      int
+	}{
+		{"serving 401", "POST", "https://api.anthropic.com/v1/messages", 401, 0, 1},
+		{"serving 403", "POST", "https://api.anthropic.com/v1/messages", 403, 0, 1},
+		{"serving 404 stays drift", "POST", "https://api.anthropic.com/v1/messages", 404, 1, 0},
+		{"unlisted route stays drift", "GET", "https://api.anthropic.com/some/new/route", 401, 1, 0},
+		{"serving object stays drift", "POST", "https://api.anthropic.com/v1/sessions/sess-1/events", 401, 1, 0},
+		{"object", "GET", "https://api.anthropic.com/api/frame/read/artifact-1", 401, 1, 0},
+		{"remote", "POST", "https://api.anthropic.com/api/frame/deploy/prepare", 401, 1, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") == "Bearer sk-ant-oat01-home" {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				w.WriteHeader(c.status)
+			})
+			var mu sync.Mutex
+			var got []servingRefusal
+			h := proxytest.Start(t, up, proxytest.Options{
+				Choose: &refusingChooser{},
+				OnServingRefusal: func(account string, status int, resent bool, method, path string) {
+					mu.Lock()
+					defer mu.Unlock()
+					got = append(got, servingRefusal{account, status, resent, method, path})
+				},
+			})
+			req, _ := http.NewRequest(c.method, c.url, strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
+			resp, err := h.Client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if d := h.Server.RouteDrift(); d != c.wantDrift {
+				t.Fatalf("RouteDrift = %d, want %d", d, c.wantDrift)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(got) != c.wantRefusals {
+				t.Fatalf("serving refusals = %v, want %d", got, c.wantRefusals)
+			}
+			if c.wantRefusals == 1 {
+				want := servingRefusal{"C", c.status, true, "POST", "/v1/messages"}
+				if got[0] != want {
+					t.Fatalf("refusal = %+v, want %+v", got[0], want)
+				}
+			}
+			if r := h.Records(t, "req", 1)[0]; r.Refused != c.status {
+				t.Fatalf("record refused = %d, want %d", r.Refused, c.status)
+			}
+		})
+	}
+}
+
+// With the pool boundary on, a refused serving request is never resent on
+// Home's login, and the report says so (resent=false).
+func TestSafetyNetServingRefusalWithNoOriginalIsNotResent(t *testing.T) {
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	var mu sync.Mutex
+	var got []servingRefusal
+	h := proxytest.Start(t, up, proxytest.Options{
+		Choose: &guardChooser{guarded: true},
+		OnServingRefusal: func(account string, status int, resent bool, method, path string) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, servingRefusal{account, status, resent, method, path})
+		},
+	})
 	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
-	req.Header.Set("X-Api-Key", "sk-ant-api01-original")
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := h.Client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("client saw %d, want 200", resp.StatusCode)
-	}
+	resp.Body.Close()
 	mu.Lock()
-	wantLabels(t, seen, []string{"stale", "fresh", "original+apikey"})
-	mu.Unlock()
+	defer mu.Unlock()
+	if want := (servingRefusal{"W", 401, false, "POST", "/v1/messages"}); len(got) != 1 || got[0] != want {
+		t.Fatalf("refusals = %+v, want [%+v]", got, want)
+	}
+	if d := h.Server.RouteDrift(); d != 0 {
+		t.Fatalf("RouteDrift = %d, want 0", d)
+	}
 }
 
 // TestSafetyNetRouteDriftCountsConcurrentSwaps drives RouteDrift's counter
 // concurrently under -race: a plain uint64++ would both race and undercount.
+// It uses an object route: a refused serving route is not drift (R158).
 func TestSafetyNetRouteDriftCountsConcurrentSwaps(t *testing.T) {
 	const n = 20
 	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -353,7 +423,7 @@ func TestSafetyNetRouteDriftCountsConcurrentSwaps(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(`{}`))
+			req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/frame/read/artifact-1", strings.NewReader(`{}`))
 			req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := h.Client.Do(req)

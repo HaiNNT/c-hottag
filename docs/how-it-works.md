@@ -72,6 +72,21 @@ log its host and path whatever host it names, but is only ever swapped
 for the two intercepted hosts above — to any other host it is forwarded
 untouched. It never logs a token or a request/response body.
 
+Claude Code treats a 401, 403 or 404 as final, so a request swapped onto an
+account that is then refused is never passed back as is: the daemon refreshes
+that account's token and tries once more (if the account's refresh is already
+running, or finished within the last 30 seconds, the retry waits for it and
+uses its new token), and if that is
+refused too, it sends the request once on Claude Code's own login (never, with
+more than one pool, or for a remote or owner request). For a request about a
+claude.ai object, to a route the table does not list, or answered 404, this
+counts as route drift (`chottag doctor`'s `route-drift` row and its notice).
+For a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` it is the account's login being refused
+instead: the daemon log gets a line, the
+notice names the account and the status (at most once an hour per account),
+and `proxy.jsonl`'s `refused` field holds the first refused status beside
+`drift`.
+
 ## Which account a request uses
 
 The router gives every intercepted request one of three classes:

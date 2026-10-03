@@ -20,6 +20,9 @@ type Record struct {
 	Swapped   bool      `json:"swapped,omitempty"`
 	Account   string    `json:"account,omitempty"` // account name a swapped request went out as
 	Drift     bool      `json:"drift,omitempty"`   // resent on the client's own login after a refused swap
+	// Refused is the status of the first refusal (401, 403 or 404) of a swap
+	// that stayed refused after the refresh-and-retry, set beside Drift.
+	Refused int `json:"refused,omitempty"`
 	// Unreplayable marks the one known gap in the safety net (spec §4.5,
 	// deferred pending real-world frequency data): a swapped request whose
 	// body was too large to buffer for a possible retry/resend, AND whose

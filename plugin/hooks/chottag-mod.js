@@ -7,6 +7,15 @@
 // tested for its user part and dropped. Nothing here depends on it: the shim
 // and the proxy are the guarantees.
 
+// MOD_VERSION is this plugin's version, set by `scripts/release bump` and tested
+// against plugin.json. A chottag newer than it means the plugin is behind.
+export const MOD_VERSION = '0.9.1'
+const VERSION_CHECK_MS = 600000
+const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]*)?/
+const CLEAN_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,64}$/
+// A describe suffix (a build after a release: -3-gabc1234, -dirty) is not a pre-release.
+const DESCRIBE = /^-(\d+-g[0-9a-f]+(-dirty)?|dirty)$/
+
 const CT_VERBS = ['status', 'next', 'tag', 'pool', 'help']
 // The store's own account-name rule: it must start with a letter or digit, so a
 // NAME can never read as an option (--unpin).
@@ -58,6 +67,9 @@ const freshState = () => ({
   running: null, // the refresh in flight
   again: false,
   remoteStale: {}, // account -> refreshes in a row with a stale token
+  ctVersion: null, // the chottag version that last answered `chottag version --json`
+  ctVersionAt: null, // when it was asked, in clock ms
+  versionCheck: null, // the version check in flight
 })
 const state = freshState()
 
@@ -162,6 +174,25 @@ export function cardTitle(doc) {
   return t
 }
 
+// versionNewer is whether chottag's version a is newer than the plugin's b,
+// comparing MAJOR.MINOR.PATCH only. False when either does not parse (a dev build).
+export function versionNewer(a, b) {
+  const x = String(a || '').match(VERSION)
+  const y = String(b || '').match(VERSION)
+  if (!x || !y) return false
+  // A chottag pre-release (0.9.1-rc.1) has no plugin release to move to.
+  if (x[4] && !DESCRIBE.test(x[4])) return false
+  for (let i = 1; i <= 3; i++) {
+    if (Number(x[i]) !== Number(y[i])) return Number(x[i]) > Number(y[i])
+  }
+  return false
+}
+
+// pluginBehind is the chottag version when the plugin is older than it, else ''.
+export function pluginBehind(ctVersion) {
+  return versionNewer(ctVersion, MOD_VERSION) ? String(ctVersion).replace(/^v/, '').match(/^\d+\.\d+\.\d+/)[0] : ''
+}
+
 const sameName = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase()
 
 // shortLeft is the reset in the one-line form: "42m", "3h20m", else the long
@@ -213,8 +244,9 @@ function flow(segs, accent, usable) {
 // 'wide' (2 rows, bodyColumns >= 100), 'medium' (3 rows, >= 60) or 'line' (one
 // row). The richest variant that fits is used (bars and full resets; no bars;
 // short resets), else the line. maxRows is the band's row limit. nowMs and fmt
-// feed formatReset.
-export function layoutCard(doc, nowMs, columns, fmt, maxRows) {
+// feed formatReset. behind, when set, is the chottag version the plugin is
+// older than: the card gets a segment saying to update the plugin.
+export function layoutCard(doc, nowMs, columns, fmt, maxRows, behind) {
   const cols = typeof columns === 'number' ? columns : 80
   const tone = chrome(doc)
   const accent = { t: ACCENT, color: tone }
@@ -257,7 +289,8 @@ export function layoutCard(doc, nowMs, columns, fmt, maxRows) {
     // An older chottag has one reset and cannot say which window it is: its own segment.
     const nr = legacy ? formatReset(doc.resetsAt, nowMs, fmt) : ''
     const next = nr ? [{ t: full ? 'next reset ' + nr : 'next ↻ ' + shortLeft(doc.resetsAt, nowMs, fmt), dim: true }] : []
-    return [title, account, win(WINDOWS[0], reset5), win(WINDOWS[1], reset7), next, remote, ready, update]
+    const plugin = behind ? [{ t: 'plugin ' + MOD_VERSION + ' · chottag ' + behind + ': update the plugin', color: 'yellow' }] : []
+    return [title, account, win(WINDOWS[0], reset5), win(WINDOWS[1], reset7), next, remote, ready, update, plugin]
   }
   const rowLimit = cols >= WIDE_COLUMNS ? 2 : cols >= MEDIUM_COLUMNS ? 3 : 0
   if (rowLimit && (typeof maxRows !== 'number' || maxRows >= 1)) {
@@ -350,6 +383,31 @@ async function notices($, prev, cur) {
   }
 }
 
+// checkVersion asks chottag its version (at most every ten minutes) and, when
+// the plugin is older than it, toasts once per chottag version (keyed in the
+// store). The card shows the same through state.ctVersion.
+async function checkVersion($) {
+  const now = await $.clock.now()
+  if (state.ctVersionAt !== null && now - state.ctVersionAt < VERSION_CHECK_MS) return
+  state.ctVersionAt = now
+  const r = await runChottag($, ['version', '--json'])
+  let doc = null
+  try {
+    doc = r && r.stdout ? JSON.parse(r.stdout) : null
+  } catch (_) {
+    doc = null
+  }
+  if (!doc || doc.ok !== true || typeof doc.chottag !== 'string') return
+  if (!CLEAN_VERSION.test(doc.chottag)) return // the text is shown: only a version-shaped one is kept
+  state.ctVersion = doc.chottag
+  const behind = pluginBehind(doc.chottag)
+  if (!behind) return
+  if ((await $.store.get('plugin-told')) !== behind) {
+    await $.store.set('plugin-told', behind)
+    await $.ui.toast('chottag ' + behind + ' is installed but this plugin is ' + MOD_VERSION + '. Ask Claude Code to update the chottag plugin.')
+  }
+}
+
 // refresh runs one refresh at a time. A call while one is running returns that
 // run's promise; with again set (after a change the user made) it also queues
 // one more run, so the card never stays a tick behind.
@@ -393,6 +451,17 @@ async function refreshOnce($) {
       } catch (err) {
         await $.ui.log('chottag: a notice failed: ' + err)
       }
+      // Off this refresh and the render path: the card redraws now, and again
+      // when the version is known. state.versionCheck is the run in flight.
+      if (!state.versionCheck) {
+        state.versionCheck = checkVersion($)
+          .catch((err) => $.ui.log('chottag: the version check failed: ' + err))
+          .finally(() => {
+            state.versionCheck = null
+            $.ui.invalidate('ui.render')
+          })
+          .catch(() => {}) // a log that cannot be written has nowhere left to go
+      }
     }
   } finally {
     $.ui.invalidate('ui.render')
@@ -401,7 +470,14 @@ async function refreshOnce($) {
 
 // ---- the hooks ----
 
-function toTree(el, model, doc, nowMs, cols, maxRows, noColor) {
+// padFor is the card's top margin (R155): one empty line, which counts as a row
+// against the band's row limit. When the content rows already fill maxRows the
+// padding is the first thing dropped.
+function padFor(contentRows, maxRows) {
+  return typeof maxRows !== 'number' || contentRows + 1 <= maxRows ? { marginTop: 1 } : {}
+}
+
+function toTree(el, model, doc, nowMs, cols, maxRows, noColor, behind) {
   const { Box, Text } = el
   const tint = (c) => (noColor ? undefined : c)
   const text = (s, wrap) => {
@@ -417,12 +493,15 @@ function toTree(el, model, doc, nowMs, cols, maxRows, noColor) {
     if (model.dim) p.dimColor = true
     if (model.color && tint(model.color)) p.color = model.color
     const accent = { t: ACCENT, color: chrome(doc) }
-    return Box({ flexDirection: 'row', children: [text(accent), Text(p)] })
+    return Box({ flexDirection: 'row', ...padFor(1, maxRows), children: [text(accent), Text(p)] })
   }
-  const lay = layoutCard(doc, nowMs, cols, undefined, maxRows)
+  const lay = layoutCard(doc, nowMs, cols, undefined, maxRows, behind)
   const wrap = lay.mode === 'line' ? 'truncate' : undefined // a long name must not wrap the one line
-  const rows = lay.rows.map((row, i) => Box({ key: 'chottag-row-' + i, flexDirection: 'row', children: row.map((s) => text(s, wrap)) }))
-  return rows.length === 1 ? rows[0] : Box({ flexDirection: 'column', children: rows })
+  // One empty line above the card (R155): the margin sits on its outer Box.
+  const single = lay.rows.length === 1
+  const pad = padFor(lay.rows.length, maxRows)
+  const rows = lay.rows.map((row, i) => Box({ key: 'chottag-row-' + i, flexDirection: 'row', ...(single ? pad : {}), children: row.map((s) => text(s, wrap)) }))
+  return single ? rows[0] : Box({ flexDirection: 'column', ...pad, children: rows })
 }
 
 export function register(on) {
@@ -470,7 +549,7 @@ export function register(on) {
     const model = bandModel(state)
     if (model.kind === 'none') return others
     const el = $.ui.resolve(e)
-    const mine = toTree(el, model, state.last, await $.clock.now(), e.props && e.props.bodyColumns, e.props && e.props.maxRows, state.noColor)
+    const mine = toTree(el, model, state.last, await $.clock.now(), e.props && e.props.bodyColumns, e.props && e.props.maxRows, state.noColor, pluginBehind(state.ctVersion))
     return el.Box({ flexDirection: 'column', children: others ? [mine, others] : [mine] })
   })
 

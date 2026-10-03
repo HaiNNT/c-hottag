@@ -35,6 +35,14 @@ type safetyNet struct {
 	originalAPIKey string // the client's own X-Api-Key header, if any
 	drift          *atomic.Uint64
 	onDrift        func() // marks the trace record
+	// serving is true for a plain serving route (class serving, no object):
+	// a request there that is refused twice is the account's login being
+	// refused, not a route-table mismatch, so it is not counted as route
+	// drift (R158). onRefused marks the trace record with the first refused
+	// status; onServingRefusal reports the account and that status.
+	serving          bool
+	onRefused        func(status int)
+	onServingRefusal func(account string, status int, resent bool)
 	// ownerAnswer is F241/R96: true for a request to MCPProxyHost whose
 	// account was chosen from the owner map. A connector id's own owner
 	// account answering 401/403/404 is that owner's genuine protocol
@@ -100,6 +108,7 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		s.finishWall(false, resp, err)
 		return resp, err
 	}
+	firstRefused := resp.StatusCode
 	if s.ownerAnswer {
 		// The connector's own owner account refused this call: its answer,
 		// not a chottag routing error (F241/R96). Return it as is — no
@@ -150,10 +159,7 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		// The swapped account was refused twice and Home's login may not
 		// be used: nothing is resent, but it is still a refused swap, which
 		// is what the route-drift count (and `chottag doctor`) is about.
-		s.drift.Add(1)
-		if s.onDrift != nil {
-			s.onDrift()
-		}
+		s.countRefusal(firstRefused, false)
 		s.finishWall(false, resp, err)
 		return resp, err
 	}
@@ -167,16 +173,35 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		original.Header.Set("X-Api-Key", s.originalAPIKey)
 	}
 	drain(resp)
-	s.drift.Add(1)
-	if s.onDrift != nil {
-		s.onDrift()
-	}
+	s.countRefusal(firstRefused, true)
 	resp, err = s.base.RoundTrip(original)
 	// The response is the original-login fallback's, not the resent
 	// account's: wall retry's done, if pending, must report "" (see
 	// finishWall).
 	s.finishWall(true, resp, err)
 	return resp, err
+}
+
+// countRefusal records a swapped request that was refused twice. The trace
+// record always learns it (drift, and the first refused status). Only an
+// object or remote route, a route the table does not list, or a 404 counts as
+// route drift; a 401 or 403 on a classified serving route is reported as the
+// account's login being refused instead (R158). resent
+// says the request was then sent again on the client's own login.
+func (s *safetyNet) countRefusal(status int, resent bool) {
+	if s.onDrift != nil {
+		s.onDrift()
+	}
+	if s.onRefused != nil {
+		s.onRefused(status)
+	}
+	if s.serving && (status == http.StatusUnauthorized || status == http.StatusForbidden) {
+		if s.onServingRefusal != nil {
+			s.onServingRefusal(s.account, status, resent)
+		}
+		return
+	}
+	s.drift.Add(1)
 }
 
 // finishWall calls s.wallDone exactly once, if a wall-retry resend is

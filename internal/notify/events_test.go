@@ -437,3 +437,72 @@ func TestMovedNotice(t *testing.T) {
 		t.Fatal("a notice was posted with notifications off")
 	}
 }
+
+// R158: a refused serving request has its own notice, at most once per
+// account per hour, and the texts are held exactly.
+func TestServingRefusedFiresOncePerAccountPerHour(t *testing.T) {
+	ev, em, now, _ := newTestEvents()
+	ev.ServingRefused("C", 401, true)
+	ev.ServingRefused("c", 403, true) // same account, any case and status
+	ev.ServingRefused("D", 401, false)
+	want := [][2]string{
+		{"chottag: C's login was refused (401)", "This request went out on your own (Home) login. If it repeats, run chottag login C."},
+		{"chottag: D's login was refused (401)", "This request was not resent on your own login. If it repeats, run chottag login D."},
+	}
+	if got := em.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %q\nwant %q", got, want)
+	}
+	*now = now.Add(RefusedEvery - time.Second)
+	ev.ServingRefused("C", 401, true)
+	if got := em.all(); len(got) != 2 {
+		t.Fatalf("a notice fired inside the hour: %q", got)
+	}
+	*now = now.Add(time.Second)
+	ev.ServingRefused("C", 403, true)
+	got := em.all()
+	if len(got) != 3 || got[2][0] != "chottag: C's login was refused (403)" {
+		t.Fatalf("notices = %q, want a third, for 403, after the hour", got)
+	}
+}
+
+// A refused serving request is not route drift: only RouteDrift sends the
+// route-drift notice.
+func TestServingRefusedIsNotRouteDrift(t *testing.T) {
+	ev, em, _, _ := newTestEvents()
+	ev.ServingRefused("C", 401, true)
+	for _, n := range em.all() {
+		if n[0] == "chottag: route drift" {
+			t.Fatalf("a serving refusal sent the route-drift notice: %q", n)
+		}
+	}
+}
+
+// An account that answers on its own login again is recovered: a refusal
+// after that is news, inside the hour too.
+func TestServingRefusedLimitIsClearedWhenTheAccountAnswersOK(t *testing.T) {
+	ev, em, now, _ := newTestEvents()
+	ev.ServingRefused("C", 401, true)
+	// Alternating refusals and successes: at most one notice per 5 minutes.
+	for i := 0; i < 3; i++ {
+		*now = now.Add(time.Minute)
+		ev.AccountOK("C")
+		ev.ServingRefused("C", 401, true)
+	}
+	if got := em.all(); len(got) != 1 {
+		t.Fatalf("notices = %q, want 1 while alternating inside 5 minutes", got)
+	}
+	// A recovery 5 minutes after the notice re-arms it.
+	*now = now.Add(RefusedRearmAfter)
+	ev.AccountOK("C")
+	ev.ServingRefused("C", 401, true)
+	if got := em.all(); len(got) != 2 {
+		t.Fatalf("notices = %q, want 2 after a recovery past 5 minutes", got)
+	}
+	// And so does one an hour later.
+	*now = now.Add(time.Hour)
+	ev.AccountOK("C")
+	ev.ServingRefused("C", 401, true)
+	if got := em.all(); len(got) != 3 {
+		t.Fatalf("notices = %q, want 3", got)
+	}
+}

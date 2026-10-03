@@ -197,3 +197,27 @@ func TestModIsNamedByThePluginManifestAndTheSkill(t *testing.T) {
 		}
 	}
 }
+
+// The mod's version constant is what it compares chottag's version with, so it
+// must be the plugin's own version: `scripts/release bump` sets both.
+func TestModVersionEqualsPluginJSONVersion(t *testing.T) {
+	var p struct {
+		Version string `json:"version"`
+	}
+	decodeOne(t, filepath.Join(repoRoot(t), "plugin", ".claude-plugin", "plugin.json"), &p)
+	m := regexp.MustCompile(`(?m)^export const MOD_VERSION = '([^']+)'$`).FindStringSubmatch(modSource(t))
+	if m == nil {
+		t.Fatal("chottag-mod.js has no `export const MOD_VERSION = 'X.Y.Z'` line")
+	}
+	if m[1] != p.Version {
+		t.Errorf("MOD_VERSION = %q, plugin.json version = %q: scripts/release bump sets both", m[1], p.Version)
+	}
+	// scripts/release is private: a public snapshot has no release script.
+	rel := filepath.Join(repoRoot(t), "scripts", "release")
+	if _, err := os.Stat(rel); os.IsNotExist(err) {
+		return
+	}
+	if !strings.Contains(readFile(t, "scripts", "release"), "MOD_VERSION") {
+		t.Error("scripts/release bump does not set MOD_VERSION")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -448,7 +449,7 @@ func TestDaemonRunRejectsLogPointedAtDaemonLogItself(t *testing.T) {
 	if err != nil {
 		t.Fatalf("daemon.log was not written: %v", err)
 	}
-	if got, want := strings.TrimRight(string(logBytes), "\n"), strings.TrimRight(errb.String(), "\n"); got != want {
+	if got, want := strings.TrimRight(stripLogStamp(t, string(logBytes)), "\n"), strings.TrimRight(errb.String(), "\n"); got != want {
 		t.Fatalf("daemon.log %q does not carry the same rejection line stderr got %q", got, want)
 	}
 }
@@ -487,7 +488,7 @@ func TestDaemonRunRejectsABadUpstreamProxyWithoutLeakingCredentials(t *testing.T
 	if strings.Contains(string(logBytes), "secret") {
 		t.Fatalf("daemon.log leaked the upstream proxy password: %q", logBytes)
 	}
-	if got, want := strings.TrimRight(string(logBytes), "\n"), strings.TrimRight(errb.String(), "\n"); got != want {
+	if got, want := strings.TrimRight(stripLogStamp(t, string(logBytes)), "\n"), strings.TrimRight(errb.String(), "\n"); got != want {
 		t.Fatalf("daemon.log %q does not carry the same rejection line stderr got %q", got, want)
 	}
 }
@@ -744,4 +745,40 @@ func flagValue(args []string, name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// stampPrefix is what every daemon.log line starts with (R158): a local
+// "2006-01-02 15:04:05 " timestamp.
+var stampPrefix = regexp.MustCompile(`(?m)^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} `)
+
+// stripLogStamp checks that every line of a daemon.log's content starts with
+// the timestamp, and returns the content without it.
+func stripLogStamp(t *testing.T, content string) string {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
+		if !stampPrefix.MatchString(line) {
+			t.Fatalf("daemon.log line %q does not start with a timestamp", line)
+		}
+	}
+	return stampPrefix.ReplaceAllString(content, "")
+}
+
+// TestDaemonLogLinesAreStampedWithTheInjectedClock holds the exact format.
+func TestDaemonLogLinesAreStampedWithTheInjectedClock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHOTTAG_HOME", home)
+	orig := daemonLogClock
+	daemonLogClock = func() time.Time { return time.Date(2026, 10, 3, 17, 28, 23, 0, time.Local) }
+	t.Cleanup(func() { daemonLogClock = orig })
+	var out, errb strings.Builder
+	if code := runDaemonCmd([]string{"run", "--upstream-proxy", "http://%zz"}, newReporter(false, &out, &errb)); code == 0 {
+		t.Fatal("a bad upstream proxy must not start the daemon")
+	}
+	b, err := os.ReadFile(filepath.Join(home, "daemon.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(b), "2026-10-03 17:28:23 chottag: --upstream-proxy ") {
+		t.Fatalf("daemon.log = %q, want it to start with the stamped line", b)
+	}
 }

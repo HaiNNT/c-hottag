@@ -7,6 +7,23 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.9.1] - 2026-10-03
+
+### Added
+
+- `chottag update` and `update --check` end with a "What's new" block: the lead paragraph of each release newer than the one you ran (at most 5, newest first, about 400 characters each, with its link). `--json` has `whatsNew` (`version`, `summary`, `url`). A failed fetch only drops the block.
+- `chottag update` (after an install) and `update --check` (when a newer release exists) print the plugin step: `claude plugin marketplace update c-hottag`, `claude plugin update chottag@c-hottag`, then `/reload-plugins`. `--json` has `plugin` (`commands`, `note`). chottag does not run `claude`; the skill and the Claude Code guide have Claude Code ask you, run the commands on a yes, and relay the summary.
+- The mod knows its own version. When chottag is newer than the plugin it toasts once per version and the card says `plugin X · chottag Y: update the plugin`.
+
+### Fixed
+
+- The status card has one empty line above it, instead of sitting right under the output above.
+- A request sent as account C to `/v1/messages` or `POST /api/oauth/validate` and refused with a 401 or 403 is no longer counted as route drift: it gets its own notice (`chottag: C's login was refused (401)`), at most hourly per account, a daemon log line, and a `refused` field in `proxy.jsonl`. Route drift is now for object and remote routes, unlisted routes and 404s.
+- A request refused while its account's token refresh runs, or within 30 seconds of a renewal, retries with the new token instead of going out on Home's login.
+- Every `daemon.log` line starts with the local time (`2006-01-02 15:04:05`).
+
+  See [release notes](docs/release-notes/v0.9.1.md).
+
 ## [0.9.0] - 2026-10-03
 
 ### Added
@@ -336,6 +353,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.9.1]: docs/release-notes/v0.9.1.md
 [0.9.0]: docs/release-notes/v0.9.0.md
 [0.8.5]: docs/release-notes/v0.8.5.md
 [0.8.4]: docs/release-notes/v0.8.4.md

@@ -204,6 +204,28 @@ the child `setup` makes is reported on stderr. This starts with updates run
 by 0.6.0 or later: before the first update to 0.6.0, copy `state.json` by
 hand (`cp ~/.chottag/state.json ~/.chottag/state.json.pre-v0.6.0`).
 
+**What's new.** When a newer release exists (`--check`) or was just installed,
+`update` ends with a `What's new:` block: for each release newer than the
+version you were running, up to the one found or installed (at most 5, newest
+first, drafts and prereleases skipped), its lead paragraph from the GitHub
+release notes (cleaned of control characters, at most about 400 characters)
+and the release URL. `--json` has the same as `whatsNew` (`version`,
+`summary`, `url`). It comes from one more GitHub API request
+(`releases?per_page=20`, through the same proxy and client as the check); if
+that fails, the block is left out and the update or check goes on as usual.
+The daemon's own automatic install (`--auto-install`) skips both blocks and
+that request. The release link is kept only when it is a `github.com` page, and
+the text is stripped of control, bidirectional and zero-width characters.
+
+**The plugin step.** After such an install, and with `--check` when a newer
+release exists, `update` also prints how to bring the Claude Code plugin to
+the same release: `claude plugin marketplace update c-hottag`, `claude plugin
+update chottag@c-hottag`, then `/reload-plugins` in each open Claude Code
+session (`plugin` in `--json`: `commands` and `note`). chottag never runs
+`claude` itself. The plugin's mod also notices a plugin older than chottag:
+a toast once per version, and `plugin X · chottag Y: update the plugin` on
+the card.
+
 To undo an update: stop the daemon (`chottag daemon stop`), run `chottag
 update --version vX.Y.Z` to put the older binary back, copy back the
 `state.json` backup that the update being undone printed (it is also listed
@@ -235,9 +257,19 @@ then start the daemon (`chottag daemon start`).
   "backups": ["/Users/alice/.chottag/backups/state.json.20261002T150405Z"],
   "daemon": "deferred",
   "liveSessions": 2,
-  "selfRestart": false
+  "selfRestart": false,
+  "whatsNew": [
+    {"version": "0.4.0", "summary": "A one-paragraph lead from the release notes.", "url": "https://github.com/HaiNNT/c-hottag/releases/tag/v0.4.0"}
+  ],
+  "plugin": {
+    "commands": ["claude plugin marketplace update c-hottag", "claude plugin update chottag@c-hottag", "/reload-plugins"],
+    "note": "chottag does not run claude. Run the first two in a terminal, or have Claude Code run them after you agree, then /reload-plugins in each open Claude Code session."
+  }
 }
 ```
+
+`whatsNew` and `plugin` are there when a newer release exists (`--check`) or
+was installed, and left out otherwise (a rollback, an up-to-date install).
 
 `daemon` says what happened to the daemon after an install: `restarted`,
 `restart-failed`, `deferred` (a session is running: the daemon restarts
@@ -1041,7 +1073,7 @@ Its checks, in the order they run:
 | `daemon-identity` | a running daemon proved it holds this install's proxy secret | `chottag daemon restart` |
 | `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
 | `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
-| `route-drift` | the running daemon saw a swapped request refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is) | `chottag trace on` |
+| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404, refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted | `chottag trace on` |
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |
@@ -1457,7 +1489,8 @@ not refuse it — it only sees a brief interruption.
 chottag daemon logs [-n N] [-f]
 ```
 
-Prints the last `N` lines of `daemon.log`. `-f` keeps printing lines as
+Prints the last `N` lines of `daemon.log`. Since 0.9.1 each line starts with
+its local time, `2006-01-02 15:04:05`. `-f` keeps printing lines as
 they are written. does not support `--json`.
 
 | Flag | Meaning |
@@ -1699,6 +1732,14 @@ is one line: `c» C · 5h 28% · 7d 68% · ↻ 3h20m`.
   A reset that is not known, or has passed, is left out.
 - The ready count is `N of M accounts ready`, with `update 0.9.1 available`
   when there is one.
+- One empty line sits above the card, so it does not touch the output above it.
+  It counts as a row of the band's limit: when the rows are short, it is the
+  first thing dropped.
+- When the plugin is older than the installed chottag, the card adds `plugin
+  0.9.0 · chottag 0.9.1: update the plugin`, and one toast says so per
+  chottag version. The mod asks `chottag version --json` for it (at most every
+  10 minutes). Update the plugin as `chottag update` prints it (see
+  [`chottag update`](#chottag-update)).
 - Colour: the left bar, the title and the account are chottag
   blue (amber with a label); bars and percents are green below 70%, yellow
   below 90% and red from 90%, and red while the account is limited.

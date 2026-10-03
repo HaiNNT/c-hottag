@@ -236,6 +236,16 @@ restarts itself onto it once the proxy is idle (no request in flight, none in
 the last 5 minutes); this is on by default and `chottag update --auto-restart
 off` turns it off. To switch at once, run `chottag daemon restart`.
 
+**After an update, the plugin.** `chottag update --json` (and `--check`, when a
+newer release exists) returns `whatsNew` (the lead of each release you
+skipped: `version`, `summary`, `url`) and `plugin` (`commands`, `note`).
+Relay the summary to the user, then **ask whether to update this plugin too**:
+chottag's update never touches it. On a yes, run `claude plugin marketplace
+update c-hottag`, then `claude plugin update chottag@c-hottag`, and tell the
+user to run `/reload-plugins` in their open sessions. Don't run them without
+the yes. The mod also toasts, once per version, when the plugin is older than
+chottag, and the card says `plugin X · chottag Y: update the plugin`.
+
 **Finish the update.** When `chottag update --json` returns `"daemon":
 "deferred"` with `"selfRestart": false` (the text says the running daemon
 "can't restart itself" or "won't restart onto it"), the new version is not in

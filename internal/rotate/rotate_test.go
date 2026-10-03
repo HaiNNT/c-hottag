@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/rotate"
 )
@@ -263,5 +264,64 @@ func TestWriteRecoversWhenLiveFileAlreadyRenamedAway(t *testing.T) {
 	// Confirm the recovery isn't a one-off fluke: the writer keeps working.
 	if _, err := w.Write([]byte("more\n")); err != nil {
 		t.Fatalf("write after recovery failed: %v", err)
+	}
+}
+
+// TestWriterStampsEveryLine pins R158's timestamp: each line starts with the
+// injected clock's local time, a continuation of a line does not, and Write
+// still reports the caller's byte count.
+func TestWriterStampsEveryLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	at := time.Date(2026, 10, 3, 17, 28, 23, 0, time.Local)
+	w, err := rotate.Open(rotate.Config{Path: path, MaxBytes: 1 << 20, Keep: 1, Stamp: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	for _, part := range []string{"chottag: one\n", "chottag: two", " cont\nthree\nfour\n"} {
+		if n, err := w.Write([]byte(part)); err != nil || n != len(part) {
+			t.Fatalf("Write(%q) = %d, %v", part, n, err)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const ts = "2026-10-03 17:28:23 "
+	want := ts + "chottag: one\n" + ts + "chottag: two cont\n" + ts + "three\n" + ts + "four\n"
+	if string(got) != want {
+		t.Fatalf("log = %q, want %q", got, want)
+	}
+}
+
+// The cap counts the stamped bytes, and a write that rotates starts the new
+// file with a stamp, even when it continues a line.
+func TestWriterStampsAcrossRotationAndCountsTheStamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	at := time.Date(2026, 10, 3, 17, 28, 23, 0, time.Local)
+	const max = 80
+	w, err := rotate.Open(rotate.Config{Path: path, MaxBytes: max, Keep: 1, Stamp: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	for _, part := range []string{"aaaaaaaaaa\n", "bbbbbbbbbb\n", "cccc", "cccccc\n", "dddddddddd\n"} {
+		if _, err := w.Write([]byte(part)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{path, path + ".1"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) > max {
+			t.Fatalf("%s is %d bytes, over the cap %d", f, len(b), max)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+			if !strings.HasPrefix(line, "2026-10-03 17:28:23 ") {
+				t.Fatalf("%s has an unstamped line %q", f, line)
+			}
+		}
 	}
 }

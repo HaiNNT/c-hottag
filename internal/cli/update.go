@@ -87,6 +87,30 @@ type updateResult struct {
 	SelfRestart *bool `json:"selfRestart,omitempty"`
 	// Backups lists the files update copied before installing (R123).
 	Backups []string `json:"backups,omitempty"`
+	// WhatsNew is a short summary of each release newer than the old
+	// version, up to the one now available or installed, newest first (R157).
+	// Absent when none was found or the releases list could not be fetched.
+	WhatsNew []updatecheck.Note `json:"whatsNew,omitempty"`
+	// Plugin is the Claude Code plugin's update step, present when a newer
+	// release is available (check) or was installed (R156).
+	Plugin *pluginStep `json:"plugin,omitempty"`
+}
+
+// pluginStep is what to run to bring the Claude Code plugin to the release
+// chottag just installed or found. chottag never runs claude itself.
+type pluginStep struct {
+	Commands []string `json:"commands"`
+	Note     string   `json:"note"`
+}
+
+// pluginUpdateStep is the one plugin step (R156).
+var pluginUpdateStep = pluginStep{
+	Commands: []string{
+		"claude plugin marketplace update c-hottag",
+		"claude plugin update chottag@c-hottag",
+		"/reload-plugins",
+	},
+	Note: "chottag does not run claude. Run the first two in a terminal, or have Claude Code run them after you agree, then /reload-plugins in each open Claude Code session.",
 }
 
 // --- seams ------------------------------------------------------------
@@ -120,6 +144,69 @@ var updateFetch = fetchViaUpstream
 // fetchViaUpstream is updateFetch's production body.
 func fetchViaUpstream(ctx context.Context, upstream *url.URL, repo string) (updatecheck.Release, error) {
 	return fetchLatest(ctx, usagepoll.NewClient(upstream), updatecheck.APIBase, repo)
+}
+
+// updateReleases lists the repo's newest releases, with their notes, for the
+// "what's new" summary (R157): one HTTPS GET through the same upstream and
+// client as updateFetch. TestMain installs a panicking default.
+var updateReleases = fetchReleasesViaUpstream
+
+// fetchReleasesViaUpstream is updateReleases's production body.
+func fetchReleasesViaUpstream(ctx context.Context, upstream *url.URL, repo string) ([]updatecheck.Release, error) {
+	ctx, cancel := context.WithTimeout(ctx, updateFetchTimeout)
+	defer cancel()
+	return updatecheck.List(ctx, usagepoll.NewClient(upstream), updatecheck.APIBase, repo)
+}
+
+// whatsNew is the summary of the releases after since, up to upTo. Any
+// failure (no upstream, the fetch) only drops it: the update never fails
+// for it.
+func whatsNew(ctx context.Context, h, repo, since, upTo string) []updatecheck.Note {
+	upstream, err := updateUpstream(h)
+	if err != nil {
+		return nil
+	}
+	rels, err := updateReleases(ctx, upstream, repo)
+	if err != nil {
+		return nil
+	}
+	return updatecheck.WhatsNew(rels, since, upTo)
+}
+
+// textWhatsNew prints the "What's new" block, if there is one.
+func textWhatsNew(r *reporter, notes []updatecheck.Note) {
+	if len(notes) == 0 {
+		return
+	}
+	r.Text("\nWhat's new:\n")
+	for _, n := range notes {
+		r.Text("  %s: %s\n", n.Version, n.Summary)
+		if n.URL != "" {
+			r.Text("    %s\n", n.URL)
+		}
+	}
+}
+
+// textPluginStep prints the plugin step.
+func textPluginStep(r *reporter) {
+	r.Text("\nUpdate the Claude Code plugin too (chottag does not run claude):\n")
+	for _, c := range pluginUpdateStep.Commands[:2] {
+		r.Text("  %s\n", c)
+	}
+	r.Text("then run %s in each open Claude Code session\n", pluginUpdateStep.Commands[2])
+}
+
+// updateExtras fills res's whatsNew and plugin from the release now
+// available (check) or installed, and prints them, for a newer release.
+func updateExtras(ctx context.Context, h, repo, ver string, newer bool, res *updateResult, r *reporter) {
+	if !newer || os.Getenv(autoUpdateEnv) == "1" {
+		return
+	}
+	res.WhatsNew = whatsNew(ctx, h, repo, Version, ver)
+	textWhatsNew(r, res.WhatsNew)
+	step := pluginUpdateStep
+	res.Plugin = &step
+	textPluginStep(r)
 }
 
 // updateUpstream is the upstream proxy a CLI run of the check uses, resolved
@@ -1145,7 +1232,9 @@ func runUpdate(args []string, r *reporter) int {
 		} else {
 			r.Text("chottag %s is up to date (%s)\n", Version, repo)
 		}
-		return r.OK(updateResult{Repo: repo, Current: Version, Latest: ver, UpdateAvailable: newer})
+		res := updateResult{Repo: repo, Current: Version, Latest: ver, UpdateAvailable: newer}
+		updateExtras(ctx, h, repo, ver, newer, &res, r)
+		return r.OK(res)
 	}
 
 	versionsDir := filepath.Join(h, "versions")
@@ -1343,12 +1432,19 @@ func runUpdate(args []string, r *reporter) int {
 
 	res := updateResult{Repo: repo, Current: Version, Latest: ver, UpdateAvailable: newer, Installed: true, Pruned: pruned, Backups: backups}
 
+	// done ends a successful install: the daemon's outcome is already
+	// printed, then what's new and the plugin step (R156, R157).
+	done := func(res updateResult) int {
+		updateExtras(ctx, h, repo, ver, newer, &res, r)
+		return r.OK(res)
+	}
+
 	if *noRestart {
 		// --no-restart (R124): the daemon is left alone on every path, a
 		// running one or none, with sessions or without.
 		res.Daemon = "not-restarted"
 		r.Text("daemon not restarted (--no-restart)\n")
-		return r.OK(res)
+		return done(res)
 	}
 	if portErr != nil {
 		// Fix round 1 item 11: the install itself already succeeded, so
@@ -1356,12 +1452,12 @@ func runUpdate(args []string, r *reporter) int {
 		// install, it only leaves the daemon's fate to the operator.
 		res.Daemon = "not-probed"
 		r.Warn(warnRestartFailed, "chottag: could not tell whether the daemon needs restarting: "+portErr.Error()+"; run: chottag daemon restart if it is running")
-		return r.OK(res)
+		return done(res)
 	}
 	if !running {
 		res.Daemon = "not-running"
 		r.Text("daemon not running\n")
-		return r.OK(res)
+		return done(res)
 	}
 
 	sessions, sessErr := liveSessions(h)
@@ -1385,7 +1481,7 @@ func runUpdate(args []string, r *reporter) int {
 			res.Daemon = "restarted"
 			r.Text("daemon restarted\n")
 		}
-		return r.OK(res)
+		return done(res)
 	}
 
 	// Fix round 1 item 12: one line, the way `daemon restart`'s own
@@ -1420,7 +1516,7 @@ func runUpdate(args []string, r *reporter) int {
 		how = "the running daemon can't restart itself: " + finish
 	}
 	r.TextWarn(warnUpdateDeferred, fmt.Sprintf("chottag: daemon restart deferred: %s running; %s", sessionsText, how))
-	return r.OK(res)
+	return done(res)
 }
 
 // restartLoopSince is the first release whose daemon restarts itself when idle.

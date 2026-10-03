@@ -63,6 +63,11 @@ type Decision struct {
 	// the object this request operates on, for routes that do not put it in
 	// the path (an artifact republish posts the slug in the body).
 	RequestField string
+	// Fallback is true for the Serving decision of a route the table does not
+	// list (a path on an intercepted host that no rule matched). A route chottag
+	// has not classified is what route drift is meant to catch, so the safety
+	// net keeps counting its refusals as drift (R158).
+	Fallback bool
 }
 
 // Request is what the router needs to know about one request. AbsoluteForm
@@ -163,6 +168,10 @@ var (
 		r("", `^/api/frame/read/([^/]+)$`, Decision{Class: Remote, Object: KindArtifact}),
 		r("", `^/api/frame/([^/]+)(/.*)?$`, Decision{Class: Remote, Object: KindArtifact}),
 
+		// The inference route itself: explicitly serving, so a refusal on it is
+		// the account's login being refused, not a route the table lacks (R158).
+		r("", `^/v1/messages(/.*)?$`, Decision{Class: Serving}),
+
 		r("GET", `^/v1/mcp_servers$`, Decision{Class: Remote, Records: KindConnector, RecordField: "data[].id"}),
 		r("", `^/v1/mcp_servers(/.*)?$`, remote),
 	}
@@ -206,7 +215,7 @@ func Route(req Request) Decision {
 		}
 		return d
 	}
-	return Decision{Class: Serving}
+	return Decision{Class: Serving, Fallback: true}
 }
 
 // HostOnly lower-cases hostport and strips any port.

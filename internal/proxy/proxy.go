@@ -136,6 +136,15 @@ type Config struct {
 	// about to receive into a dropped connection.
 	WallRetry func(ctx context.Context, account string, h http.Header) (retry bool, done func(to string, status int))
 
+	// OnServingRefusal, when set, is called when a swapped request on a plain
+	// serving route (not an object or remote route) stays refused after the
+	// safety net's refresh-and-retry: account is the swapped account, status
+	// the first refusal's, resent whether the request then went out on the
+	// client's own login, and method and path the request's (the path is
+	// templated, never a query or a body). It is not route drift and is not
+	// counted as such. Called on the request goroutine: it must not block.
+	OnServingRefusal func(account string, status int, resent bool, method, path string)
+
 	// UpstreamProxy routes chottag's own upstream traffic through another
 	// proxy — the one the user already had in HTTPS_PROXY before the shim
 	// replaced it (spec §4.3, §6). nil means dial directly.

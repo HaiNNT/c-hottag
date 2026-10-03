@@ -301,3 +301,77 @@ func TestRunProxyWiresTheWallRetryThroughARealProxied429(t *testing.T) {
 		t.Fatalf("stderr = %q, want the wall-retry daemon.log line", errb.String())
 	}
 }
+
+// R158: runProxyWithSignal wires proxy.Config.OnServingRefusal. A request
+// swapped onto A that A's login refuses twice (401), then goes out on the
+// client's own login, writes the daemon.log line and posts the notice.
+// Dropping `cfg.OnServingRefusal = ...` leaves both missing.
+func TestRunProxyWiresTheServingRefusalHook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CHOTTAG_HOME", home)
+	addSlotAccount(t, home, "A")
+
+	up, upCA := startFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer sk-ant-oat01-client-owned" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	wireFakeUpstream(t, up, upCA)
+	// The safety net's forced refresh runs the slot's claude: a stand-in
+	// that renews nothing, never the real binary.
+	fakeClaude := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := stubDaemonNotifier(t)
+	errb := newSyncBuf()
+	sig := make(chan os.Signal, 2)
+	codeCh := make(chan int, 1)
+	go func() {
+		codeCh <- runProxyWithSignal([]string{"run", "--listen", "127.0.0.1:0", "--log", "", "--claude", fakeClaude}, io.Discard, errb, nil, sig)
+	}()
+	t.Cleanup(func() {
+		sig <- os.Interrupt
+		select {
+		case <-codeCh:
+		case <-time.After(shutdownGrace + 5*time.Second):
+			t.Error("daemon did not shut down during cleanup")
+		}
+	})
+	select {
+	case <-errb.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for proxy run to start listening")
+	}
+	addr := listenAddrFromStderr(t, errb.String())
+
+	tlsConn, br := mitmConn(t, home, addr)
+	if _, err := io.WriteString(tlsConn, "GET /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\nAuthorization: Bearer sk-ant-oat01-client-owned\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("reading the proxied response failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("client saw %d, want 200 (the refusal must not reach it)", resp.StatusCode)
+	}
+	// The hook runs on the request goroutine before the resend, so the log
+	// line is already written.
+	const line = "chottag: A's login was refused (401) on GET /v1/messages; sent on Home's own login"
+	if !strings.Contains(errb.String(), line) {
+		t.Fatalf("stderr %q lacks %q", errb.String(), line)
+	}
+	select {
+	case m := <-rec.got:
+		if m.title != "chottag: A's login was refused (401)" {
+			t.Fatalf("first notice = %+v, want the serving-refusal notice", m)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no serving-refusal notice arrived; stderr %q", errb.String())
+	}
+}
