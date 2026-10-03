@@ -148,7 +148,7 @@ has no chottag PATH entry), and resume it there with `claude --continue` or
 `chottag statusline` prints one short segment for Claude Code's status
 line:
 
-- `c» A · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`: this session goes through
+- `c» A · 5h 42% · 7d 18% · ↻ 3h20m · 2/3 ok`: this session goes through
   chottag, A is serving, with its usage, its next reset and how many
   accounts in rotation are not limited;
 - `c» down`: it goes through chottag, but the daemon is not answering;

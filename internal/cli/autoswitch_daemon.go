@@ -191,7 +191,7 @@ func autoUsageHook(a *autoSwitcher, next func(string, int, http.Header)) func(st
 
 func (a *autoSwitcher) onUsage(account string, code int, h http.Header) {
 	if code >= 200 && code < 300 {
-		a.sink.setNeedsLoginCleared(account, a.now())
+		a.sink.setTokenCleared(account, a.now())
 	}
 	st, err := a.state()
 	if err != nil {
@@ -781,17 +781,19 @@ func sameUpdate(a, b status.Update) bool {
 		a.Available == b.Available && a.Notified == b.Notified && a.Error == b.Error
 }
 
-// setNeedsLoginCleared replaces a recorded needs-login token state with ok
-// once the account has answered a request on its own credential (ruling 7):
-// eligibility reads this state, and nothing else ever cleared it. It goes
-// through status.File.SetToken, not a direct field write, so TokenAt is
-// stamped only when the state actually changes (planAccounts' before/after
-// comparison against LoggedInAt depends on that).
-func (c *statusSink) setNeedsLoginCleared(account string, at time.Time) {
+// setTokenCleared replaces a recorded needs-login or stale token state with
+// ok once the account has answered a request on its own credential (ruling
+// 7) or its token has renewed (R149): eligibility reads the state, and
+// before R149 only needs-login was ever cleared, so `token: stale` stayed
+// until a passthrough replaced it. It goes through status.File.SetToken, not
+// a direct field write, so TokenAt is stamped only when the state actually
+// changes (planAccounts' before/after comparison against LoggedInAt depends
+// on that).
+func (c *statusSink) setTokenCleared(account string, at time.Time) {
 	c.mu.Lock()
 	cleared := false
 	for _, a := range c.file.Accounts {
-		if strings.EqualFold(a.Name, account) && a.Token == creds.StateNeedsLogin {
+		if strings.EqualFold(a.Name, account) && (a.Token == creds.StateNeedsLogin || a.Token == creds.StateStale) {
 			cleared = true
 			break
 		}

@@ -219,11 +219,16 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	if credsReadForTest != nil {
 		read = credsReadForTest
 	}
+	// The reporter's sink and notifier do not exist yet; they are set below,
+	// before the daemon runs and so before any refresh can report.
+	rr := &refreshReporter{log: stderr, now: timeNow}
 	tm := tokens.New(tokens.Config{
-		Read:     read,
-		Refresh:  newRefresher(*claudeFlag, h),
-		LockPath: creds.LockPath,
-		TryLock:  fsutil.TryLock,
+		Read:        read,
+		Refresh:     newRefresher(*claudeFlag, h),
+		LockPath:    creds.LockPath,
+		TryLock:     fsutil.TryLock,
+		OnRefresh:   rr.onRefresh,
+		AccountName: accountNameByDir(cache.State),
 	})
 
 	sink, err := newStatusSinkFn(h, statusSaveErrorThrottle(stderr))
@@ -257,6 +262,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	// has returned; nothing feeds it after that.
 	dn := newDaemonNotify(cache.State, newDaemonNotifier())
 	defer dn.Close()
+	rr.sink, rr.dn = sink, dn
 
 	printEvent := newEventPrinter(stderr, timeNow)
 	sel := selector.New(newSelectorConfig(cache.State, tm, own, sink, printEvent, dn))
@@ -339,7 +345,10 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Spread:     sp,
 			Update:     ul,
 			Restart:    rl,
-			Warm:       &remoteWarmer{state: cache.State, warm: tm.Warm, log: stderr, now: timeNow},
+			Warm: &remoteWarmer{state: cache.State, warm: tm.Warm, probe: tm.LockedOut, log: stderr, now: timeNow,
+				wakeWarm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
+					return tm.WarmFor(ctx, dir, within, tokens.TriggerWake)
+				}},
 			// nil in production: runDaemon's own RosterProcessed default.
 			RosterProcessed: rosterProcessedForTest,
 		})
@@ -1084,6 +1093,16 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 			// would be actively misleading after a real wake.
 			fmt.Fprintln(d.Stderr, "chottag: woke from sleep, closed upstream connections")
 		})
+	}
+	if d.Warm != nil {
+		// Chained like the poller's: wake only schedules a timer. The warm
+		// pass itself runs wakeWarmDelay later, once the network and the
+		// Keychain are back (R149).
+		onWake := wakerCfg.OnWake
+		wakerCfg.OnWake = func() {
+			onWake()
+			d.Warm.wake(watchCtx)
+		}
 	}
 	if d.Poller != nil {
 		// Chained after whatever OnWake is (the default above, or a

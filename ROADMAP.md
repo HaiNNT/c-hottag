@@ -12,6 +12,9 @@ is maintained by one person in their spare time. To suggest something, open a
   stays there, so prompt caches stay warm (0.7).
 - **Pools:** isolated work and personal accounts, each with its own remote
   account; a session picks its pool when it starts (0.8).
+- **A chottag mod** in the Claude Code plugin: a status card above the
+  prompt, chottag's notices in the session, `/ct` commands, and a guard on
+  `/login` and `/logout` (0.9).
 
 ## Now
 

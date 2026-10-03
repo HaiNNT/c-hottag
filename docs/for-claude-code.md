@@ -230,7 +230,13 @@ Then offer a way to see which login a session uses that adds nothing to
 its conversation (don't use a `!` command for this: its output lands in
 the chat):
 
-1. **The status line (recommended).** `chottag statusline` prints
+1. **The status card.** The plugin's mod (Claude Code 2.1.287 or newer) already
+   draws a compact card above the prompt with the account, both usage windows and
+   their resets, and shows `/ct` commands, notices and a `/login` guard: tell the
+   user it appears in a new session, and offer the status line below only for an
+   older Claude Code or when they also want it there (both can show). Check with
+   `claude --version`.
+2. **The status line.** `chottag statusline` prints
    `c» <this session's account> · 5h … · 7d …` for a session that goes through
    chottag, `c» down` when chottag is not answering, and `c» off` for a
    Home session. It never replaces the user's status line: ask whether
@@ -256,7 +262,7 @@ the chat):
    `~/.claude` this guide allows; chottag itself never writes there. Use
    `chottag statusline`, not `chottag status --json`: only `statusline`
    knows whether this session goes through chottag.
-2. **From another terminal.** `chottag status` shows `live sessions: N`,
+3. **From another terminal.** `chottag status` shows `live sessions: N`,
    which goes up by one when a session starts through chottag.
 
 ## Managing chottag afterwards

@@ -504,3 +504,78 @@ func TestRunDaemonWakeInvalidatesTheRealTokenManager(t *testing.T) {
 		t.Fatal("runDaemon did not return after its context was cancelled")
 	}
 }
+
+// R149: a wake from sleep schedules the warm pass wakeWarmDelay later, and
+// that pass reaches the token manager with the wake trigger's warm func.
+func TestRunDaemonWakeSchedulesTheWarmPass(t *testing.T) {
+	ticks := make(chan time.Time)
+	var wallNanos atomic.Int64
+	base := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	wallNanos.Store(base.UnixNano())
+	wakerCfg := proxy.WakerConfig{
+		Gap:   30 * time.Second,
+		Ticks: ticks,
+		Wall:  func() time.Time { return time.Unix(0, wallNanos.Load()).UTC() },
+		Mono:  func() time.Duration { return 0 },
+	}
+	sink, err := newStatusSink(t.TempDir(), func(error) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := owners.Open(filepath.Join(t.TempDir(), "owners.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	s := store.Store{Dir: t.TempDir()}
+	if _, err := s.Update(func(st *store.State) error {
+		if err := st.Add(store.Account{Name: "S", Dir: "/slots/S"}); err != nil {
+			return err
+		}
+		st.Serving = "S"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cache := store.NewCache(s)
+
+	scheduled := make(chan time.Duration, 1)
+	warmed := make(chan string, 4)
+	w := &remoteWarmer{
+		state: cache.State,
+		warm: func(context.Context, string, time.Duration) (creds.Status, bool) {
+			return creds.Status{State: creds.StateOK}, false
+		},
+		wakeWarm: func(_ context.Context, dir string, _ time.Duration) (creds.Status, bool) {
+			warmed <- dir
+			return creds.Status{State: creds.StateOK}, false
+		},
+		after: func(d time.Duration, f func()) *time.Timer {
+			scheduled <- d
+			go f() // the delay is not what is under test
+			return time.NewTimer(time.Hour)
+		},
+		log: io.Discard, now: time.Now,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	daemonDone := make(chan int, 1)
+	go func() {
+		daemonDone <- runDaemon(ctx, daemonDeps{
+			Stdout: io.Discard, Stderr: io.Discard, Listen: "127.0.0.1:0",
+			Sink: sink, Tokens: tokens.New(tokens.Config{}), Cache: cache, Owners: own,
+			Waker: wakerCfg, Warm: w,
+		})
+	}()
+	ticks <- time.Now() // synchronizes with the waker's baseline, as above
+	wallNanos.Store(base.Add(60 * time.Second).UnixNano())
+	ticks <- time.Now()
+	if d := <-scheduled; d != wakeWarmDelay {
+		t.Fatalf("scheduled after %v, want %v", d, wakeWarmDelay)
+	}
+	if dir := <-warmed; dir != "/slots/S" {
+		t.Fatalf("wake pass warmed %q, want the serving slot", dir)
+	}
+	cancel()
+	<-daemonDone
+}

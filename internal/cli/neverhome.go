@@ -11,6 +11,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/store"
+	"github.com/HaiNNT/c-hottag/internal/tokens"
 )
 
 // eventLogEvery is how often one account's stale-token line is logged.
@@ -83,21 +84,39 @@ const warmStopBound = 3 * time.Second
 // warmEvery is the shortest wait between two passes of the warm loop.
 const warmEvery = time.Minute
 
-// remoteWarmer keeps every pool's remote account's token fresh (R147): a
-// remote account is usually rotation-off and serves no prompts, so nothing
-// else would. It records nothing in state; a needs-login account is skipped
-// and logged once. A nil *remoteWarmer does nothing.
+// wakeWarmDelay is how long after a wake from sleep the warm pass starts:
+// the network and the Keychain need a moment to come back, and a refresh
+// that ran at once would fail on both.
+var wakeWarmDelay = 10 * time.Second
+
+// remoteWarmer keeps every pool's remote and serving accounts' tokens fresh
+// (R147, R149): a remote account is usually rotation-off and serves no
+// prompts, so nothing else would; a serving account otherwise refreshes only
+// when a request finds it expired, and that request goes out on Home's login
+// (F37). It records nothing in state; a needs-login account is skipped and
+// logged once. A nil *remoteWarmer does nothing.
 type remoteWarmer struct {
 	state func() (store.State, error)
 	// warm is tokens.Manager.Warm: one refresh at a time, backoff respected.
 	warm func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool)
-	log  io.Writer
-	now  func() time.Time
+	// wakeWarm is warm with the wake trigger, for the pass that follows a
+	// wake; nil uses warm.
+	wakeWarm func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool)
+	// probe lists the slots the token manager has locked out; they are warmed
+	// (probed) whatever their account's role. nil probes none.
+	probe func() []string
+	// after schedules f once, d from now; nil is time.AfterFunc. A test
+	// replaces it to drive the wake delay by hand.
+	after func(d time.Duration, f func()) *time.Timer
+	log   io.Writer
+	now   func() time.Time
 
 	mu      sync.Mutex
 	last    time.Time
 	running bool
 	closed  bool            // stop was called: kick starts nothing more
+	again   bool            // a wake pass was asked for while one was running
+	timer   *time.Timer     // the pending wake pass
 	logged  map[string]bool // needs-login already logged for the account
 	wg      sync.WaitGroup
 }
@@ -106,12 +125,29 @@ type remoteWarmer struct {
 // one started under a minute ago. Called from the roster tick, so it never
 // blocks.
 func (w *remoteWarmer) kick(ctx context.Context) {
+	w.start(ctx, false)
+}
+
+// start runs a pass in its own goroutine. A wake pass (wake true) ignores the
+// one-a-minute limit, and when a pass is already running it runs right after
+// that one: the running pass may have started before the wake. The
+// token manager's single flight keeps two refreshes of one slot apart.
+func (w *remoteWarmer) start(ctx context.Context, wake bool) {
 	if w == nil || ctx.Err() != nil {
 		return
 	}
 	now := w.now()
 	w.mu.Lock()
-	if w.closed || w.running || (!w.last.IsZero() && now.Sub(w.last) < warmEvery) {
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	if w.running {
+		w.again = w.again || wake
+		w.mu.Unlock()
+		return
+	}
+	if !wake && !w.last.IsZero() && now.Sub(w.last) < warmEvery {
 		w.mu.Unlock()
 		return
 	}
@@ -125,8 +161,40 @@ func (w *remoteWarmer) kick(ctx context.Context) {
 			w.running = false
 			w.mu.Unlock()
 		}()
-		w.pass(ctx)
+		for {
+			w.pass(ctx, wake)
+			w.mu.Lock()
+			again := w.again && !w.closed && ctx.Err() == nil
+			w.again = false
+			w.mu.Unlock()
+			if !again {
+				return
+			}
+			wake = true
+		}
 	}()
+}
+
+// wake schedules the warm pass that follows a wake from sleep,
+// wakeWarmDelay from now; a second wake before it fires moves it. Called
+// from the wake detector's OnWake, so it never blocks.
+func (w *remoteWarmer) wake(ctx context.Context) {
+	if w == nil {
+		return
+	}
+	after := w.after
+	if after == nil {
+		after = time.AfterFunc
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.timer = after(wakeWarmDelay, func() { w.start(ctx, true) })
 }
 
 // wait joins any pass in flight.
@@ -145,6 +213,9 @@ func (w *remoteWarmer) stop(bound time.Duration) bool {
 	}
 	w.mu.Lock()
 	w.closed = true
+	if w.timer != nil {
+		w.timer.Stop()
+	}
 	w.mu.Unlock()
 	done := make(chan struct{})
 	go func() { w.wg.Wait(); close(done) }()
@@ -156,32 +227,61 @@ func (w *remoteWarmer) stop(bound time.Duration) bool {
 	}
 }
 
-// pass warms each distinct remote account of every pool once.
-func (w *remoteWarmer) pass(ctx context.Context) {
+// pass warms each distinct remote and serving account of every pool once.
+func (w *remoteWarmer) pass(ctx context.Context, wake bool) {
 	st, err := w.state()
 	if err != nil {
 		return
 	}
+	warm := w.warm
+	if wake && w.wakeWarm != nil {
+		warm = w.wakeWarm
+	}
 	done := map[string]bool{}
+	warmed := map[string]bool{}
 	for _, pool := range st.PoolNames() {
-		name := st.PoolOf(pool).Remote
-		key := strings.ToLower(name)
-		if name == "" || done[key] {
+		p := st.PoolOf(pool)
+		for _, name := range []string{p.Remote, p.Serving} {
+			key := strings.ToLower(name)
+			if name == "" || done[key] {
+				continue
+			}
+			done[key] = true
+			var acct *store.Account
+			for i := range st.Accounts {
+				if strings.EqualFold(st.Accounts[i].Name, name) {
+					acct = &st.Accounts[i]
+					break
+				}
+			}
+			if acct == nil || ctx.Err() != nil {
+				continue
+			}
+			warmed[acct.Dir] = true
+			status, _ := warm(ctx, acct.Dir, warmWindow)
+			w.note(acct.Name, status)
+		}
+	}
+	if w.probe == nil {
+		return
+	}
+	for _, dir := range w.probe() {
+		if warmed[dir] || ctx.Err() != nil {
 			continue
 		}
-		done[key] = true
-		var acct *store.Account
-		for i := range st.Accounts {
-			if strings.EqualFold(st.Accounts[i].Name, name) {
-				acct = &st.Accounts[i]
-				break
+		// Only an account the roster still has: one that was removed (or
+		// logged out and its slot deleted) is not probed, nor logged about.
+		name := ""
+		for _, a := range st.Accounts {
+			if a.Dir == dir {
+				name = a.Name
 			}
 		}
-		if acct == nil || ctx.Err() != nil {
+		if name == "" {
 			continue
 		}
-		status, _ := w.warm(ctx, acct.Dir, warmWindow)
-		w.note(acct.Name, status)
+		status, _ := warm(ctx, dir, warmWindow)
+		w.note(name, status)
 	}
 }
 
@@ -201,6 +301,10 @@ func (w *remoteWarmer) note(account string, st creds.Status) {
 	}
 	w.logged[account] = true
 	if w.log != nil {
-		fmt.Fprintf(w.log, "chottag: remote account %s needs login, so it is not kept warm (run: chottag login %s)\n", account, account)
+		if st.Reason == tokens.ReasonNotRenewing {
+			fmt.Fprintf(w.log, "chottag: account %s needs login (its refresh does not renew the token); it is probed every %s until then (run: chottag login %s)\n", account, short(15*time.Minute), account)
+			return
+		}
+		fmt.Fprintf(w.log, "chottag: account %s needs login, so it is not kept warm (run: chottag login %s)\n", account, account)
 	}
 }

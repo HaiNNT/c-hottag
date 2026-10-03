@@ -155,6 +155,12 @@ func TestDocsNameOnlyRealCommands(t *testing.T) {
 	words := commandWords(t)
 	for _, doc := range append(docPages(t), "plugin/skills/chottag/SKILL.md") {
 		for _, c := range doccheck.Code(read(t, doc)) {
+			// The mod's /login guard text says "a chottag account" in prose
+			// (M8b spec §4: verbatim). Its one command, `chottag login`, is
+			// checked below.
+			if strings.Contains(c, "Claude Code's own login (your Home account)") {
+				c = strings.ReplaceAll(c, "a chottag account", "an account")
+			}
 			for _, m := range chottagCmd.FindAllStringSubmatch(c, -1) {
 				if !words[m[1]] {
 					t.Errorf("%s tells the reader to run `chottag %s`, which is not a chottag command (in %q)", doc, m[1], c)

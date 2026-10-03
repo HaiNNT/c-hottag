@@ -29,6 +29,48 @@ for what to do next.
 A `needs-login` state on `chottag status` means the slot's login has
 expired or was revoked. Run `chottag login <name>` to log it back in.
 
+Since 0.8.6 an account also becomes `needs-login` when its refresh exits 0
+at least three times in a row, over at least 10 minutes, yet the token stays
+expired (a dead refresh token, say). The daemon log says, in two lines:
+
+```
+chottag: refresh C: claude exited 0 but the token is still expired; retry in 15m
+chottag: refresh C: still expired after 6 tries over 16m; it needs a login (run: chottag login C)
+```
+
+and you get a notice (the numbers are the tries so far and the minutes they
+span, at least 3 and 10). Run `chottag login <name>`. Until you do, the daemon
+still tries a refresh once every 15 minutes, whatever the account's role, and
+if one renews the token the account is back without a login (`refresh C:
+renewed, ...`).
+
+## An account's token stays stale
+
+`token: stale` on `chottag status` means the slot's access token has expired.
+Since 0.8.6 it clears by itself when the token renews, or when a request
+goes out as that account again. The daemon also refreshes each pool's serving
+and remote account before its token runs out, and again about 10 seconds
+after your Mac wakes (prompts sent in those 10 seconds plus the refresh still
+go out on Home's own login, and only those two accounts are covered, not
+every rotating member). `chottag daemon logs` says what each refresh did, one
+line per outcome (the same line at most every 10 minutes, a different one
+always):
+
+- `chottag: refresh C: renewed, expires in 7h59m (request, 5.2s)`: it worked.
+  The word in parentheses is what started it: `request`, `warm`, `forced` or
+  `wake`.
+- `chottag: refresh C: token unchanged, not yet due (warm, ...)` is not a
+  problem: Claude Code renews only close to expiry, so a refresh that ran a
+  little early left the token as it was.
+- `chottag: refresh C: claude exited 0 but the token is still expired; retry
+  in 2m`: Claude Code ran and renewed nothing. If it keeps up for 10 minutes
+  the account is `needs-login` (above).
+- `chottag: refresh C: failed: <reason>`: the attempt itself failed. A locked
+  Keychain is retried every 30 seconds for 5 minutes, then less often.
+
+Before 0.8.6 none of this was logged, and a serving account with an expired
+token sent its first prompts on Home's own login until a refresh finished.
+
 ## An account shows another account's email
 
 Before 0.8.3, `chottag login` ran `claude` through chottag's own shim; before

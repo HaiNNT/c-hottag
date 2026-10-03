@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/cli"
+	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/session"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
@@ -143,7 +144,7 @@ func TestStatuslineJSONShapes(t *testing.T) {
 	home, port := statuslineEnv(t, true, map[int]int{os.Getppid(): os.Getpid()})
 	registerLive(t, home, os.Getpid(), port)
 	_, out, _ := runHome(t, home, "statusline", "--json")
-	want := `{"version":1,"ok":true,"warnings":[],"session":"routed","daemon":"up","serving":"work","account":"work","okAccounts":2,"rotationAccounts":2}`
+	want := `{"version":1,"ok":true,"warnings":[],"session":"routed","daemon":"up","serving":"work","account":"work","okAccounts":2,"rotationAccounts":2,"remote":"other"}`
 	if compact(t, out) != want {
 		t.Fatalf("routed json = %s", out)
 	}
@@ -280,7 +281,7 @@ func TestStatuslineV2FullLine(t *testing.T) {
 		status.Account{Name: "work", Usage: usageOf(now, 41.6, 18.2, now.Add(7*time.Hour), now.Add(50*time.Hour))},
 		status.Account{Name: "other", Limited: true, LimitedUntil: now.Add(time.Hour)})
 	_, out, _ := runHome(t, home, "statusline")
-	if want := "c» work · 5h 42% · 7d 18% · ↻ 19:00 · 1/2 ok\n"; out != want {
+	if want := "c» work · 5h 42% · 7d 18% · ↻ 7h · 1/2 ok\n"; out != want {
 		t.Fatalf("got %q want %q", out, want)
 	}
 	_, jout, _ := runHome(t, home, "statusline", "--json")
@@ -301,10 +302,10 @@ func TestStatuslineResetRule(t *testing.T) {
 		r5, r7 time.Duration
 		want   string
 	}{
-		{"low 5h takes the earlier", 10, 3 * time.Hour, 2 * time.Hour, "↻ 14:00"},
-		{"at 80 takes the 5h reset", 80, 5 * time.Hour, 2 * time.Hour, "↻ 17:00"},
-		{"above 24h prints the weekday", 10, 30 * time.Hour, 60 * time.Hour, "↻ Fri 18:00"},
-		{"only 7d known", 10, 0, 3 * time.Hour, "↻ 15:00"},
+		{"low 5h takes the earlier", 10, 3 * time.Hour, 2 * time.Hour, "↻ 2h"},
+		{"at 80 takes the 5h reset", 80, 5 * time.Hour, 2 * time.Hour, "↻ 5h"},
+		{"a day or more prints the weekday", 10, 30 * time.Hour, 60 * time.Hour, "↻ Fri 18:00"},
+		{"only 7d known", 10, 0, 3 * time.Hour, "↻ 3h"},
 		{"none known", 10, 0, 0, ""},
 	}
 	for _, c := range cases {
@@ -499,7 +500,7 @@ func TestStatuslinePastFiveHourResetTakesSevenDay(t *testing.T) {
 	home, now := v2Env(t)
 	writeCache(t, home, status.Account{Name: "work", Usage: usageOf(now, 90, 5, now.Add(-time.Hour), now.Add(3*time.Hour))})
 	_, out, _ := runHome(t, home, "statusline")
-	if !strings.Contains(out, "↻ 15:00") {
+	if !strings.Contains(out, "↻ 3h") {
 		t.Fatalf("got %q", out)
 	}
 }
@@ -555,5 +556,169 @@ func TestStatuslineCmuxWithJSON(t *testing.T) {
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("calls = %v", *calls)
+	}
+}
+
+// The mod's card reads three more facts from --json (M8b): whether the
+// session's account is limited, the pool's last switch, and the pool's remote
+// account with its token state.
+func TestStatuslineJSONCarriesLimitedSwitchAndRemote(t *testing.T) {
+	home, now := v2Env(t)
+	b, err := status.Marshal(status.File{
+		Accounts: []status.Account{
+			{Name: "work", Limited: true, Usage: usageOf(now, 100, 20, now.Add(time.Hour), time.Time{})},
+			{Name: "other", Token: creds.StateNeedsLogin},
+		},
+		Auto: &status.Auto{LastSwitch: &status.AutoSwitch{From: "other", To: "work", Trigger: "limit", At: now.Add(-time.Minute)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := status.WriteBytes(status.Path(home), b); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ := runHome(t, home, "statusline", "--json")
+	var got struct {
+		Limited    bool `json:"limited"`
+		LastSwitch *struct {
+			Account string `json:"account"`
+			From    string `json:"from"`
+			Reason  string `json:"reason"`
+			At      string `json:"at"`
+		} `json:"lastSwitch"`
+		Remote      string `json:"remote"`
+		RemoteToken string `json:"remoteToken"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Limited || got.Remote != "other" || got.RemoteToken != "needs-login" {
+		t.Fatalf("json = %s", out)
+	}
+	if got.LastSwitch == nil || got.LastSwitch.Account != "work" || got.LastSwitch.From != "other" ||
+		got.LastSwitch.Reason != "limit" || got.LastSwitch.At != "2026-10-01T11:59:00Z" {
+		t.Fatalf("lastSwitch in %s", out)
+	}
+}
+
+// Nothing new appears for a plain healthy session: the fields are left out.
+func TestStatuslineJSONLeavesOutWhatIsUnknown(t *testing.T) {
+	home, now := v2Env(t)
+	writeCache(t, home, status.Account{Name: "work", Usage: usageOf(now, 10, 20, now.Add(time.Hour), time.Time{})})
+	_, out, _ := runHome(t, home, "statusline", "--json")
+	for _, k := range []string{`"limited"`, `"lastSwitch"`, `"remoteToken"`} {
+		if strings.Contains(out, k) {
+			t.Fatalf("%s present in %s", k, out)
+		}
+	}
+}
+
+// A pool's switch and remote are the pool's own, not the default pool's.
+func TestStatuslineJSONUsesThePoolsSwitchAndRemote(t *testing.T) {
+	home, port := poolStatuslineEnv(t)
+	t.Setenv("HTTPS_PROXY", fmt.Sprintf("http://chottag.work.%s:x@127.0.0.1:%d", poolSID, port))
+	b, err := status.Marshal(status.File{Auto: &status.Auto{
+		LastSwitch: &status.AutoSwitch{From: "x", To: "y", Trigger: "limit"},
+		Pools:      map[string]status.PoolAuto{"work": {LastSwitch: &status.AutoSwitch{From: "D", To: "C", Trigger: "threshold"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := status.WriteBytes(status.Path(home), b); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ := runHome(t, home, "statusline", "--json")
+	if !strings.Contains(out, `"from": "D"`) || !strings.Contains(out, `"reason": "threshold"`) || strings.Contains(out, `"from": "x"`) {
+		t.Fatalf("json = %s", out)
+	}
+}
+
+// The reset's brackets and their boundaries (R151), in a zone that is not UTC:
+// the clock's zone decides the wall time, not the cache's.
+func TestStatuslineResetBrackets(t *testing.T) {
+	zone := time.FixedZone("ICT", 7*3600)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, zone) // a Thursday
+	cases := []struct {
+		after time.Duration
+		want  string
+	}{
+		{30 * time.Second, "↻ <1m"},
+		{time.Minute, "↻ 1m"},
+		{59*time.Minute + 59*time.Second, "↻ 59m"}, // rounds down
+		{time.Hour, "↻ 1h"},
+		{3*time.Hour + 20*time.Minute + 59*time.Second, "↻ 3h20m"},
+		{3*time.Hour + 5*time.Minute, "↻ 3h05m"},
+		{24*time.Hour - time.Minute, "↻ 23h59m"},
+		{24 * time.Hour, "↻ Fri 12:00"},
+		{6*24*time.Hour - time.Minute, "↻ Wed 11:59"},
+		{6 * 24 * time.Hour, "↻ Oct 7 12:00"},
+		{9*24*time.Hour + 6*time.Hour, "↻ Oct 10 18:00"},
+	}
+	for _, c := range cases {
+		t.Run(c.want, func(t *testing.T) {
+			home, _ := v2Env(t)
+			t.Cleanup(cli.SetStatuslineNowForTest(func() time.Time { return now }))
+			writeCache(t, home, status.Account{Name: "work", Usage: usageOf(now, 10, 5, now.Add(c.after), time.Time{})})
+			_, out, _ := runHome(t, home, "statusline")
+			if !strings.Contains(out, c.want+" ") {
+				t.Fatalf("got %q want %q", out, c.want)
+			}
+		})
+	}
+}
+
+// --json gives each window's own reset (local, RFC 3339) and the window
+// nearer its switch point; a reset already past is left out.
+func TestStatuslineJSONCarriesBothResetsAndTheNearerWindow(t *testing.T) {
+	zone := time.FixedZone("ICT", 7*3600)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, zone)
+	home, _ := v2Env(t)
+	t.Cleanup(cli.SetStatuslineNowForTest(func() time.Time { return now }))
+	// 5h at 20% of a 5h switch point, 7d at 95%: the weekly window is nearer.
+	writeCache(t, home, status.Account{Name: "work", Usage: usageOf(now, 20, 95, now.Add(2*time.Hour), now.Add(50*time.Hour))})
+	_, out, _ := runHome(t, home, "statusline", "--json")
+	var got struct {
+		Five, Seven, Near string
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got.Five, _ = doc["fiveHourResetsAt"].(string)
+	got.Seven, _ = doc["sevenDayResetsAt"].(string)
+	got.Near, _ = doc["nearWindow"].(string)
+	if got.Five != "2026-10-01T14:00:00+07:00" || got.Seven != "2026-10-03T14:00:00+07:00" || got.Near != "7d" {
+		t.Fatalf("json = %s", out)
+	}
+
+	writeCache(t, home, status.Account{Name: "work", Usage: usageOf(now, 20, 5, now.Add(-time.Hour), now.Add(50*time.Hour))})
+	_, out, _ = runHome(t, home, "statusline", "--json")
+	if strings.Contains(out, "fiveHourResetsAt") || !strings.Contains(out, `"nearWindow": "5h"`) {
+		t.Fatalf("a past reset must be left out, and 20%% of 5h is nearer than 5%% of 7d: %s", out)
+	}
+}
+
+// "No remote" is said (remote: ""), so the mod can tell it from an older
+// chottag, which never says; and nothing is said while the daemon is down.
+func TestStatuslineJSONSaysNoRemoteExplicitly(t *testing.T) {
+	home, _ := v2Env(t)
+	if _, err := (store.Store{Dir: home}).Update(func(st *store.State) error { st.Remote = ""; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ := runHome(t, home, "statusline", "--json")
+	if !strings.Contains(out, `"remote": ""`) {
+		t.Fatalf("json = %s", out)
+	}
+	home2, port := statuslineEnv(t, false, map[int]int{os.Getppid(): os.Getpid()})
+	registerLive(t, home2, os.Getpid(), port)
+	_, out, _ = runHome(t, home2, "statusline", "--json")
+	if strings.Contains(out, `"remote"`) {
+		t.Fatalf("daemon down must not claim a remote state: %s", out)
 	}
 }

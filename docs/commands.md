@@ -908,7 +908,7 @@ is the serving account. It never changes anything.
 
 | Line | Meaning |
 |---|---|
-| `c» work · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok` | routed, the daemon answers; `work` is the account this session uses |
+| `c» work · 5h 42% · 7d 18% · ↻ 3h20m · 2/3 ok` | routed, the daemon answers; `work` is the account this session uses |
 | `c» C [work] · 5h 42% · …` | the same for a session in the pool `work` (`CHOTTAG_POOL=work`): `[work]` follows the account, only outside `default` |
 | `c» up` | routed, the daemon answers, but no account is serving |
 | `c» down` | routed, but the daemon does not answer |
@@ -919,9 +919,11 @@ mark in every state: `c» dev off`, `c» dev · work · 5h 3% · …`.
 
 - `5h NN%` and `7d NN%` are this session's account's usage, rounded; an unknown
   or stale value prints `–`.
-- `↻ HH:MM` is its next reset: the 5 h reset when the 5 h use is at or above
-  80 %, otherwise the earlier of the two known resets. Local time, or
-  `Mon 18:00` when more than 24 hours away. Left out when unknown.
+- `↻ 3h20m` is its next reset, as time left: the 5 h reset when the 5 h use is
+  at or above 80 %, otherwise the earlier of the two known resets. It reads
+  `↻ 42m` under an hour (rounded down; `↻ <1m` under a minute), `↻ 3h20m`
+  under a day (`↻ 3h` on the hour), `↻ Mon 18:00` within 6 days and
+  `↻ Oct 9 18:00` beyond that, in local time. Left out when unknown.
 - `n/m ok` is the accounts in rotation that are not limited, out of all
   accounts in rotation, counted in this session's pool. Left out when none is
   in rotation.
@@ -960,7 +962,19 @@ failure is ignored. `--cmux` combines with `--json`.
   "okAccounts": 2,
   "rotationAccounts": 3,
   "updateAvailable": "0.6.0",
-  "restartPending": "0.6.0"
+  "restartPending": "0.6.0",
+  "fiveHourResetsAt": "2026-10-01T19:00:00+07:00",
+  "sevenDayResetsAt": "2026-10-03T14:00:00+07:00",
+  "nearWindow": "5h",
+  "limited": true,
+  "lastSwitch": {
+    "account": "work",
+    "from": "other",
+    "reason": "limit",
+    "at": "2026-10-01T11:59:00+07:00"
+  },
+  "remote": "other",
+  "remoteToken": "needs-login"
 }
 ```
 
@@ -978,6 +992,18 @@ otherwise. `restartPending` is the installed version the daemon is not yet
 running (`daemon.restartPending` in `status`); the text form shows it as
 ` · ⟳0.6.1` after the update suffix. Both are shown only while the session is
 routed and the daemon is up.
+
+The last seven fields feed the [Claude Code mod](#claude-code-mod)'s card and
+notices, and are left out when unknown. `fiveHourResetsAt` and
+`sevenDayResetsAt` (RFC 3339, local) are the two windows' own resets, each
+left out once it is past; `resetsAt` stays the one the text line shows.
+`nearWindow` is `5h` or `7d`: the window whose use is closer to the account's
+switch point (the card draws it bold). `limited` is `true` while the
+session's account is limited. `lastSwitch` is the session's pool's last
+auto-switch: the account it moved to (`account`), the one it left (`from`),
+why (`reason`, `limit` or `threshold`) and when (`at`, RFC 3339).
+`remote` is the pool's remote account (`""` when it has none, left out when not known), and `remoteToken` its token state when
+that is `stale` or `needs-login`.
 
 ### `chottag doctor`
 
@@ -1575,6 +1601,131 @@ does not support `--json`.
 | `--log PATH` | request log |
 | `--claude PATH` | path to the real claude binary used to refresh a slot login (default: the cached real `claude`, else the one on PATH, looked up again on every refresh; never chottag's own shim) |
 | `--upstream-proxy URL` | route chottag's own upstream traffic through this proxy (e.g. `http://127.0.0.1:3128`) |
+
+## Claude Code mod
+
+The `chottag` plugin carries a **mod**: JavaScript that runs inside Claude
+Code 2.1.287 or newer (`plugin/hooks/`). It adds a guard for `/login` and
+`/logout`, a status card above the prompt, notices, and the `/ct`
+commands. It is only a view and a guard: the shim and the proxy decide which
+account serves a request, and nothing depends on the mod. An older Claude
+Code ignores it, and the skill still works. It does not run in `claude -p`,
+the VS Code chat or cloud sessions.
+
+It talks to chottag only through the CLI (`chottag statusline --json`,
+`chottag status` and the verbs below), so it never reads `~/.chottag`'s
+files, a slot or a token. It finds the binary as `chottag` on `PATH`, else
+`~/.chottag/bin/chottag` (`$CHOTTAG_HOME/bin/chottag` when that is set). A
+session counts as a chottag session when `HTTPS_PROXY`'s user name is
+`chottag`; the variable's value is never printed, logged or stored.
+
+### The `/ct` commands
+
+| Command | Runs | Shows |
+|---|---|---|
+| `/ct`, `/ct status` | `chottag status` | its text |
+| `/ct next` | `chottag next` (with `--pool P` in a session of pool `P`) | its text |
+| `/ct tag NAME` | `chottag tag NAME` (with `--pool P` likewise) | its text |
+| `/ct pool` | `chottag pool` | its text |
+| `/ct help`, or anything else | nothing | this list |
+
+`NAME` must be a valid account name, `[A-Za-z0-9][A-Za-z0-9._-]{0,31}` (so it
+can never read as an option, such as `--unpin`), or `/ct` prints the list. The
+arguments go to the CLI as an argument list, never through a shell. The name
+`/chottag` belongs to the skill, so the command is `/ct`.
+`next` and `tag` wait up to 15 seconds, and are never run a second time: if one
+times out, `/ct` says so and you check `/ct status`.
+
+### The `/login` guard
+
+In a chottag session, `/login` and `/logout` would change Claude Code's own
+login, not a chottag account, so the mod stops them and says:
+
+```text
+`/login` here would change Claude Code's own login (your Home account), not a chottag account. To add or repair a chottag account: `chottag login <name>` in a terminal. To change Home anyway: start a session with `CHOTTAG_BYPASS=1 claude`, or run `claude auth login` in a terminal.
+```
+
+`/logout` says the same with "log out of" in place of "change":
+
+```text
+`/logout` here would log out of Claude Code's own login (your Home account), not a chottag account. To add or repair a chottag account: `chottag login <name>` in a terminal. To change Home anyway: start a session with `CHOTTAG_BYPASS=1 claude`, or run `claude auth login` in a terminal.
+```
+
+There is no override inside the session. In a bypassed session
+(`CHOTTAG_BYPASS=1`) or one chottag does not route, both commands run as
+usual.
+
+### The card
+
+Above the prompt the mod draws a compact card with a blue bar on its left, and
+keeps what other mods draw under it. It is built from `chottag statusline
+--json` and refreshed every 15 seconds. The segments flow left to right, in
+this order, 3 spaces apart: the title, `Serving C`, the 5-hour window, the
+weekly window, the remote, the ready count and the update. A segment that does
+not fit starts the next row and is never split; a row is never padded or
+stretched, and none is wider than the band less 4 columns (Claude Code draws
+its `[-]` control at the top right). Two rows from 100 columns, three from 60:
+
+```text
+▌ c» chottag   Serving C   5-hour ██░░░░░░ 28% · resets in 3h 20m (01:40)   weekly █████░░░ 68% · resets Mon 18:00
+▌ Remote A · Remote Control, connectors and artifacts use it   1 of 3 accounts ready   update 0.9.1 available
+```
+
+```text
+▌ c» chottag   Serving C   5-hour 28% · resets in 3h 20m (01:40)
+▌ weekly 68% · resets Mon 18:00   Remote A · Remote Control, connectors and artifacts use it
+▌ 1 of 3 accounts ready   update 0.9.1 available
+```
+
+The richest variant that fits in that many rows is used: bars and full resets,
+then no bars, then short resets (`↻ 3h20m`). Otherwise, and below 60 columns, it
+is one line: `c» C · 5h 28% · 7d 68% · ↻ 3h20m`.
+
+- The title is `c» chottag`, with ` dev` after it for an install label and
+  ` · pool work` outside `default`.
+- `Serving C` is the session's account. `Serving + remote C` when one account
+  is both. When `spread` placed the session on another account it reads
+  `This session B  pool serves C`. `Remote A` names the account that owns
+  Remote Control, connectors and artifacts; with no remote account it reads
+  `Remote none (uses your own Claude login)`. A chottag older than 0.9.0 does
+  not report its remote account, so the card leaves the segment out.
+- Each window shows an 8-cell bar, the rounded percent (`–` when unknown) and
+  its reset. The window closer to its switch point is bold. An older chottag
+  reports one reset only, and cannot say which window it belongs to, so it is
+  its own segment after the windows: `next reset in 2h 10m (15:20)`.
+- A reset is in local time, in the system's 12- or 24-hour style: `in 42m`
+  under an hour (rounded down), `in 3h 20m (01:40)` under a day, `Mon 18:00`
+  within 6 days, `Oct 9, 18:00` beyond that. It counts down on every redraw.
+  A reset that is not known, or has passed, is left out.
+- The ready count is `N of M accounts ready`, with `update 0.9.1 available`
+  when there is one.
+- Colour: the left bar, the title and the account are chottag
+  blue (amber with a label); bars and percents are green below 70%, yellow
+  below 90% and red from 90%, and red while the account is limited.
+  `NO_COLOR` turns colour off.
+- Other states, as a one-row card: `c» chottag · down: the daemon is not
+  answering` (red), `c» chottag · off: this session is not routed through
+  chottag` (dim), `c» chottag · up: no account is serving` (dim), `c» …`
+  before the first refresh answers, and `c» ?` after three failed refreshes
+  (the last good card stays until then). With no chottag binary, nothing is drawn.
+
+If your own `statusLine` also runs `chottag statusline`, both show; drop
+either.
+
+### Notices
+
+The mod compares each refresh with the last one and shows a toast:
+
+| When | Text |
+|---|---|
+| The session's account changes | `chottag: now on C (was B: limit)` (the reason when chottag knows it) |
+| An update is available | `chottag 0.9.1 is available. Run: chottag update`, once per version per machine |
+| The remote account needs a login, or its token stays stale for 2 refreshes | `chottag: remote account A needs attention: run chottag login A`, at most once an hour per account |
+
+When a claude.ai connector call (`mcp__claude_ai_*`) comes back as an access
+refusal, the mod adds one line to the result Claude reads, *(chottag sent this
+connector call as account A, the remote account of pool default)*. If the
+result is not text, the same line is a toast.
 
 ## Error codes
 

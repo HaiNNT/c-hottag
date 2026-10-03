@@ -35,6 +35,17 @@ var proxyEnv = []string{
 	"NODE_EXTRA_CA_CERTS", "CLAUDE_CONFIG_DIR",
 }
 
+// authEnv names the variables that would override the slot's own login, or
+// make the child behave as a nested session instead of renewing that login
+// (R149): the daemon may be started from a shell that has them set, and a
+// refresh that ran on them would renew nothing in the slot. CLAUDE_CONFIG_DIR
+// is not here: ChildEnv sets it to the slot.
+var authEnv = []string{
+	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+	"CLAUDE_CODE_SESSION_KIND", "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION",
+}
+
 type Claude struct {
 	// Bin is the real claude binary (never chottag's shim).
 	Bin string
@@ -102,14 +113,15 @@ func (c Claude) Refresh(ctx context.Context, slotDir string) error {
 // ChildEnv is the environment a process reading or renewing the login in
 // slotDir must run with: the parent's environment, minus the proxy and CA
 // variables (so the child talks to Anthropic directly, never back through
-// chottag), plus CLAUDE_CONFIG_DIR pointed at the slot and CHOTTAG_BYPASS=1, so a child
+// chottag) and minus the auth and session variables that would override the
+// slot's login (authEnv), plus CLAUDE_CONFIG_DIR pointed at the slot and CHOTTAG_BYPASS=1, so a child
 // that still reaches chottag's claude shim execs the real binary with no
 // proxy (issue #2, R145).
 func ChildEnv(slotDir string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if !contains(proxyEnv, name) && name != "CHOTTAG_BYPASS" {
+		if !contains(proxyEnv, name) && !contains(authEnv, name) && name != "CHOTTAG_BYPASS" {
 			env = append(env, kv)
 		}
 	}

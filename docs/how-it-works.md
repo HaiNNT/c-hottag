@@ -268,9 +268,23 @@ with a shorter timeout may give up first. The same holds when `state.json`
 cannot be read. The safety net never resends such a request on Claude Code's
 own login either. Before 0.8.5 it did, so an object could act as the wrong
 account; the cost is in [Known limitations](known-limitations.md). The
-daemon also keeps every pool's remote account's token fresh: it refreshes it
+daemon also keeps each pool's remote and serving account's token fresh
+(since 0.8.6 the serving one too, so fewer prompts go out on Home's login
+after an expiry or a wake: the pass starts about 10 seconds after a wake, and
+a prompt sent before the refresh ends still goes out on Home's login; other
+rotating members and pinned accounts are not warmed): it refreshes a token
 when 6 minutes or less are left (Claude Code renews its token only inside the
-last 5), and skips an account that needs a login (logged once). A serving
+last 5), and skips an account that needs a login (logged once). Every refresh
+outcome is logged, one line each (`refresh C: renewed, expires in 7h59m
+(request, 5.2s)`; the same line at most every 10 minutes). A refresh that
+exits 0 at least three times in a row over at least 10 minutes without
+renewing the token makes the account `needs-login` (`chottag login C`); the
+daemon still probes it once every 15 minutes, and a renewal lifts that.
+`token: stale` on `chottag status` clears when the token renews. The refresh
+runs the slot's own `claude` with the auth and session variables
+(`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDECODE` and the like)
+removed from its environment, so the daemon's own shell cannot override the
+slot's login. A serving
 request is unchanged: with only `default`, one that cannot be served still
 goes out unchanged, and the daemon log says `chottag: sent on Home's own
 login: A's token is stale (serving)`.
@@ -279,3 +293,21 @@ Run `chottag pool` to see each pool's members, then log in again
 (`chottag login`), put an account back in rotation (`chottag rotate`), or add
 a member (`chottag pool join`). With only the `default` pool nothing changes:
 an unservable request still goes out on Claude Code's own login, as before.
+
+## The Claude Code mod
+
+The plugin also carries a mod, JavaScript that Claude Code 2.1.287 or newer
+runs inside the session ([Command reference](commands.md#claude-code-mod)). It
+is a view and a guard, not part of routing: the shim and the proxy still
+decide every request's account, and a session without the mod, or one run
+with `claude -p`, behaves the same.
+
+What it can see: the session's own environment (it tests the proxy variable's
+user name for `chottag`, and never keeps the value) and what
+`chottag statusline --json`, `chottag status` and the `chottag next`, `tag`
+and `pool` verbs print. What it cannot: it never reads `~/.chottag`, a slot's
+files or a token, and it only asks chottag to change something when you type
+`/ct next` or `/ct tag NAME`. It draws the status card above the prompt,
+shows a toast when the session's account changes, an update is out or the
+remote account needs a login, and stops `/login` and `/logout` in a chottag
+session, because there they would change Claude Code's own (Home) login.

@@ -153,10 +153,10 @@ func TestRemoteWarmerRefreshesEveryPoolsRemoteInsideTheWindow(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	fw := &fakeWarm{}
 	w, _ := warmRig(t, st, fw, &now)
-	w.pass(context.Background())
+	w.pass(context.Background(), false)
 	calls := fw.callsSnapshot()
-	if len(calls) != 2 {
-		t.Fatalf("calls = %+v, want A and W once each (deduplicated across pools)", calls)
+	if len(calls) != 3 {
+		t.Fatalf("calls = %+v, want A, S and W once each (deduplicated across pools)", calls)
 	}
 	seen := map[string]bool{}
 	for _, c := range calls {
@@ -165,7 +165,7 @@ func TestRemoteWarmerRefreshesEveryPoolsRemoteInsideTheWindow(t *testing.T) {
 			t.Fatalf("window = %v, want %v", c.within, creds.ExpiringWithin+time.Minute)
 		}
 	}
-	if !seen["/slots/A"] || !seen["/slots/W"] {
+	if !seen["/slots/A"] || !seen["/slots/W"] || !seen["/slots/S"] {
 		t.Fatalf("calls = %+v", calls)
 	}
 }
@@ -175,8 +175,8 @@ func TestRemoteWarmerSkipsANeedsLoginAccountAndLogsOnce(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	fw := &fakeWarm{status: map[string]creds.Status{"/slots/A": {State: creds.StateNeedsLogin}}}
 	w, buf := warmRig(t, st, fw, &now)
-	w.pass(context.Background())
-	w.pass(context.Background())
+	w.pass(context.Background(), false)
+	w.pass(context.Background(), false)
 	if n := strings.Count(buf.String(), "A needs login"); n != 1 {
 		t.Fatalf("logged %d times, want once: %q", n, buf.String())
 	}
@@ -184,11 +184,11 @@ func TestRemoteWarmerSkipsANeedsLoginAccountAndLogsOnce(t *testing.T) {
 	fw.mu.Lock()
 	fw.status = nil
 	fw.mu.Unlock()
-	w.pass(context.Background())
+	w.pass(context.Background(), false)
 	fw.mu.Lock()
 	fw.status = map[string]creds.Status{"/slots/A": {State: creds.StateNeedsLogin}}
 	fw.mu.Unlock()
-	w.pass(context.Background())
+	w.pass(context.Background(), false)
 	if n := strings.Count(buf.String(), "A needs login"); n != 2 {
 		t.Fatalf("logged %d times after recovery, want 2: %q", n, buf.String())
 	}
@@ -205,14 +205,14 @@ func TestRemoteWarmerKickIsRateLimitedAndSingleFlight(t *testing.T) {
 	w.wait()
 	w.kick(ctx)
 	w.wait()
-	if n := len(fw.callsSnapshot()); n != 1 {
-		t.Fatalf("calls = %d inside a minute, want 1", n)
+	if n := len(fw.callsSnapshot()); n != 2 { // one pass: the remote A and the serving S
+		t.Fatalf("calls = %d inside a minute, want 2", n)
 	}
 	now = now.Add(time.Minute)
 	w.kick(ctx)
 	w.wait()
-	if n := len(fw.callsSnapshot()); n != 2 {
-		t.Fatalf("calls = %d after a minute, want 2", n)
+	if n := len(fw.callsSnapshot()); n != 4 {
+		t.Fatalf("calls = %d after a minute, want 4", n)
 	}
 }
 
@@ -442,14 +442,235 @@ func TestRemoteWarmerKickSkipsWhileAPassRunsAndAfterCancel(t *testing.T) {
 	if !w.stop(time.Minute) {
 		t.Fatal("stop did not see the pass finish")
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("calls = %d, want 1", calls.Load())
+	if calls.Load() != 2 { // the one pass: A, then S
+		t.Fatalf("calls = %d, want 2", calls.Load())
 	}
 	now = now.Add(5 * time.Minute)
 	cancel()
 	w.kick(ctx)
 	w.wait()
-	if calls.Load() != 1 {
+	if calls.Load() != 2 {
 		t.Fatalf("a pass started after cancel: calls = %d", calls.Load())
+	}
+}
+
+// R149: a serving account is warmed too, in the same window.
+func TestWarmerWarmsTheServingAccountToo(t *testing.T) {
+	st := staleRemoteState()
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	fw := &fakeWarm{}
+	w, _ := warmRig(t, st, fw, &now)
+	w.pass(context.Background(), false)
+	dirs := map[string]time.Duration{}
+	for _, c := range fw.callsSnapshot() {
+		dirs[c.dir] = c.within
+	}
+	if dirs["/slots/S"] != warmWindow || dirs["/slots/A"] != warmWindow || len(dirs) != 2 {
+		t.Fatalf("warmed %v, want S and A in the %v window", dirs, warmWindow)
+	}
+}
+
+// R149: a wake schedules a warm pass wakeWarmDelay later, with the wake
+// trigger, and it runs past the one-a-minute limit.
+func TestWarmerWakePassRunsAfterTheDelayWithTheWakeTrigger(t *testing.T) {
+	st := staleRemoteState()
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	fw := &fakeWarm{}
+	w, _ := warmRig(t, st, fw, &now)
+	var wakeCalls atomic.Int32
+	w.wakeWarm = func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
+		wakeCalls.Add(1)
+		return fw.warm(ctx, dir, within)
+	}
+	var fire func()
+	var delay time.Duration
+	w.after = func(d time.Duration, f func()) *time.Timer {
+		delay, fire = d, f
+		return time.NewTimer(time.Hour)
+	}
+	ctx := context.Background()
+	w.kick(ctx) // a pass just ran, inside the minute
+	w.wait()
+	w.wake(ctx)
+	if delay != wakeWarmDelay || fire == nil {
+		t.Fatalf("scheduled after %v (fire set: %v), want %v", delay, fire != nil, wakeWarmDelay)
+	}
+	if wakeWarmDelay != 10*time.Second {
+		t.Fatalf("wakeWarmDelay = %v, want 10s", wakeWarmDelay)
+	}
+	fire()
+	w.wait()
+	if n := wakeCalls.Load(); n != 2 {
+		t.Fatalf("wake calls = %d, want 2 (A and S)", n)
+	}
+	if n := len(fw.callsSnapshot()); n != 4 {
+		t.Fatalf("calls = %d, want 4 (one kick pass, one wake pass)", n)
+	}
+}
+
+// A wake pass asked for while a pass runs follows it; it is never two
+// passes at once.
+func TestWarmerWakePassFollowsARunningPass(t *testing.T) {
+	st := staleRemoteState()
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	var running, maxRunning, wakeCalls atomic.Int32
+	enter := func() {
+		n := running.Add(1)
+		for {
+			m := maxRunning.Load()
+			if n <= m || maxRunning.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		entered <- struct{}{}
+		<-release
+		running.Add(-1)
+	}
+	w := &remoteWarmer{
+		state: func() (store.State, error) { return st, nil },
+		warm: func(context.Context, string, time.Duration) (creds.Status, bool) {
+			enter()
+			return creds.Status{State: creds.StateOK}, false
+		},
+		wakeWarm: func(context.Context, string, time.Duration) (creds.Status, bool) {
+			wakeCalls.Add(1)
+			return creds.Status{State: creds.StateOK}, false
+		},
+		log: io.Discard, now: func() time.Time { return now },
+	}
+	ctx := context.Background()
+	w.kick(ctx)
+	<-entered
+	w.start(ctx, true) // wake while the pass is blocked
+	close(release)
+	w.wait()
+	if wakeCalls.Load() != 2 {
+		t.Fatalf("wake calls = %d, want 2 after the running pass", wakeCalls.Load())
+	}
+	if maxRunning.Load() != 1 {
+		t.Fatalf("%d passes at once", maxRunning.Load())
+	}
+}
+
+func TestWarmerWakeAfterStopSchedulesNothing(t *testing.T) {
+	st := staleRemoteState()
+	now := time.Now()
+	w, _ := warmRig(t, st, &fakeWarm{}, &now)
+	scheduled := false
+	w.after = func(time.Duration, func()) *time.Timer { scheduled = true; return time.NewTimer(time.Hour) }
+	w.stop(time.Second)
+	w.wake(context.Background())
+	if scheduled {
+		t.Fatal("a wake after stop scheduled a pass")
+	}
+	var nilW *remoteWarmer
+	nilW.wake(context.Background())
+}
+
+// R149: the warm pass also probes a slot the token manager locked out, even
+// when its account is neither serving nor remote, and a renewal unlocks it.
+func TestWarmerProbesALockedOutRotatingMember(t *testing.T) {
+	var mu sync.Mutex
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	var renewed atomic.Bool
+	var refreshes atomic.Int32
+	slot := &e2eSlot{tok: creds.Token{AccessToken: "t", ExpiresAt: now.Add(-time.Minute)}}
+	slot.refresh = func(s *e2eSlot) error {
+		refreshes.Add(1)
+		if renewed.Load() {
+			s.tok = creds.Token{AccessToken: "t2", ExpiresAt: clock().Add(8 * time.Hour)}
+		}
+		return nil
+	}
+	tm := tokens.New(tokens.Config{
+		Read: slot.read, Refresh: slot, Now: clock,
+		LockPath: func(dir string) string { return dir + "/.lock" },
+		TryLock:  func(string) (func() error, bool, error) { return func() error { return nil }, true, nil },
+	})
+	st := store.State{
+		Serving: "S", Remote: "A",
+		Accounts: []store.Account{{Name: "S", Dir: "/slots/S"}, {Name: "A", Dir: "/slots/A"}, {Name: "M", Dir: "/slots/M"}},
+	}
+	buf := newSyncBuf()
+	w := &remoteWarmer{
+		state: func() (store.State, error) { return st, nil },
+		warm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
+			if dir != "/slots/M" {
+				return creds.Status{State: creds.StateOK}, false
+			}
+			return tm.Warm(ctx, dir, within)
+		},
+		probe: tm.LockedOut,
+		log:   buf, now: clock,
+	}
+	// Lock M out directly through the manager (as its own refreshes would).
+	for i := 0; i < 3; i++ {
+		advance(6 * time.Minute)
+		tm.Warm(context.Background(), "/slots/M", warmWindow)
+	}
+	if got := tm.LockedOut(); len(got) != 1 || got[0] != "/slots/M" {
+		t.Fatalf("LockedOut = %v", got)
+	}
+	before := refreshes.Load()
+	advance(16 * time.Minute)
+	w.pass(context.Background(), false) // M is neither serving nor remote
+	if refreshes.Load() != before+1 {
+		t.Fatalf("refreshes = %d, want one probe of M", refreshes.Load()-before)
+	}
+	if !strings.Contains(buf.String(), "account M needs login") || !strings.Contains(buf.String(), "probed every 15m") {
+		t.Fatalf("log = %q, want the probe wording", buf.String())
+	}
+	renewed.Store(true)
+	advance(16 * time.Minute)
+	w.pass(context.Background(), false)
+	if got := tm.LockedOut(); len(got) != 0 {
+		t.Fatalf("still locked out after a renewing probe: %v", got)
+	}
+}
+
+// An account removed from the roster while locked out is not probed any more,
+// and nothing more is logged for it.
+func TestWarmerStopsProbingALockedOutAccountTheRosterDropped(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	var refreshes atomic.Int32
+	slot := &e2eSlot{tok: creds.Token{AccessToken: "t", ExpiresAt: now.Add(-time.Minute)}}
+	slot.refresh = func(*e2eSlot) error { refreshes.Add(1); return nil }
+	tm := tokens.New(tokens.Config{
+		Read: slot.read, Refresh: slot, Now: func() time.Time { return now },
+		LockPath: func(dir string) string { return dir + "/.lock" },
+		TryLock:  func(string) (func() error, bool, error) { return func() error { return nil }, true, nil },
+	})
+	st := store.State{
+		Serving: "S", Remote: "A",
+		Accounts: []store.Account{{Name: "S", Dir: "/slots/S"}, {Name: "A", Dir: "/slots/A"}, {Name: "M", Dir: "/slots/M"}},
+	}
+	buf := newSyncBuf()
+	w := &remoteWarmer{
+		state: func() (store.State, error) { return st, nil },
+		warm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
+			if dir != "/slots/M" {
+				return creds.Status{State: creds.StateOK}, false
+			}
+			return tm.Warm(ctx, dir, within)
+		},
+		probe: tm.LockedOut, log: buf, now: func() time.Time { return now },
+	}
+	for i := 0; i < 3; i++ {
+		now = now.Add(6 * time.Minute)
+		tm.Warm(context.Background(), "/slots/M", warmWindow)
+	}
+	if len(tm.LockedOut()) != 1 {
+		t.Fatal("setup: M is not locked out")
+	}
+	st.Accounts = st.Accounts[:2] // M is removed
+	before, logged := refreshes.Load(), buf.String()
+	now = now.Add(16 * time.Minute)
+	w.pass(context.Background(), false)
+	if refreshes.Load() != before || buf.String() != logged {
+		t.Fatalf("a removed account was probed or logged about: %d refreshes, log %q", refreshes.Load()-before, buf.String())
 	}
 }

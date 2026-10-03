@@ -5,3 +5,4 @@ bin/
 dist/
 __pycache__/
 CLAUDE.local.md
+plugin/tsconfig.json

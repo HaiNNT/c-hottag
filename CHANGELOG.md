@@ -7,6 +7,26 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.9.0] - 2026-10-03
+
+### Added
+
+- The plugin's mod (Claude Code 2.1.287 or newer): a status card above the prompt (serving and remote accounts, both usage windows with their resets in local time), notices for a switch, an update or a remote account that needs a login, the `/ct` commands (`status`, `next`, `tag NAME`, `pool`, `help`), and a guard that stops `/login` and `/logout` in a chottag session.
+- `chottag statusline --json` has `limited`, `lastSwitch`, `remote`, `remoteToken`, `fiveHourResetsAt`, `sevenDayResetsAt` and `nearWindow`.
+- The daemon log says what every token refresh did (`refresh C: renewed, expires in 7h59m (request, 5.2s)`, `claude exited 0 but the token is still expired`, `failed: <reason>`), the same line at most every 10 minutes.
+- A refresh that exits 0 at least three times in a row, over at least 10 minutes, without renewing the token makes the account `needs-login` (`chottag login C`), with a notice; the daemon still probes it every 15 minutes, and a renewal lifts it. A locked Keychain is retried every 30 seconds for 5 minutes, then with the usual backoff.
+- The daemon keeps each pool's serving account's token fresh too, and runs a warm pass about 10 seconds after a wake from sleep, so fewer prompts go out on Home's own login.
+
+### Changed
+
+- `chottag statusline`'s `↻` shows the time left (`↻ 42m`, `↻ 3h20m`, `↻ Mon 18:00`, `↻ Oct 9 18:00`) instead of a clock time.
+
+### Fixed
+
+- `token: stale` on `chottag status` clears when the token renews or a request goes out as that account again, instead of staying until a passthrough replaced it.
+- The token refresh runs without the daemon's own auth and session variables (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, the Bedrock and Vertex switches, `CLAUDE_CODE_SESSION_KIND`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`), so they cannot override the slot's login.
+  See [release notes](docs/release-notes/v0.9.0.md).
+
 ## [0.8.5] - 2026-10-02
 
 ### Fixed
@@ -316,6 +336,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.9.0]: docs/release-notes/v0.9.0.md
 [0.8.5]: docs/release-notes/v0.8.5.md
 [0.8.4]: docs/release-notes/v0.8.4.md
 [0.8.3]: docs/release-notes/v0.8.3.md

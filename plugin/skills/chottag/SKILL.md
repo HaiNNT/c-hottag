@@ -58,7 +58,8 @@ Without arguments, work out what the user wants and use "Common tasks".
    Home in or out, not a chottag account. (`claude auth ...` and `claude
    setup-token` typed in a terminal skip chottag on their own; only a
    `/login` inside a session needs that session started with
-   `CHOTTAG_BYPASS=1 claude`.)
+   `CHOTTAG_BYPASS=1 claude`. On Claude Code 2.1.287 or newer the plugin's
+   mod already stops both in a chottag session; see "The mod".)
 4. **`tag` and `next` take effect from the session's next request.** They
    change the account for every Claude Code session started through chottag's
    `claude` shim (its `HTTPS_PROXY` names `127.0.0.1`), including this one if
@@ -184,8 +185,8 @@ the `pool add`). Once a pool exists the shim also refuses every session,
 | the user wants | run |
 |---|---|
 | which account is serving, usage, limits | `chottag status --json` |
-| which account is this session on, or what each live session uses | `chottag statusline --json` (`account`: this session's own account; `serving`: its pool's; `pool`: the pool, outside `default`); `chottag status --json` lists every live session in `sessions[]` |
-| show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <this session's account> · 5h 42% · 7d 18% · ↻ 19:00 · 2/3 ok`, with `[pool]` after the account outside `default`, `c» down` or `c» off`; never fails) |
+| which account is this session on, or what each live session uses | `chottag statusline --json` (`account`: this session's own account; `serving`: its pool's; `pool`: the pool, outside `default`; also `limited`, `lastSwitch` {`account`, `from`, `reason`}, `remote`, `remoteToken`, `fiveHourResetsAt`, `sevenDayResetsAt` and `nearWindow`, each left out when unknown); `chottag status --json` lists every live session in `sessions[]` |
+| show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <this session's account> · 5h 42% · 7d 18% · ↻ 3h20m · 2/3 ok`, `↻` the time left to the next reset (`42m`, `3h20m`, `Mon 18:00`, `Oct 9 18:00`), with `[pool]` after the account outside `default`, `c» down` or `c» off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
 | spread sessions over accounts / pin new sessions | `chottag policy spread --json` (asks first: it changes how every new session is placed, and is not pre-approved); `chottag tag <name> --json` then pins new sessions to it (the pin is for new sessions only; on a rotation-off account it warns and is ignored); `chottag tag --unpin --json` clears the pin; `chottag policy serial --json` goes back to one serving account. Under spread `chottag next` is refused (`spread_next`) |
@@ -289,6 +290,29 @@ also switches the update check off.
   there, not at a top-level `checks`, to find them. Report the `problem` rows
   with their hints. `--fix` repairs only what is safe; the rest need the
   hinted command.
+
+## The mod
+
+On Claude Code 2.1.287 or newer this plugin also carries a mod (a view and a
+guard; nothing depends on it). It draws a status card above the prompt
+(the serving and remote accounts, both usage windows with their resets, how
+many accounts are ready), shows a toast when the session's account changes, an
+update is out or the remote account needs a login, and adds the `/ct`
+commands the user types themselves:
+
+- `/ct`, `/ct status`: `chottag status`
+- `/ct next`: `chottag next` (with `--pool P` in a session of pool `P`)
+- `/ct tag NAME`: `chottag tag NAME` (with `--pool P` likewise)
+- `/ct pool`: `chottag pool`
+- `/ct help`: the list
+
+In a chottag session it also stops `/login` and `/logout`: "`/login` here would
+change Claude Code's own login (your Home account), not a chottag account. To
+add or repair a chottag account: `chottag login <name>` in a terminal. To
+change Home anyway: start a session with `CHOTTAG_BYPASS=1 claude`, or run
+`claude auth login` in a terminal." If the user sees that, point them at
+`chottag login <name>`; don't try to get around it. The status line below is
+only needed on an older Claude Code, or when the user also wants it there.
 
 ## Status line
 

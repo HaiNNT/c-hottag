@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/autoswitch"
 	"github.com/HaiNNT/c-hottag/internal/brand"
+	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/session"
 	"github.com/HaiNNT/c-hottag/internal/shim"
@@ -105,22 +107,48 @@ type statuslineResult struct {
 	Pool string `json:"pool,omitempty"`
 	// Account is the account this session uses: its own, once the daemon has
 	// seen it make an inference request, else the serving account.
-	Account          string   `json:"account,omitempty"`
-	Label            string   `json:"label,omitempty"`
-	FiveHourPct      *float64 `json:"fiveHourPct,omitempty"`
-	SevenDayPct      *float64 `json:"sevenDayPct,omitempty"`
-	ResetsAt         string   `json:"resetsAt,omitempty"`
-	OKAccounts       *int     `json:"okAccounts,omitempty"`
-	RotationAccounts *int     `json:"rotationAccounts,omitempty"`
+	Account     string   `json:"account,omitempty"`
+	Label       string   `json:"label,omitempty"`
+	FiveHourPct *float64 `json:"fiveHourPct,omitempty"`
+	SevenDayPct *float64 `json:"sevenDayPct,omitempty"`
+	ResetsAt    string   `json:"resetsAt,omitempty"`
+	// FiveHourResetsAt and SevenDayResetsAt are the two windows' own resets
+	// (RFC 3339, local), each left out when unknown or already past; the card
+	// shows both. NearWindow is "5h" or "7d": the window closer to its switch
+	// point (the card bolds it).
+	FiveHourResetsAt string `json:"fiveHourResetsAt,omitempty"`
+	SevenDayResetsAt string `json:"sevenDayResetsAt,omitempty"`
+	NearWindow       string `json:"nearWindow,omitempty"`
+	OKAccounts       *int   `json:"okAccounts,omitempty"`
+	RotationAccounts *int   `json:"rotationAccounts,omitempty"`
 	// UpdateAvailable is the newer release the daemon found, shown only
 	// while this session is routed and the daemon is up.
 	UpdateAvailable string `json:"updateAvailable,omitempty"`
 	// RestartPending is the installed version the running daemon is not yet
 	// using (R126), shown under the same conditions as UpdateAvailable.
 	RestartPending string `json:"restartPending,omitempty"`
+	// Limited is set while the session's account is limited (the card turns
+	// its figures red). The facts below are for the mod's notices (M8b).
+	Limited bool `json:"limited,omitempty"`
+	// LastSwitch is the pool's last auto-switch: the account it moved to,
+	// the one it left and why ("limit" or "threshold").
+	LastSwitch *statuslineSwitch `json:"lastSwitch,omitempty"`
+	// Remote is the pool's remote account: "" when it has none, and left out
+	// when not computed (not routed, daemon down). A pointer so the mod can
+	// tell "no remote" (0.9.0 and later) from an older chottag that never
+	// says. RemoteToken is its token state when that is not healthy ("stale",
+	// "needs-login").
+	Remote      *string `json:"remote,omitempty"`
+	RemoteToken string  `json:"remoteToken,omitempty"`
 
-	limited bool
-	resets  time.Time
+	resets time.Time
+}
+
+type statuslineSwitch struct {
+	Account string `json:"account"`
+	From    string `json:"from"`
+	Reason  string `json:"reason"`
+	At      string `json:"at,omitempty"`
 }
 
 // runStatusline prints one line for Claude Code's status line: whether this
@@ -181,7 +209,7 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 			v = strconv.Itoa(int(math.Round(*pct))) + "%"
 		}
 		f := name + " " + v
-		if rep.limited {
+		if rep.Limited {
 			f = brand.PaintLimited(f, mode)
 		}
 		return f
@@ -196,12 +224,7 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 	}
 	parts := append(first, field("5h", rep.FiveHourPct), field("7d", rep.SevenDayPct))
 	if rep.ResetsAt != "" {
-		now := statuslineNow()
-		layout := "15:04"
-		if rep.resets.Sub(now) > 24*time.Hour {
-			layout = "Mon 15:04"
-		}
-		parts = append(parts, "\u21bb "+rep.resets.In(now.Location()).Format(layout))
+		parts = append(parts, "\u21bb "+shortReset(rep.resets, statuslineNow()))
 	}
 	if rep.RotationAccounts != nil && rep.OKAccounts != nil {
 		parts = append(parts, fmt.Sprintf("%d/%d ok", *rep.OKAccounts, *rep.RotationAccounts))
@@ -213,6 +236,30 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 		parts = append(parts, "\u27f3"+rep.RestartPending)
 	}
 	return strings.Join(parts, " \u00b7 ")
+}
+
+// shortReset is how long until at, in the status line's short form and in
+// now's zone: "42m" under an hour (rounded down; "<1m" under a minute),
+// "3h20m" under a day, "Mon 18:00" within 6 days, "Oct 9 18:00" beyond. The
+// card in the Claude Code mod shows the same brackets in long form.
+func shortReset(at, now time.Time) string {
+	at = at.In(now.Location())
+	d := at.Sub(now)
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 24*time.Hour:
+		h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
+		if m == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh%02dm", h, m)
+	case d < 6*24*time.Hour:
+		return at.Format("Mon 15:04")
+	}
+	return at.Format("Jan 2 15:04")
 }
 
 // pillName keeps only [A-Za-z0-9_-] of a workspace id for a file name.
@@ -286,6 +333,7 @@ func statuslineCheck(h string) statuslineResult {
 	f, _ := status.Load(status.Path(h)) // a missing cache is not an error
 	rep.Account = sessionAccount(f, sid, serving)
 	fillUsage(&rep, st, pool, f)
+	fillNotices(&rep, st, pool, f)
 	if rep.Account != "" {
 		rep.UpdateAvailable = availableUpdate(f)
 		if f.Daemon != nil {
@@ -306,6 +354,38 @@ func sessionAccount(f status.File, sid, serving string) string {
 		}
 	}
 	return serving
+}
+
+// fillNotices adds what the mod's notices compare between refreshes: the
+// pool's last switch, its remote account and that account's token state when
+// it is not healthy. Unknown values stay unset.
+func fillNotices(rep *statuslineResult, st store.State, pool string, f status.File) {
+	if f.Auto != nil {
+		ls := f.Auto.LastSwitch
+		if pool != store.DefaultPool {
+			ls = nil
+			if p, ok := f.Auto.Pools[pool]; ok {
+				ls = p.LastSwitch
+			}
+		}
+		if ls != nil {
+			sw := &statuslineSwitch{Account: ls.To, From: ls.From, Reason: ls.Trigger}
+			if !ls.At.IsZero() {
+				sw.At = ls.At.In(statuslineNow().Location()).Format(time.RFC3339)
+			}
+			rep.LastSwitch = sw
+		}
+	}
+	remote := st.PoolOf(pool).Remote
+	rep.Remote = &remote
+	if remote == "" {
+		return
+	}
+	for _, a := range f.Accounts {
+		if strings.EqualFold(a.Name, remote) && (a.Token == creds.StateStale || a.Token == creds.StateNeedsLogin) {
+			rep.RemoteToken = string(a.Token)
+		}
+	}
 }
 
 // fillUsage adds the serving account's usage, its next reset and the pool
@@ -336,7 +416,7 @@ func fillUsage(rep *statuslineResult, st store.State, pool string, f status.File
 	if !found {
 		return
 	}
-	rep.limited = a.Limited && (a.LimitedUntil.IsZero() || a.LimitedUntil.After(now))
+	rep.Limited = a.Limited && (a.LimitedUntil.IsZero() || a.LimitedUntil.After(now))
 	if a.Usage == nil || !f.Fresh(rep.Account, now) {
 		return
 	}
@@ -352,6 +432,13 @@ func fillUsage(rep *statuslineResult, st store.State, pool string, f status.File
 	if u.SevenDayResetsAt.After(now) {
 		seven = u.SevenDayResetsAt
 	}
+	if !five.IsZero() {
+		rep.FiveHourResetsAt = five.In(now.Location()).Format(time.RFC3339)
+	}
+	if !seven.IsZero() {
+		rep.SevenDayResetsAt = seven.In(now.Location()).Format(time.RFC3339)
+	}
+	rep.NearWindow = nearWindow(st, rep.Account, u)
 	var at time.Time
 	switch {
 	case !five.IsZero() && u.FiveHourPct != nil && *u.FiveHourPct >= 80:
@@ -422,4 +509,29 @@ func liveAncestor(h string) (session.Session, bool) {
 		pid = next
 	}
 	return session.Session{}, false
+}
+
+// nearWindow is the window ("5h" or "7d") whose use is closest to the account's
+// switch point, or "" when no use is known. A tie is the 5h window.
+func nearWindow(st store.State, account string, u *status.Usage) string {
+	tier := autoswitch.TierMax5x
+	for _, a := range st.Accounts {
+		if strings.EqualFold(a.Name, account) {
+			tier = tierOf(a)
+		}
+	}
+	p := autoParams(st)
+	best, bestGap := "", math.Inf(1)
+	for _, w := range []struct {
+		win autoswitch.Window
+		pct *float64
+	}{{autoswitch.Win5h, u.FiveHourPct}, {autoswitch.Win7d, u.SevenDayPct}} {
+		if w.pct == nil {
+			continue
+		}
+		if gap := float64(p.SwitchPoint(w.win, tier)) - *w.pct; gap < bestGap {
+			best, bestGap = string(w.win), gap
+		}
+	}
+	return best
 }

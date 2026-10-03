@@ -1,0 +1,1 @@
+{ "description": "chottag mod", "modules": ["./chottag-mod.js"] }

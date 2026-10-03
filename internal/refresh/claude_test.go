@@ -168,3 +168,42 @@ func TestChildEnvSetsBypassAndStillStripsTheProxy(t *testing.T) {
 		t.Errorf("CHOTTAG_BYPASS=1 appears %d times in %v, want once", bypass, env)
 	}
 }
+
+// R149: a daemon started from a shell that has an auth or session variable
+// set must not let it override the slot's own login.
+func TestChildEnvStripsAuthAndSessionVariables(t *testing.T) {
+	stripped := []string{
+		"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+		"CLAUDE_CODE_SESSION_KIND", "CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION",
+	}
+	for _, name := range stripped {
+		t.Setenv(name, "x")
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "/elsewhere")
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "1000")
+	t.Setenv("LANG", "en_US.UTF-8")
+
+	got := map[string]string{}
+	for _, kv := range refresh.ChildEnv("/slots/C") {
+		name, val, _ := strings.Cut(kv, "=")
+		got[name] = val
+	}
+	for _, name := range stripped {
+		if v, ok := got[name]; ok {
+			t.Errorf("%s survives as %q", name, v)
+		}
+	}
+	for name, want := range map[string]string{
+		"CLAUDE_CONFIG_DIR":             "/slots/C",
+		"CHOTTAG_BYPASS":                "1",
+		"PATH":                          "/usr/bin",
+		"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "1000",
+		"LANG":                          "en_US.UTF-8",
+	} {
+		if got[name] != want {
+			t.Errorf("%s = %q, want %q", name, got[name], want)
+		}
+	}
+}

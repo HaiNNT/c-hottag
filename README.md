@@ -24,16 +24,13 @@ serving: B
 
 ## What it does
 
-- **Switching never breaks Remote Control, connectors or artifacts.** Most switchers swap your
-  whole login, so those claude.ai features break or vanish after a switch. chottag pins them to
-  one account (`chottag remote <name>`) and switches only the account that pays for your prompts.
+- **Switching never breaks Remote Control, connectors or artifacts.** Most switchers swap your whole login, so those claude.ai features break or vanish after a switch. chottag pins them to one account (`chottag remote <name>`) and switches only the account that pays for your prompts.
 - **Several logins side by side.** Each account has its own Claude Code config dir (a *slot*). Your own `~/.claude` login is never changed.
 - **Switch mid-session.** `chottag tag B` moves every chottag session to B from its next request: no logout, no restart.
 - **Auto-switch near a limit**, on by default, holding a warm prompt cache
   when a reset is close, and resending a request that hit a limit.
 - **Usage at a glance, and stays current.** `chottag status` shows each account's 5-hour and 7-day usage and limits, and an update check four times a day (shown in `status` and `statusline`, one notice per version), opt-in auto-install, and a daemon that restarts itself onto an installed update when idle ([Updating](docs/updating.md)).
-- **Local and scriptable.** A loopback proxy that needs a per-install
-  secret; account and status commands answer in `--json`.
+- **Local and scriptable.** A loopback proxy that needs a per-install secret; commands answer in `--json`. The plugin's mod (Claude Code 2.1.287 or newer) adds a status card above the prompt, `/ct` commands and a `/login` guard ([Claude Code mod](docs/commands.md#claude-code-mod)).
 
 **Status:** macOS is the supported platform. Linux builds and passes CI, but has not been used for real. Installing uses a logged-in `gh` or a clone.
 
