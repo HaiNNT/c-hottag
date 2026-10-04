@@ -100,6 +100,29 @@ The router gives every intercepted request one of three classes:
 - `untouched` — a request that must keep its own credential, or stay on
   Home's login, and is left alone.
 
+One serving request is sticky per session. A Claude Code session's own
+`POST /api/oauth/validate` (through the intercepted tunnel, not the
+`claude remote-control` server's, which is remote) is where Remote Control
+checks which account it is signed in as, and it stops when the answer is a
+different account from the one it pinned at start. So the first account that
+answers a session's validate keeps answering it for that session's life, even
+after the serving account moves, and chottag remembers it in
+`run/validate-sessions.json` under `CHOTTAG_HOME` (session id, account name,
+its email and last use, plus a bounded list of recently dropped entries,
+never a token; at most 500 sessions, none kept after 7 days unused), so a daemon restart keeps it. A recorded account whose
+token has gone stale is refreshed first (the same wait of up to 15 seconds as a
+remote request), and the warm loop keeps the accounts of sessions used in the
+last day fresh even when no pool serves them any more. Only when that account
+is no longer registered, was logged in again as another email, is not in the
+session's pool, has rotation off (outside the default pool), needs login, or
+cannot be refreshed does the request go out as the serving account instead,
+and `daemon.log` says `validate for session 1a2b3c4d moved from C to D: C needs
+login` (or `is no longer registered`, `was logged in again as another
+account`, `is not in pool P`, `has rotation off`, `could not refresh its
+login`). A session whose record was dropped (7 days unused, or pushed out by
+newer sessions) is pinned again to the serving account, with a line saying so.
+A session without an id keeps the plain serving rule.
+
 ## The owner map
 
 The first account to create a remote-control session, environment,

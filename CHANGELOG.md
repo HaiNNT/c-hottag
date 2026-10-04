@@ -7,6 +7,14 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.9.2] - 2026-10-04
+
+### Fixed
+
+- Remote Control no longer drops with "signed-in claude.ai account or organization changed" after the serving account moves or the daemon restarts. A session's `POST /api/oauth/validate` is answered by the same account for the session's life, remembered in `run/validate-sessions.json` (session ids, account names and emails, plus a bounded list of recently dropped entries; never a token; at most 500 sessions, 7 days). A stale token on that account is refreshed rather than given up on, and the accounts of sessions used in the last day are kept fresh. When the account is removed, logged in again as another email, out of the pool, rotation-off (outside default), needs login or cannot be refreshed, the serving account answers and `daemon.log` says `validate for session <sid8> moved from C to D: C <reason>`. A session started before the update can drop once more on its first validate.
+
+  See [release notes](docs/release-notes/v0.9.2.md).
+
 ## [0.9.1] - 2026-10-03
 
 ### Added
@@ -353,6 +361,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.9.2]: docs/release-notes/v0.9.2.md
 [0.9.1]: docs/release-notes/v0.9.1.md
 [0.9.0]: docs/release-notes/v0.9.0.md
 [0.8.5]: docs/release-notes/v0.8.5.md

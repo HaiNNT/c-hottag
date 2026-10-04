@@ -49,6 +49,19 @@ notice; a later `/v1/mcp_servers` listing on another account doesn't fix
 it (`owners.json` is first-writer-wins) — `chottag own <kind> <id>
 <account>` reassigns it.
 
+## Remote Control can still disconnect when a session's account is lost
+
+chottag keeps a session's validate answer on one account (see
+[how it works](how-it-works.md)), but if that account is removed, leaves the
+session's pool, has rotation off or needs a login (or its login cannot be
+refreshed), the answer moves to the serving account and
+Claude Code's Remote Control may stop with "signed-in account changed". Run
+`/rc` to reconnect. The same can happen once to a session that started before
+0.9.2, on its first validate after the update. chottag tells a re-login by the
+account's email, so a name logged in again under the same email but into
+another organization is not noticed, and the session may disconnect with no log
+line. See [troubleshooting](troubleshooting.md).
+
 ## Objects only Home's login can see
 
 A claude.ai object (artifact, Remote Control session, connector) that only

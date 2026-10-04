@@ -6,3 +6,4 @@ dist/
 __pycache__/
 CLAUDE.local.md
 plugin/tsconfig.json
+roadmap.html

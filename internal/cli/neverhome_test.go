@@ -674,3 +674,22 @@ func TestWarmerStopsProbingALockedOutAccountTheRosterDropped(t *testing.T) {
 		t.Fatalf("a removed account was probed or logged about: %d refreshes, log %q", refreshes.Load()-before, buf.String())
 	}
 }
+
+// R160: an account with a validate session used in the last day is kept fresh
+// too, though no pool names it any more.
+func TestRemoteWarmerAlsoWarmsAccountsWithRecentValidateSessions(t *testing.T) {
+	st := staleRemoteState()
+	st.Accounts = append(st.Accounts, store.Account{Name: "C", Dir: "/slots/C"})
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	fw := &fakeWarm{}
+	w, _ := warmRig(t, st, fw, &now)
+	w.sticky = func() []string { return []string{"C", "S", "Gone"} }
+	w.pass(context.Background(), false)
+	seen := map[string]int{}
+	for _, c := range fw.callsSnapshot() {
+		seen[c.dir]++
+	}
+	if len(seen) != 3 || seen["/slots/C"] != 1 || seen["/slots/S"] != 1 || seen["/slots/A"] != 1 {
+		t.Fatalf("warmed %v, want A, S and C once each (a removed account skipped)", seen)
+	}
+}

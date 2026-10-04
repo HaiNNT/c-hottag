@@ -44,3 +44,5 @@ test/
 !scripts/release
 !assets/logo/chottag.icns
 !assets/logo/chottag-dev.icns
+!scripts/roadmap-html
+!test/roadmaphtml/

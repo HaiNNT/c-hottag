@@ -112,6 +112,27 @@ chottag login A` (the log says `chottag: refused a remote request: A's token
 is stale; run `chottag login A` if it persists`); never Home's login. Run `chottag login
 A`.
 
+## Remote Control disconnected: signed-in account changed
+
+Claude Code stops Remote Control with "signed-in claude.ai account or
+organization changed on this machine" when its own validate call
+(`POST /api/oauth/validate`) is answered by a different account from the one
+it pinned when Remote Control started. Before 0.9.2 that call was served by
+whichever account was serving at that moment, so a pool move or a daemon
+restart (which restarts the usage-driven choice) could drop some sessions and
+leave others, and `/rc` reconnected them. From 0.9.2 chottag answers a
+session's validate with the same account for the session's life, also across
+a daemon restart. It only moves to the serving account when the first one
+cannot answer (removed, logged in again as another email, left the pool, has
+rotation off, needs login, or its login cannot be refreshed), and then
+`daemon.log` has a `validate for session ... moved from C to D: C <reason>`
+line; that session may still disconnect once, and `/rc` brings it back. A
+token that is only stale is refreshed first, so it is not a reason. A session
+that started before the update has no recorded account: its first validate
+after the update records whichever account is serving then, which may not be
+the one it pinned under the old daemon, so it can drop once more; run `/rc`
+once and it stays.
+
 ## An object returns 403 or 404 after 0.8.5
 
 A claude.ai object that only Home's login can see (one created before

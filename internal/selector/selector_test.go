@@ -332,3 +332,90 @@ func TestChooseAsReplacesOnlyTheServingAccount(t *testing.T) {
 		t.Errorf("Choose = %+v, want B", got)
 	}
 }
+
+func TestChooseNamedAnswersAsTheNamedAccountThroughTheBoundedWait(t *testing.T) {
+	aw := &fakeAwaiter{fakeTokens: fakeTokens{"/slots/C": "tok-C"}, awaitOK: true}
+	var events []selector.Event
+	sel := selector.New(selector.Config{State: func() (store.State, error) { return testState(), nil }, Tokens: aw, Owners: fakeOwners{},
+		OnEvent: func(e selector.Event) { events = append(events, e) }})
+	ch, why := sel.ChooseNamed(context.Background(), store.DefaultPool, "C")
+	if why != selector.WhyNone || ch.Account != "C" || ch.Token != "tok-C" {
+		t.Fatalf("ChooseNamed = %+v, %v", ch, why)
+	}
+	calls := aw.callsSnapshot()
+	if got := calls[len(calls)-1]; got.method != "Await" || !got.hasDL {
+		t.Fatalf("last token call = %+v, want a bounded Await", got)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events %+v, want none", events)
+	}
+}
+
+func TestChooseNamedGivesTypedReasons(t *testing.T) {
+	stateErr := func() (store.State, error) { return store.State{}, context.Canceled }
+	for _, tc := range []struct {
+		name   string
+		tokens *fakeAwaiter
+		state  func() (store.State, error)
+		acct   string
+		want   selector.Why
+	}{
+		{"not registered", &fakeAwaiter{awaitOK: true}, nil, "Nobody", selector.WhyNotRegistered},
+		{"needs login", &fakeAwaiter{awaitOK: true}, nil, "C", selector.WhyNeedsLogin},
+		{"refresh fails", &fakeAwaiter{fakeTokens: fakeTokens{}, awaitOK: false}, nil, "C", selector.WhyStaleRefreshFailed},
+		{"state error", &fakeAwaiter{awaitOK: true}, stateErr, "C", selector.WhyStateError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := tc.state
+			if state == nil {
+				state = func() (store.State, error) { return testState(), nil }
+			}
+			if tc.want == selector.WhyStaleRefreshFailed {
+				tc.tokens.fakeTokens = nil // Token reports needs-login; make it stale instead
+			}
+			tokens := selector.Tokens(tc.tokens)
+			if tc.want == selector.WhyStaleRefreshFailed {
+				tokens = staleOnly{tc.tokens}
+			}
+			sel := selector.New(selector.Config{State: state, Tokens: tokens, Owners: fakeOwners{}})
+			if ch, why := sel.ChooseNamed(context.Background(), store.DefaultPool, tc.acct); why != tc.want || ch.Account != "" {
+				t.Fatalf("ChooseNamed = %+v, %v; want %v", ch, why, tc.want)
+			}
+		})
+	}
+}
+
+// staleOnly reports every token as stale and unrefreshable.
+type staleOnly struct{ *fakeAwaiter }
+
+func (staleOnly) Token(context.Context, string) (string, creds.Status, bool) {
+	return "", creds.Status{State: creds.StateStale}, false
+}
+
+func TestChooseNamedRefusesARotationOffAccountOutsideDefaultOnly(t *testing.T) {
+	st := testState()
+	if err := st.AddPool("work"); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"B", "C"} {
+		if err := st.JoinPool(n, "work"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range st.Accounts {
+		if st.Accounts[i].Name == "C" {
+			st.Accounts[i].NoRotate = true
+		}
+	}
+	sel := selector.New(selector.Config{State: func() (store.State, error) { return st, nil },
+		Tokens: fakeTokens{"/slots/C": "tok-C"}, Owners: fakeOwners{}})
+	if _, why := sel.ChooseNamed(context.Background(), "work", "C"); why != selector.WhyRotationOff {
+		t.Fatalf("in work: %v, want rotation off", why)
+	}
+	if ch, why := sel.ChooseNamed(context.Background(), store.DefaultPool, "C"); why != selector.WhyNone || ch.Account != "C" {
+		t.Fatalf("in default: %+v, %v; want C (tag's override)", ch, why)
+	}
+	if _, why := sel.ChooseNamed(context.Background(), "work", "Z"); why != selector.WhyNotRegistered {
+		t.Fatalf("unknown: %v", why)
+	}
+}

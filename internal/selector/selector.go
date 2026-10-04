@@ -215,6 +215,11 @@ func (s *Selector) token(ctx context.Context, slotDir, role string) (string, cre
 	if role != RoleRemote && role != RoleOwner {
 		return s.cfg.Tokens.Token(ctx, slotDir)
 	}
+	return s.awaitToken(ctx, slotDir)
+}
+
+// awaitToken is the bounded wait on an in-flight (or forced) refresh.
+func (s *Selector) awaitToken(ctx context.Context, slotDir string) (string, creds.Status, bool) {
 	aw, ok := s.cfg.Tokens.(Awaiter)
 	if !ok {
 		return s.cfg.Tokens.Token(ctx, slotDir)
@@ -226,6 +231,77 @@ func (s *Selector) token(ctx context.Context, slotDir, role string) (string, cre
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return aw.Await(ctx, slotDir)
+}
+
+// Why is the typed reason a named account could not answer a request, for the
+// daemon's log. Its String is the clause that follows the account's name.
+type Why int
+
+const (
+	WhyNone Why = iota
+	WhyNeedsLogin
+	WhyStaleRefreshFailed
+	WhyNotRegistered
+	WhyNotInPool
+	WhyRotationOff
+	WhyStateError
+	WhyIdentityChanged
+)
+
+func (w Why) String() string {
+	switch w {
+	case WhyNeedsLogin:
+		return "needs login"
+	case WhyStaleRefreshFailed:
+		return "could not refresh its login"
+	case WhyNotRegistered:
+		return "is no longer registered"
+	case WhyNotInPool:
+		return "is not in the session's pool"
+	case WhyRotationOff:
+		return "has rotation off"
+	case WhyStateError:
+		return "could not be checked: state.json is unreadable"
+	case WhyIdentityChanged:
+		return "was logged in again as another account"
+	}
+	return ""
+}
+
+// ChooseNamed sends a serving-class request of a session of pool as the named
+// account, when that account can answer it (R160): it is registered, in the
+// pool, not rotation-off outside default, and has a login, the bounded refresh
+// wait included, so a stale but refreshable token is renewed, not given up on.
+// Otherwise the zero Choice and the reason. It never falls back to another
+// account and emits no passthrough event: the caller decides what happens next.
+func (s *Selector) ChooseNamed(ctx context.Context, pool, name string) (Choice, Why) {
+	st, err := s.cfg.State()
+	if err != nil {
+		return Choice{}, WhyStateError
+	}
+	if !st.HasPool(pool) {
+		pool = store.DefaultPool
+	}
+	acct, ok := findExact(&st, name)
+	if !ok {
+		return Choice{}, WhyNotRegistered
+	}
+	if !acct.InPool(pool) {
+		return Choice{}, WhyNotInPool
+	}
+	// R90: outside default a rotation-off account never serves a session. In
+	// default `tag`'s explicit override lets it, as for any serving request.
+	if pool != store.DefaultPool && !acct.Rotates() {
+		return Choice{}, WhyRotationOff
+	}
+	tok, status, ok := s.awaitToken(ctx, acct.Dir)
+	if !ok {
+		if status.State == creds.StateNeedsLogin {
+			return Choice{}, WhyNeedsLogin
+		}
+		return Choice{}, WhyStaleRefreshFailed
+	}
+	return Choice{Account: acct.Name, Token: tok, Role: RoleServing}, WhyNone
 }
 
 func (s *Selector) byClass(st *store.State, d router.Decision) (name, role string) {

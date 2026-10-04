@@ -74,7 +74,7 @@ func TestRoute(t *testing.T) {
 		{"GET", api, "/api/claude_code/settings", "", d(U)},
 		{"GET", api, "/api/claude_code/policy_limits", "", fb()},
 		// `claude remote-control` server
-		{"POST", api, "/api/oauth/validate", "", d(S)}, // MITM form: a REPL validating its own login
+		{"POST", api, "/api/oauth/validate", "", router.Decision{Class: S, StickySession: true}}, // MITM form: a REPL validating its own login
 		{"POST", api, "/v1/environments/bridge", "", rec(router.KindEnvironment, "environment_id")},
 		{"POST", api, "/v1/environments/bridge", "beta=true", d(U)},
 		{"DELETE", api, "/v1/environments/bridge/env_1", "", obj(R, router.KindEnvironment, "env_1")},
@@ -121,12 +121,12 @@ func TestRoute(t *testing.T) {
 
 func TestRouteUsesTheRequestForm(t *testing.T) {
 	absolute := router.Request{Method: "POST", Host: api, Path: "/api/oauth/validate", AbsoluteForm: true}
-	if got := router.Route(absolute); got.Class != router.Remote {
+	if got := router.Route(absolute); got.Class != router.Remote || got.StickySession {
 		t.Errorf("absolute-form validate = %+v, want remote (the remote-control server)", got)
 	}
 	mitm := router.Request{Method: "POST", Host: api, Path: "/api/oauth/validate"}
-	if got := router.Route(mitm); got.Class != router.Serving {
-		t.Errorf("mitm validate = %+v, want serving (a REPL's own login)", got)
+	if got := router.Route(mitm); got.Class != router.Serving || !got.StickySession {
+		t.Errorf("mitm validate = %+v, want serving and sticky per session (a REPL's own login, R160)", got)
 	}
 	// The form never changes any other route.
 	for _, path := range []string{"/v1/messages", "/v1/code/sessions", "/api/frame/deploy/prepare"} {

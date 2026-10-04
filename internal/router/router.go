@@ -68,6 +68,11 @@ type Decision struct {
 	// has not classified is what route drift is meant to catch, so the safety
 	// net keeps counting its refusals as drift (R158).
 	Fallback bool
+	// StickySession is true for a Claude Code session's own validate call:
+	// its owner-pin compares the account it answers with the one it pinned,
+	// so a session of an identified caller gets the same account every time
+	// (R160, F267).
+	StickySession bool
 }
 
 // Request is what the router needs to know about one request. AbsoluteForm
@@ -147,7 +152,7 @@ var (
 		// the same route for its own login and feeds the returned
 		// organization_uuid to serving routes (gate G2, F9).
 		ra("POST", `^/api/oauth/validate$`, remote),
-		r("POST", `^/api/oauth/validate$`, Decision{Class: Serving}),
+		r("POST", `^/api/oauth/validate$`, Decision{Class: Serving, StickySession: true}),
 
 		r("POST", `^/api/frame/deploy/prepare$`, Decision{Class: Remote, Records: KindArtifact, RecordField: "slug"}),
 		// A republish sends only this call, with the existing slug in the

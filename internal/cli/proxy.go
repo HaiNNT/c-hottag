@@ -33,6 +33,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/router"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/sessions"
+	"github.com/HaiNNT/c-hottag/internal/stickyval"
 	"github.com/HaiNNT/c-hottag/internal/store"
 	"github.com/HaiNNT/c-hottag/internal/tokens"
 	"github.com/HaiNNT/c-hottag/internal/tracelog"
@@ -279,6 +280,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	sp := newSpreadEngine(filepath.Join(h, "run", "placements.json"), cache.State, sink.fileCopy, ch.tracker.Peek, stderr, time.Now())
 	ch.spread, as.spread = sp, sp
 	ch.log, ch.refresh = stderr, cache.Invalidate
+	stickyAccounts := wireStickyValidate(ch, h, stderr)
 	sp.lastAccount = ch.tracker.Account
 
 	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, autoUsageHook(as, newUsageHook(cache.State, sink, dn)), upstreamURL)
@@ -346,7 +348,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Spread:     sp,
 			Update:     ul,
 			Restart:    rl,
-			Warm: &remoteWarmer{state: cache.State, warm: tm.Warm, probe: tm.LockedOut, log: stderr, now: timeNow,
+			Warm: &remoteWarmer{state: cache.State, warm: tm.Warm, probe: tm.LockedOut, sticky: stickyAccounts, log: stderr, now: timeNow,
 				wakeWarm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
 					return tm.WarmFor(ctx, dir, within, tokens.TriggerWake)
 				}},
@@ -1720,6 +1722,9 @@ type chooser struct {
 	// tracker, if non-nil, is told about every successful Choose made for an
 	// identified caller (M6). nil is a no-op, as for notify.
 	tracker *sessions.Tracker
+	// sticky, if non-nil, keeps a session's validate answered by one account
+	// for the session's life (R160). nil leaves validate on the serving rule.
+	sticky *stickyval.Map
 	// spread, if non-nil, places identified sessions while state.json's
 	// policy is spread (M7). Under serial the chooser never calls it; nil
 	// (a chooser built without a daemon) is serial.
@@ -1824,19 +1829,119 @@ func (c *chooser) refuse(pool, why string) string {
 // account left the pool between two reads (a racing `pool leave`) is tried
 // once more on fresh state before it stands. It also returns the pool.
 func (c *chooser) choose(ctx context.Context, d router.Decision, bodyID string) (selector.Choice, string) {
-	ch, pool := c.attempt(ctx, d, bodyID)
+	ch, pool := c.attempt(ctx, d, bodyID, true)
 	if ch.Refused == refusedNotInPool {
 		if c.refresh != nil {
 			c.refresh()
 		}
-		ch, pool = c.attempt(ctx, d, bodyID)
+		// The retry skips the sticky path: its bounded refresh wait must not
+		// run twice for one request.
+		ch, pool = c.attempt(ctx, d, bodyID, false)
 	}
 	return ch, pool
 }
 
 const refusedNotInPool = "not in pool"
 
-func (c *chooser) attempt(ctx context.Context, d router.Decision, bodyID string) (selector.Choice, string) {
+// wireStickyValidate opens each session's validate account map (R160) under
+// home, so a daemon restart keeps a running session's answer the same, and
+// attaches it to ch. A damaged file is reported and replaced by an empty map.
+// It returns the lister of the accounts the warm loop keeps fresh for them.
+func wireStickyValidate(ch *chooser, home string, log io.Writer) func() []string {
+	vm, err := stickyval.Open(filepath.Join(home, "run", "validate-sessions.json"))
+	if err != nil {
+		fmt.Fprintf(log, "chottag: %v; validate answers start afresh\n", err)
+	}
+	ch.sticky = vm
+	return func() []string { return vm.Accounts(timeNow(), stickyval.WarmWithin) }
+}
+
+// attempt is route, except that a session's validate call goes out as the
+// account that answered it before, when that account can still serve it (R160,
+// F267): Claude Code's Remote Control owner-pin stops when a re-validation
+// names another account than the one it pinned. A recorded account whose token
+// is stale is refreshed within the selector's bounded wait, never given up on.
+func (c *chooser) attempt(ctx context.Context, d router.Decision, bodyID string, sticky bool) (selector.Choice, string) {
+	id, identified := proxy.IdentityFrom(ctx)
+	if !sticky || !d.StickySession || c.sticky == nil || c.state == nil || !identified || id.Caller.SID == "" {
+		return c.route(ctx, d, bodyID)
+	}
+	st, err := c.state()
+	if err != nil {
+		return c.route(ctx, d, bodyID)
+	}
+	c.multi.Store(len(st.PoolNames()) > 1)
+	sid := id.Caller.SID
+	pool := c.poolFor(st, id.Caller.Pool)
+	now := c.clock()
+	prev, state := c.sticky.Lookup(sid, now)
+	reason := ""
+	if state == stickyval.Live {
+		ch, why := c.stickyChoice(ctx, st, pool, prev)
+		if ch.Account != "" {
+			c.stickySet(sid, ch.Account, st, now)
+			return ch, pool
+		}
+		reason = prev.Account + " " + whyText(why, pool)
+	} else if state == stickyval.Dropped {
+		reason = prev.Account + "'s record was dropped (unused for 7 days, or older than the 500 newest sessions)"
+	}
+	ch, pool := c.route(ctx, d, bodyID)
+	if ch.Account == "" {
+		return ch, pool
+	}
+	if state != stickyval.Absent && !strings.EqualFold(prev.Account, ch.Account) && c.log != nil {
+		fmt.Fprintf(c.log, "chottag: validate for session %s moved from %s to %s: %s\n", shortSID(sid), prev.Account, ch.Account, reason)
+	}
+	c.stickySet(sid, ch.Account, st, now)
+	return ch, pool
+}
+
+func shortSID(sid string) string {
+	if len(sid) > 8 {
+		return sid[:8]
+	}
+	return sid
+}
+
+func (c *chooser) stickySet(sid, account string, st store.State, now time.Time) {
+	email := ""
+	if a, ok := findExact(&st, account); ok {
+		email = a.Email
+	}
+	if err := c.sticky.Set(sid, account, email, now); err != nil && c.log != nil {
+		fmt.Fprintf(c.log, "chottag: could not save the validate sessions: %v\n", err)
+	}
+}
+
+func whyText(w selector.Why, pool string) string {
+	if w == selector.WhyNotInPool {
+		return "is not in pool " + pool
+	}
+	return w.String()
+}
+
+// stickyChoice is the choice for the recorded account when it can still serve
+// a session of pool, else the zero Choice and why it cannot. The selector
+// re-checks registration, pool and rotation on its own read of the state. A
+// rotation-off account is refused outside default (R90) but kept in default,
+// where `tag`'s explicit override already lets it serve, and a validate is not
+// an inference request.
+func (c *chooser) stickyChoice(ctx context.Context, st store.State, pool string, e stickyval.Entry) (selector.Choice, selector.Why) {
+	a, ok := findExact(&st, e.Account)
+	if !ok {
+		return selector.Choice{}, selector.WhyNotRegistered
+	}
+	// The name now belongs to another login (removed and added again, or
+	// logged in again as another email): its answer would name another
+	// account than the session pinned.
+	if e.Email != "" && a.Email != "" && !strings.EqualFold(e.Email, a.Email) {
+		return selector.Choice{}, selector.WhyIdentityChanged
+	}
+	return c.sel.ChooseNamed(ctx, pool, a.Name)
+}
+
+func (c *chooser) route(ctx context.Context, d router.Decision, bodyID string) (selector.Choice, string) {
 	id, identified := proxy.IdentityFrom(ctx)
 	pool := store.DefaultPool
 	var st store.State

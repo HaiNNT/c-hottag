@@ -105,6 +105,11 @@ type remoteWarmer struct {
 	// probe lists the slots the token manager has locked out; they are warmed
 	// (probed) whatever their account's role. nil probes none.
 	probe func() []string
+	// sticky lists the accounts with a validate session used in the last day
+	// (R160): their tokens are kept fresh too, so a session's validate hours
+	// after the pool moved on is still answered by its own account. nil lists
+	// none.
+	sticky func() []string
 	// after schedules f once, d from now; nil is time.AfterFunc. A test
 	// replaces it to drive the wake delay by hand.
 	after func(d time.Duration, f func()) *time.Timer
@@ -227,7 +232,8 @@ func (w *remoteWarmer) stop(bound time.Duration) bool {
 	}
 }
 
-// pass warms each distinct remote and serving account of every pool once.
+// pass warms each distinct remote and serving account of every pool, and each
+// account with a recent validate session, once.
 func (w *remoteWarmer) pass(ctx context.Context, wake bool) {
 	st, err := w.state()
 	if err != nil {
@@ -239,28 +245,33 @@ func (w *remoteWarmer) pass(ctx context.Context, wake bool) {
 	}
 	done := map[string]bool{}
 	warmed := map[string]bool{}
+	names := []string{}
 	for _, pool := range st.PoolNames() {
 		p := st.PoolOf(pool)
-		for _, name := range []string{p.Remote, p.Serving} {
-			key := strings.ToLower(name)
-			if name == "" || done[key] {
-				continue
-			}
-			done[key] = true
-			var acct *store.Account
-			for i := range st.Accounts {
-				if strings.EqualFold(st.Accounts[i].Name, name) {
-					acct = &st.Accounts[i]
-					break
-				}
-			}
-			if acct == nil || ctx.Err() != nil {
-				continue
-			}
-			warmed[acct.Dir] = true
-			status, _ := warm(ctx, acct.Dir, warmWindow)
-			w.note(acct.Name, status)
+		names = append(names, p.Remote, p.Serving)
+	}
+	if w.sticky != nil {
+		names = append(names, w.sticky()...)
+	}
+	for _, name := range names {
+		key := strings.ToLower(name)
+		if name == "" || done[key] {
+			continue
 		}
+		done[key] = true
+		var acct *store.Account
+		for i := range st.Accounts {
+			if strings.EqualFold(st.Accounts[i].Name, name) {
+				acct = &st.Accounts[i]
+				break
+			}
+		}
+		if acct == nil || ctx.Err() != nil {
+			continue
+		}
+		warmed[acct.Dir] = true
+		status, _ := warm(ctx, acct.Dir, warmWindow)
+		w.note(acct.Name, status)
 	}
 	if w.probe == nil {
 		return
