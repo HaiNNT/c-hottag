@@ -61,6 +61,10 @@ func (d Deleter) Delete(configDir string) error {
 			if errors.As(err, &ec) && ec.ExitCode() == securityItemNotFound {
 				return nil
 			}
+			if isMissOrDenied(err) && !KeychainReachable(d.Run) {
+				noteGone()
+				return fmt.Errorf("delete keychain item %q: %v: %w", svc, err, ErrSessionGone)
+			}
 			// err is safe to include for the same reason as in Read:
 			// exec.ExitError.Error() is just "exit status N".
 			return fmt.Errorf("delete keychain item %q: %v: %w", svc, err, classifyKeychainFailure(err))

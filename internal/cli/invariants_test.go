@@ -258,6 +258,14 @@ func TestMain(m *testing.M) {
 	newRestartTicker = func(time.Duration) (<-chan time.Time, func()) {
 		panic("newRestartTicker reached from internal/cli's test binary: a test must stub it")
 	}
+	// The session watcher's ticker never fires and its probe must not run
+	// (sessiongone.go, R164): a test drives both itself.
+	newSessionTicker = func(time.Duration) (<-chan time.Time, func()) {
+		return make(chan time.Time), func() {}
+	}
+	sessionProbe = func() bool {
+		panic("sessionProbe reached from internal/cli's test binary: a test must stub it")
+	}
 	// A package-wide safe default for $HOME, installed before any test runs:
 	// setup.go and uninstall.go both read os.Getenv("HOME") for the shell rc
 	// path, and a mutation-testing exercise against login.go or logout.go

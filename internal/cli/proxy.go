@@ -220,6 +220,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	if credsReadForTest != nil {
 		read = credsReadForTest
 	}
+	read = evidenceRead(read, stderr)
 	// The reporter's sink and notifier do not exist yet; they are set below,
 	// before the daemon runs and so before any refresh can report.
 	rr := &refreshReporter{log: stderr, now: timeNow}
@@ -250,6 +251,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	// Limits.AllLimited must be computed over the accounts state.json
 	// registers, not just the ones traffic happens to have touched so far
 	// (contract 2).
+	sink.dropTokenPassthroughs()
 	seedRosterAtStartup(cache.State, sink)
 	// The release checklist's fake-limit hook (spec §10.1, R52): a no-op
 	// unless this binary was built with -tags chottag_fakeusage. It runs
@@ -358,6 +360,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Spread:     sp,
 			Update:     ul,
 			Restart:    rl,
+			Session:    newSessionWatcher(h, stderr),
 			Warm: &remoteWarmer{state: cache.State, warm: tm.Warm, probe: tm.LockedOut, sticky: stickyAccounts, log: stderr, now: timeNow,
 				needsLogin: func(account string) { recordNeedsLogin(sink, dn, account) },
 				wakeWarm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
@@ -367,6 +370,32 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			RosterProcessed: rosterProcessedForTest,
 		})
 	})
+}
+
+// newReloginHook is watchRoster's invalidate hook: when an account's
+// LoggedInAt advances, the token cache stops trusting its old read, and the
+// account's token-based marks (a needs-login or stale state, and a `token ...`
+// passthrough text) are cleared, since the login that produced them has been
+// replaced (F273). A fresh login that is in fact broken is marked again by the
+// next poll, refresh or request. sink and dn may be nil. It runs off the
+// roster goroutine, as the invalidate always has.
+func newReloginHook(invalidate func(dir string), state func() (store.State, error), sink *statusSink, dn *daemonNotify, now func() time.Time) func(string) {
+	return func(dir string) {
+		// Marks first, then the cache: a read that started before the hook
+		// can then only re-mark through a result the invalidate has already
+		// discarded.
+		if sink != nil && state != nil {
+			if st, err := state(); err == nil {
+				for _, a := range st.Accounts {
+					if a.Dir == dir {
+						recordRecovered(sink, dn, a.Name, now())
+						break
+					}
+				}
+			}
+		}
+		invalidate(dir)
+	}
 }
 
 // pollScheduler is the part of *usagepoll.Poller runDaemon drives. An
@@ -820,6 +849,9 @@ type daemonDeps struct {
 	// sleep, and joins it before the sink closes. nil (a dev build, every
 	// test literal) never restarts the daemon.
 	Restart *restartLoop
+	// Session, if non-nil, ends this daemon once its login session is gone
+	// (R164, F272). It stops the daemon the way a signal does.
+	Session *sessionWatcher
 	// Warm, if non-nil, keeps every pool's remote account's token fresh
 	// (R147). The roster tick kicks it; at shutdown runDaemon cancels it
 	// and joins it for a bounded time (warmStopBound) before the owner map
@@ -879,6 +911,10 @@ var listenTCP = net.Listen
 // on whatever machine the suite runs on (see
 // TestCloseOwnersJoinsRosterWatcherBeforeClosingTheMap's doc comment).
 func runDaemon(ctx context.Context, d daemonDeps) int {
+	// stopSelf lets a watcher inside the daemon begin the same graceful
+	// shutdown a signal does (the session watcher, R164).
+	ctx, stopSelf := context.WithCancel(ctx)
+	defer stopSelf()
 	if d.Spread != nil {
 		defer d.Spread.close() // the last placements reach disk, so a restart keeps every session where it was
 	}
@@ -1033,7 +1069,7 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 	// no-op) rather than assuming every runDaemon caller wires a manager.
 	var invalidateToken func(string)
 	if d.Tokens != nil {
-		invalidateToken = d.Tokens.Invalidate
+		invalidateToken = newReloginHook(d.Tokens.Invalidate, d.Cache.State, d.Sink, d.Notify, timeNow)
 	}
 	rosterDone := make(chan struct{})
 	go func() {
@@ -1075,6 +1111,16 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 	} else {
 		close(restartDone)
 	}
+	sessionDone := make(chan struct{})
+	if d.Session != nil {
+		d.Session.stop = stopSelf
+		go func() {
+			defer close(sessionDone)
+			d.Session.Run(watchCtx)
+		}()
+	} else {
+		close(sessionDone)
+	}
 	closeOwners := func() {
 		// Stop and JOIN the roster watcher before closing the map.
 		// watchRoster calls own.Forget every 5s; a Forget that lands after
@@ -1086,6 +1132,7 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		<-pollDone
 		<-updateDone
 		<-restartDone
+		<-sessionDone
 		d.Owners.Close()
 	}
 

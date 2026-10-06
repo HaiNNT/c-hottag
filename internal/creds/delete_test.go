@@ -13,6 +13,35 @@ type fakeExit int
 func (e fakeExit) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 func (e fakeExit) ExitCode() int { return int(e) }
 
+// probeOK answers the reachability probe as healthy and sends every other
+// command to run.
+func probeOK(run Runner) Runner {
+	return func(name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "list-keychains" {
+			return []byte("\"/Users/alice/Library/Keychains/login.keychain-db\"\n"), nil
+		}
+		return run(name, args...)
+	}
+}
+
+// A denied delete with an unreachable keychain is a dead login session, not
+// a denial: the caller must not read it as the user refusing.
+func TestDeleteDeniedWithDeadSessionIsSessionGone(t *testing.T) {
+	ResetForTest()
+	for _, code := range []int{securityAuthFailed, securityUserCanceled} {
+		d := Deleter{GOOS: "darwin", Run: func(name string, args ...string) ([]byte, error) {
+			if args[0] == "list-keychains" {
+				return nil, fakeExit(1)
+			}
+			return nil, fakeExit(code)
+		}}
+		err := d.Delete(t.TempDir())
+		if !errors.Is(err, ErrSessionGone) || !errors.Is(err, ErrKeychainUnavailable) || errors.Is(err, ErrKeychain) {
+			t.Fatalf("code %d: Delete() = %v, want ErrSessionGone", code, err)
+		}
+	}
+}
+
 // Delete must ask the Keychain to remove the item for THIS slot, by the same
 // service name Read looks it up under. A wrong service name would silently
 // leave the login in place while reporting success.
@@ -121,9 +150,9 @@ func TestDeleteIsIdempotentWhenTheItemIsAlreadyGone(t *testing.T) {
 // credential is still there is the failure mode that matters: the caller
 // deletes the slot next and the login becomes unreachable but live.
 func TestDeleteReportsANonNotFoundKeychainFailure(t *testing.T) {
-	d := Deleter{GOOS: "darwin", Run: func(string, ...string) ([]byte, error) {
+	d := Deleter{GOOS: "darwin", Run: probeOK(func(string, ...string) ([]byte, error) {
 		return nil, fakeExit(securityAuthFailed)
-	}}
+	})}
 	err := d.Delete(t.TempDir())
 	if !errors.Is(err, ErrKeychain) {
 		t.Errorf("Delete() = %v, want an error wrapping ErrKeychain", err)
@@ -204,7 +233,7 @@ func TestDeleteFailureClassification(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			d := Deleter{GOOS: "darwin", Run: func(string, ...string) ([]byte, error) { return nil, c.err }}
+			d := Deleter{GOOS: "darwin", Run: probeOK(func(string, ...string) ([]byte, error) { return nil, c.err })}
 			err := d.Delete(t.TempDir())
 			if c.wantErr == nil {
 				if err != nil {

@@ -1132,6 +1132,12 @@ func sameUpdate(a, b status.Update) bool {
 		a.Available == b.Available && a.Notified == b.Notified && a.Error == b.Error
 }
 
+// isTokenPassthrough reports whether a passthrough text only restates a
+// needs-login or stale token (passthroughReason's "token <state>[: detail]").
+func isTokenPassthrough(text string) bool {
+	return strings.HasPrefix(text, "token needs-login") || strings.HasPrefix(text, "token stale")
+}
+
 // setTokenCleared replaces a recorded needs-login or stale token state with
 // ok once the account has answered a request on its own credential (ruling
 // 7) or its token has renewed (R149): eligibility reads the state, and
@@ -1144,13 +1150,25 @@ func (c *statusSink) setTokenCleared(account string, at time.Time) {
 	c.mu.Lock()
 	cleared := false
 	for _, a := range c.file.Accounts {
-		if strings.EqualFold(a.Name, account) && (a.Token == creds.StateNeedsLogin || a.Token == creds.StateStale) {
+		if !strings.EqualFold(a.Name, account) {
+			continue
+		}
+		if a.Token == creds.StateNeedsLogin || a.Token == creds.StateStale || isTokenPassthrough(a.Passthrough) {
 			cleared = true
 			break
 		}
 	}
 	if cleared {
 		c.file.SetToken(account, creds.StateOK, at)
+		// A passthrough that only restates the token state is as stale as
+		// the state (F273); another reason (no serving account, a limit)
+		// stays.
+		for _, a := range c.file.Accounts {
+			if strings.EqualFold(a.Name, account) && isTokenPassthrough(a.Passthrough) {
+				c.file.SetPassthrough(account, "")
+				break
+			}
+		}
 	}
 	c.mu.Unlock()
 	if cleared {

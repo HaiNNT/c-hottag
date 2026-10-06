@@ -29,7 +29,7 @@ This skill covers what a Claude Code session needs day to day.
   remote.
 
 `chottag status` then lists every account in a table with columns NAME, PLAN,
-ORG, 5h, 7d and STATE, and ends with an `auto:` line: the mode, why it's
+ORG, 5h, 7d and STATE (each 5h and 7d cell ends with `↻ <when>`, the time to that window's next reset, when known), and ends with an `auto:` line: the mode, why it's
 holding (if it is) and the last switch, e.g. `auto: balanced · holding A (5h
 96%, resets in 9m) · last C→A 09:12 (limit)`, or `auto: off` when auto-switch
 is off.
@@ -270,7 +270,10 @@ also switches the update check off.
   live. `limited: true` means limited
   now, until `limitedUntil` when that is present. `token` is a state
   (`ok | expiring | stale | needs-login`); for `needs-login`, offer
-  `chottag login <name>`.
+  `chottag login <name>`. After a macOS logout or crash, a daemon left in
+  the dead login session reports `stale`, not `needs-login`, and exits about
+  a minute later; the next `claude` starts a fresh one, so do not offer
+  `login` for that.
 - `tag` / `next`: `serving` is the new account and `previous` the old one.
 - `auto`: `enabled`, `mode`, `decision` (what the daemon is doing now) and
   `lastSwitch`. When a request hits a limit, chottag switches and resends it

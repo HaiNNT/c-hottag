@@ -522,6 +522,14 @@ func TestRunProxyWiresNotifications(t *testing.T) {
 		status.Account{Name: "B", Limited: true, LimitedUntil: until},
 	)
 	rec := stubDaemonNotifier(t) // registered first, so restored last
+	// Every slot holds a usable token: without one the warm pass (R161)
+	// would rightly post a needs-login notice first. On Linux there is no
+	// Keychain answer to fall back on, so CI saw exactly that.
+	prevRead := credsReadForTest
+	t.Cleanup(func() { credsReadForTest = prevRead })
+	credsReadForTest = func(configDir string) (creds.Token, error) {
+		return creds.Token{AccessToken: "tok-" + filepath.Base(configDir), ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}
 
 	errb := newSyncBuf()
 	sig := make(chan os.Signal, 2)

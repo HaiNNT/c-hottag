@@ -14,9 +14,9 @@ c-hottag is an independent project: not affiliated with or endorsed by Anthropic
 $ chottag status
 serving: A   remote: B
 
-  NAME   PLAN    ORG    5h    7d    STATE
-  A      max5x   Acme   96%   41%   ok
-  B      pro            12%   35%   ok
+  NAME   PLAN    ORG    5h            7d                STATE
+  A      max5x   Acme   96% ↻ 9m      41% ↻ Fri 18:00   ok
+  B      pro            12% ↻ 3h20m   35% ↻ Sat 09:00   ok
 auto: balanced · holding A (5h 96%, resets in 9m) · last B→A 09:12 (limit)
 $ chottag next
 serving: B

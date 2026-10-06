@@ -641,6 +641,12 @@ or a poll that keeps failing). `unknown` means chottag has never read the
 account's usage. In `--json` such an account has `stale: true` and the
 reading's time in `usage.updatedAt`. A window that has reset since an old reading shows `unknown (reset since)`.
 
+Each 5h and 7d cell ends with `↻` and the window's next reset when it is
+known and still ahead, in your local time and the same short form as the
+status line: `28% ↻ 3h20m`, `99% (16h ago) ↻ Fri 18:00`. A cell that is
+`unknown`, or whose reset time is unknown or already past, has no `↻`.
+`--json` already carries the times as `fiveHourResetsAt` and `sevenDayResetsAt`.
+
 ```json
 {
   "version": 1,

@@ -78,12 +78,24 @@ type exitErr int
 func (e exitErr) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 func (e exitErr) ExitCode() int { return int(e) }
 
+// withProbe answers the reachability probe as healthy and sends every other
+// command to run.
+func withProbe(run creds.Runner) creds.Runner {
+	return func(name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "list-keychains" {
+			return []byte("    \"/Users/alice/Library/Keychains/login.keychain-db\"\n"), nil
+		}
+		return run(name, args...)
+	}
+}
+
 func TestReaderDarwinOverrideAndMissing(t *testing.T) {
+	creds.ResetForTest()
 	var svc string
-	r := creds.Reader{GOOS: "darwin", ServiceOverride: "Custom", Run: func(name string, args ...string) ([]byte, error) {
+	r := creds.Reader{GOOS: "darwin", ServiceOverride: "Custom", Run: withProbe(func(name string, args ...string) ([]byte, error) {
 		svc = args[2]
 		return nil, exitErr(44)
-	}}
+	})}
 	_, err := r.Read(t.TempDir())
 	if !errors.Is(err, creds.ErrNoLogin) || errors.Is(err, creds.ErrKeychain) || svc != "Custom" {
 		t.Fatalf("err %v svc %q", err, svc)
@@ -106,7 +118,8 @@ func TestReaderDarwinFailureClassification(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := creds.Reader{GOOS: "darwin", Run: func(string, ...string) ([]byte, error) { return nil, c.err }}
+			creds.ResetForTest()
+			r := creds.Reader{GOOS: "darwin", Run: withProbe(func(string, ...string) ([]byte, error) { return nil, c.err })}
 			_, err := r.Read(t.TempDir())
 			if !errors.Is(err, c.wantErr) {
 				t.Fatalf("run error %v -> %v, want wrapping %v", c.err, err, c.wantErr)
@@ -134,5 +147,256 @@ func TestReaderLinuxReadsFile(t *testing.T) {
 	}
 	if _, err := (creds.Reader{GOOS: "linux"}).Read(t.TempDir()); !errors.Is(err, creds.ErrNoLogin) {
 		t.Fatalf("missing file err = %v", err)
+	}
+}
+
+// probeResult builds a Runner whose find-generic-password exits with find and
+// whose list-keychains probe returns probeOut/probeErr.
+func probeRunner(find error, probeOut string, probeErr error) creds.Runner {
+	return func(name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "list-keychains" {
+			return []byte(probeOut), probeErr
+		}
+		return nil, find
+	}
+}
+
+const keychainList = "    \"/Users/alice/Library/Keychains/login.keychain-db\"\n"
+
+func TestReadDeadSessionIsNotNoLogin(t *testing.T) {
+	cases := []struct {
+		name     string
+		find     error
+		probeOut string
+		probeErr error
+		want     error
+	}{
+		{"44 probe ok", exitErr(44), keychainList, nil, creds.ErrNoLogin},
+		{"44 probe errors", exitErr(44), "", exitErr(1), creds.ErrSessionGone},
+		{"44 probe lists nothing", exitErr(44), "\n", nil, creds.ErrSessionGone},
+		{"51 probe errors", exitErr(51), "", exitErr(1), creds.ErrSessionGone},
+		{"128 probe errors", exitErr(128), "", exitErr(1), creds.ErrSessionGone},
+		{"51 probe ok", exitErr(51), keychainList, nil, creds.ErrKeychain},
+		{"36 unchanged", exitErr(36), "", exitErr(1), creds.ErrKeychainUnavailable},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			creds.ResetForTest()
+			_, err := creds.Reader{GOOS: "darwin", Run: probeRunner(c.find, c.probeOut, c.probeErr)}.Read(t.TempDir())
+			if !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+			if c.want == creds.ErrSessionGone {
+				if !errors.Is(err, creds.ErrKeychainUnavailable) || errors.Is(err, creds.ErrNoLogin) || errors.Is(err, creds.ErrKeychain) {
+					t.Fatalf("ErrSessionGone must be unavailable only: %v", err)
+				}
+				if !strings.Contains(err.Error(), c.find.Error()) {
+					t.Fatalf("err %q lacks %q", err, c.find)
+				}
+				if st := creds.Assess(creds.Token{}, err, time.Now()); st.State != creds.StateStale {
+					t.Fatalf("Assess = %+v, want stale", st)
+				}
+			}
+		})
+	}
+}
+
+func TestReadBackstopDoubtsAMissAfterAnEarlierOK(t *testing.T) {
+	creds.ResetForTest()
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	defer creds.SetNowForTest(func() time.Time { return now })()
+	dir := t.TempDir()
+	var find error
+	r := creds.Reader{GOOS: "darwin", Run: func(name string, args ...string) ([]byte, error) {
+		if args[0] == "list-keychains" {
+			return []byte(keychainList), nil
+		}
+		if find != nil {
+			return nil, find
+		}
+		return []byte(blob), nil
+	}}
+	read := func() error { _, err := r.Read(dir); return err }
+
+	if err := read(); err != nil {
+		t.Fatal(err)
+	}
+	find = exitErr(44)
+	if err := read(); !errors.Is(err, creds.ErrKeychainUnavailable) || errors.Is(err, creds.ErrNoLogin) {
+		t.Fatalf("first miss = %v, want suspect", err)
+	}
+	now = now.Add(30 * time.Second)
+	if err := read(); !errors.Is(err, creds.ErrKeychainUnavailable) {
+		t.Fatalf("miss at +30s = %v, want suspect", err)
+	}
+	now = now.Add(31 * time.Second)
+	if err := read(); !errors.Is(err, creds.ErrNoLogin) {
+		t.Fatalf("miss at +61s = %v, want ErrNoLogin", err)
+	}
+	// OK, miss, OK, miss: each OK clears the miss.
+	find = nil
+	if err := read(); err != nil {
+		t.Fatal(err)
+	}
+	find = exitErr(44)
+	if err := read(); !errors.Is(err, creds.ErrKeychainUnavailable) {
+		t.Fatalf("miss after OK = %v, want suspect", err)
+	}
+	find = nil
+	if err := read(); err != nil {
+		t.Fatal(err)
+	}
+	find = exitErr(51)
+	if err := read(); !errors.Is(err, creds.ErrKeychainUnavailable) {
+		t.Fatalf("denied after OK = %v, want suspect", err)
+	}
+}
+
+func TestReadNeverReadSlotIsNoLoginImmediately(t *testing.T) {
+	creds.ResetForTest()
+	_, err := creds.Reader{GOOS: "darwin", Run: probeRunner(exitErr(44), keychainList, nil)}.Read(t.TempDir())
+	if !errors.Is(err, creds.ErrNoLogin) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSessionGoneSince(t *testing.T) {
+	creds.ResetForTest()
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	defer creds.SetNowForTest(func() time.Time { return now })()
+	if !creds.SessionGoneSince().IsZero() {
+		t.Fatal("want zero at start")
+	}
+	gone := creds.Reader{GOOS: "darwin", Run: probeRunner(exitErr(44), "", exitErr(1))}
+	if _, err := gone.Read(t.TempDir()); !errors.Is(err, creds.ErrSessionGone) {
+		t.Fatal(err)
+	}
+	first := creds.SessionGoneSince()
+	if !first.Equal(now) {
+		t.Fatalf("since = %v, want %v", first, now)
+	}
+	now = now.Add(time.Minute)
+	gone.Read(t.TempDir())
+	if !creds.SessionGoneSince().Equal(first) {
+		t.Fatal("a later ErrSessionGone moved the first-seen time")
+	}
+	ok := creds.Reader{GOOS: "darwin", Run: func(string, ...string) ([]byte, error) { return []byte(blob), nil }}
+	if _, err := ok.Read(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if !creds.SessionGoneSince().IsZero() {
+		t.Fatal("a successful read must reset the signal")
+	}
+}
+
+func TestKeychainReachable(t *testing.T) {
+	if !creds.KeychainReachable(probeRunner(nil, keychainList, nil)) {
+		t.Fatal("healthy probe reported unreachable")
+	}
+	if creds.KeychainReachable(probeRunner(nil, "", exitErr(1))) || creds.KeychainReachable(probeRunner(nil, "none\n", nil)) {
+		t.Fatal("failed probe reported reachable")
+	}
+}
+
+// twoSlots reads two slots through one runner whose find result is switchable
+// per slot; the probe always passes (a session where it cannot see the
+// problem).
+type twoSlots struct {
+	dirs [2]string
+	miss [2]bool
+	r    creds.Reader
+}
+
+func newTwoSlots(t *testing.T) *twoSlots {
+	g := &twoSlots{dirs: [2]string{t.TempDir(), t.TempDir()}}
+	g.r = creds.Reader{GOOS: "darwin", Run: func(name string, args ...string) ([]byte, error) {
+		if args[0] == "list-keychains" {
+			return []byte(keychainList), nil
+		}
+		for i, d := range g.dirs {
+			abs, _ := filepath.Abs(d)
+			if args[2] == creds.KeychainService(abs) && g.miss[i] {
+				return nil, exitErr(44)
+			}
+		}
+		return []byte(blob), nil
+	}}
+	return g
+}
+
+func (g *twoSlots) read(i int) error { _, err := g.r.Read(g.dirs[i]); return err }
+
+func TestCorrelatedMissesStayDoubtedAndSetTheSignal(t *testing.T) {
+	creds.ResetForTest()
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	defer creds.SetNowForTest(func() time.Time { return now })()
+	g := newTwoSlots(t)
+	g.read(0)
+	g.read(1)
+	g.miss = [2]bool{true, true}
+	t0 := now
+	if err := g.read(0); !errors.Is(err, creds.ErrKeychainUnavailable) {
+		t.Fatalf("first miss = %v", err)
+	}
+	now = now.Add(10 * time.Second)
+	if err := g.read(1); !errors.Is(err, creds.ErrKeychainUnavailable) {
+		t.Fatalf("second miss = %v", err)
+	}
+	if got := creds.SessionGoneSince(); !got.Equal(t0) || !creds.SessionGoneCorrelated() {
+		t.Fatalf("since = %v correlated = %v, want %v and true", got, creds.SessionGoneCorrelated(), t0)
+	}
+	// Well past the 60 s window, both stay doubted.
+	now = now.Add(5 * time.Minute)
+	for i := 0; i < 2; i++ {
+		if err := g.read(i); !errors.Is(err, creds.ErrKeychainUnavailable) || errors.Is(err, creds.ErrNoLogin) {
+			t.Fatalf("slot %d at +5m = %v, want still suspect", i, err)
+		}
+	}
+	// One reads OK again: correlation ends and the other resolves by the window.
+	g.miss[1] = false
+	if err := g.read(1); err != nil {
+		t.Fatal(err)
+	}
+	if creds.SessionGoneCorrelated() || !creds.SessionGoneSince().IsZero() {
+		t.Fatal("correlation must end when a slot reads OK")
+	}
+	// Slot 0's first miss is minutes old and it is alone now: the real
+	// classification applies.
+	if err := g.read(0); !errors.Is(err, creds.ErrNoLogin) {
+		t.Fatalf("slot 0 alone = %v, want ErrNoLogin", err)
+	}
+}
+
+func TestAloneMissStillBecomesNoLoginAfterAMinute(t *testing.T) {
+	creds.ResetForTest()
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	defer creds.SetNowForTest(func() time.Time { return now })()
+	g := newTwoSlots(t)
+	g.read(0)
+	g.read(1)
+	g.miss[0] = true
+	g.read(0)
+	now = now.Add(61 * time.Second)
+	if err := g.read(0); !errors.Is(err, creds.ErrNoLogin) {
+		t.Fatalf("err = %v, want ErrNoLogin", err)
+	}
+	if creds.SessionGoneCorrelated() || !creds.SessionGoneSince().IsZero() {
+		t.Fatal("a lone miss must not signal")
+	}
+}
+
+func TestMissesFarApartDoNotCorrelate(t *testing.T) {
+	creds.ResetForTest()
+	now := time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
+	defer creds.SetNowForTest(func() time.Time { return now })()
+	g := newTwoSlots(t)
+	g.read(0)
+	g.read(1)
+	g.miss[0] = true
+	g.read(0)
+	now = now.Add(time.Hour)
+	g.miss[1] = true
+	if err := g.read(1); !errors.Is(err, creds.ErrKeychainUnavailable) || creds.SessionGoneCorrelated() {
+		t.Fatalf("err = %v correlated = %v, want a lone first miss", err, creds.SessionGoneCorrelated())
 	}
 }

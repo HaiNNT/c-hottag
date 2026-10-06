@@ -126,6 +126,7 @@ func runStatus(home string, args []string, r *reporter) int {
 	orderAccounts(&f, accountNames(st))
 
 	now := time.Now()
+	dropSupersededNeedsLogin(&f, st)
 	// Stale states each account's freshness explicitly (spec §6.3, contract
 	// 5): the human table shows an older reading with its age ("45% (2h
 	// ago)", F268) instead of as if it were live, but --json used to keep
@@ -388,6 +389,10 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 			five = pctWithAge(a.Usage.FiveHourPct, a.Usage.FiveHourResetsAt, now, age)
 			seven = pctWithAge(a.Usage.SevenDayPct, a.Usage.SevenDayResetsAt, now, age)
 		}
+		if a.Usage != nil {
+			five = withReset(five, a.Usage.FiveHourResetsAt, now)
+			seven = withReset(seven, a.Usage.SevenDayResetsAt, now)
+		}
 		state := "-"
 		switch {
 		case a.Passthrough != "":
@@ -421,6 +426,25 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", a.Name, planLabel(store.Account{Plan: a.Plan}), a.Org, five, seven, state)
 	}
 	tw.Flush()
+}
+
+// dropSupersededNeedsLogin clears a `token needs-login` passthrough text that
+// an account's later login has outlived (F273): the mark's time is the row's
+// TokenAt, and state.json's LoggedInAt after it means the login is newer, so
+// the row reads as it would without the mark. Both `status` surfaces use it.
+func dropSupersededNeedsLogin(f *status.File, st store.State) {
+	for i := range f.Accounts {
+		row := &f.Accounts[i]
+		if !strings.HasPrefix(row.Passthrough, "token needs-login") {
+			continue
+		}
+		for _, a := range st.Accounts {
+			if strings.EqualFold(a.Name, row.Name) && a.LoggedInAt.After(row.TokenAt) {
+				row.Passthrough = ""
+				break
+			}
+		}
+	}
 }
 
 // availableUpdate is the release the update-check cache says is available,
@@ -668,6 +692,16 @@ func pctWithAge(p *float64, resetsAt, now time.Time, age time.Duration) string {
 		return "unknown (reset since)"
 	}
 	return fmt.Sprintf("%.0f%% (%s ago)", *p, ageWords(age))
+}
+
+// withReset appends " ↻ <when>" to a cell that shows a percentage, when the
+// window's reset time is known and still ahead (R163). An unknown cell has no
+// percentage to reset, and a zero or passed time says nothing useful.
+func withReset(cell string, resetsAt, now time.Time) string {
+	if strings.HasPrefix(cell, "unknown") || !resetsAt.After(now) {
+		return cell
+	}
+	return cell + " \u21bb " + shortReset(resetsAt, now)
 }
 
 // ageWords is a coarse age: "35m", "2h", "3d".
@@ -1049,6 +1083,32 @@ func (c *statusSink) setTokenState(account string, s creds.TokenState) {
 	defer c.mu.Unlock()
 	c.file.SetToken(account, s, time.Now())
 	c.queueLocked()
+}
+
+// dropTokenPassthroughs removes every passthrough text that only restates a
+// token state. A daemon start calls it: those marks describe a daemon that no
+// longer exists, and nothing else would clear one on a rotation-off account
+// until its first own-token response (F273). Other reasons stay.
+func (c *statusSink) dropTokenPassthroughs() {
+	c.mu.Lock()
+	dropped := false
+	for _, a := range c.file.Accounts {
+		if isTokenPassthrough(a.Passthrough) {
+			dropped = true
+			break
+		}
+	}
+	if dropped {
+		for _, a := range append([]status.Account(nil), c.file.Accounts...) {
+			if isTokenPassthrough(a.Passthrough) {
+				c.file.SetPassthrough(a.Name, "")
+			}
+		}
+	}
+	c.mu.Unlock()
+	if dropped {
+		c.flush()
+	}
 }
 
 // setDaemon stamps the daemon's own view into the cached document and queues

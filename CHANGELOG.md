@@ -7,6 +7,19 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.9.4] - 2026-10-06
+
+### Changed
+
+- `chottag status` shows when each 5h and 7d window resets, as in `28% ↻ 3h20m` or `99% (16h ago) ↻ Fri 18:00`, when the reset time is known and ahead.
+
+### Fixed
+
+- A daemon left in a dead macOS login session (after a logout or a WindowServer crash) no longer marks every account `needs-login`: the accounts read `stale`, with no notice, and the daemon exits a minute or two later so the next `claude` starts a fresh one. The first `needs-login` read of a slot logs its `exit status N`.
+- A `passthrough: token needs-login` or `token stale` mark no longer outlives a fresh login: a re-login, a renewal or a working usage poll clears it, and a daemon start drops the previous daemon's marks.
+
+  See [release notes](docs/release-notes/v0.9.4.md).
+
 ## [0.9.3] - 2026-10-06
 
 ### Fixed
@@ -376,6 +389,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.9.4]: docs/release-notes/v0.9.4.md
 [0.9.3]: docs/release-notes/v0.9.3.md
 [0.9.2]: docs/release-notes/v0.9.2.md
 [0.9.1]: docs/release-notes/v0.9.1.md

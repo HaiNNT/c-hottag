@@ -182,6 +182,32 @@ environment from.
 running one. Run `chottag daemon restart` after `chottag update` to pick
 up the new binary.
 
+## Every account reads as needing a login after a logout or a crash
+
+On macOS the daemon keeps the login session it was started in. If that
+session ends (a logout, or a WindowServer crash) while the daemon lives on,
+its `security` commands can no longer reach your keychains. Since 0.9.4 that is
+not read as "no login": the accounts show `stale`, nothing is marked
+`needs-login`, and no notice is sent. A minute or two after the first failure,
+if a fresh check still cannot reach the keychains (or two or more accounts that
+read fine earlier all stop reading together, which counts even when that check
+passes), the daemon logs `the login
+session this daemon started in has ended` and exits, and the next `claude`
+starts a fresh one in your live session. A daemon run by a supervisor
+(launchd) is left running, and logs that once instead. A login that
+is really gone (the slot's keychain item deleted) is still marked
+`needs-login`: at once for an account this daemon has not read yet, and after a
+minute of misses for one it read earlier. The first time a slot reads as
+needing a login, `daemon.log` has a line with the underlying `exit status N`.
+
+## `passthrough: token needs-login` stays after I logged in again
+
+Since 0.9.4 `chottag login` (and a token renewal, or a usage poll that works)
+clears that text within a few seconds, and a daemon start drops the previous
+daemon's marks. An older daemon kept it until the account's first request on its
+own login, which for a rotation-off account could be a long time:
+`chottag daemon restart` clears it.
+
 ## An account's login was refused (401)
 
 A desktop notice `chottag: C's login was refused (401)` (or 403) means a

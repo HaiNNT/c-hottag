@@ -788,3 +788,49 @@ func TestRenderStatusDoesNotShowAnOldNumberForAWindowThatResetSince(t *testing.T
 		t.Fatalf("output = %q, want the reset 5h window unknown (reset since) and the 7d one with its age", out)
 	}
 }
+
+// R163: each 5h and 7d cell shows when its window resets.
+func TestRenderStatusShowsResetsInCells(t *testing.T) {
+	zone := time.FixedZone("T", 7*3600)
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, zone) // a Tuesday
+	p28, p99, p10 := 28.0, 99.0, 10.0
+	old := now.Add(-16 * time.Hour)
+	cases := []struct {
+		name  string
+		usage status.Usage
+		want  []string
+		not   string
+	}{
+		{"fresh with future reset", status.Usage{FiveHourPct: &p28, SevenDayPct: &p10, UpdatedAt: now,
+			FiveHourResetsAt: now.Add(3*time.Hour + 20*time.Minute), SevenDayResetsAt: now.Add(48 * time.Hour)},
+			[]string{"28% ↻ 3h20m", "10% ↻ Thu 12:00"}, ""},
+		{"fresh with zero reset", status.Usage{FiveHourPct: &p28, SevenDayPct: &p10, UpdatedAt: now},
+			[]string{"28%", "10%"}, "↻"},
+		{"old with future reset", status.Usage{FiveHourPct: &p99, SevenDayPct: &p10, UpdatedAt: old,
+			FiveHourResetsAt: now.Add(30 * time.Minute), SevenDayResetsAt: now.Add(3 * 24 * time.Hour)},
+			[]string{"99% (16h ago) ↻ 30m", "10% (16h ago) ↻ Fri 12:00"}, ""},
+		{"old with passed reset", status.Usage{FiveHourPct: &p99, SevenDayPct: &p10, UpdatedAt: old,
+			FiveHourResetsAt: old.Add(time.Hour), SevenDayResetsAt: old.Add(2 * time.Hour)},
+			[]string{"unknown (reset since)"}, "↻"},
+		{"nil pct", status.Usage{UpdatedAt: now, FiveHourResetsAt: now.Add(time.Hour), SevenDayResetsAt: now.Add(time.Hour)},
+			[]string{"unknown"}, "↻"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u := c.usage
+			f := status.File{Accounts: []status.Account{{Name: "A", Usage: &u}}}
+			var buf bytes.Buffer
+			renderStatus(&buf, f, now)
+			out := buf.String()
+			t.Log("\n" + out)
+			for _, w := range c.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("output %q lacks %q", out, w)
+				}
+			}
+			if c.not != "" && strings.Contains(out, c.not) {
+				t.Errorf("output %q must not contain %q", out, c.not)
+			}
+		})
+	}
+}
