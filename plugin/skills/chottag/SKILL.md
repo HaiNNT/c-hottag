@@ -264,8 +264,10 @@ also switches the update check off.
 
 - `status`: `daemon.liveSessions` counts the live sessions chottag launched.
   `serving` and `remote` are account NAMES that index `accounts[]`.
-  Usage percentages are 0–100. An absent percentage, or `stale: true` on the
-  account, means unknown: never show it as 0%. `limited: true` means limited
+  Usage percentages are 0–100. An absent percentage means unknown: never show
+  it as 0%. With `stale: true` the numbers are kept: show them with their age
+  from `usage.updatedAt` (`45% (2h ago)`, as the text form does), never as
+  live. `limited: true` means limited
   now, until `limitedUntil` when that is present. `token` is a state
   (`ok | expiring | stale | needs-login`); for `needs-login`, offer
   `chottag login <name>`.

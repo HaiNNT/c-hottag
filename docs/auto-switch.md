@@ -86,6 +86,38 @@ and the notices are the spread ones (`chottag: moved N sessions from A to B,
 C`, or `N sessions on A have no account to move to`, plus the usual switched
 notice on a retry), also controlled by `chottag notify`.
 
+## Before it switches
+
+Before moving serving onto an account, the daemon checks that account:
+
+- **No login.** An account that needs a login is never switched to. The daemon
+  records `needs-login` for it (one notice, `chottag login <name>` to fix) and
+  picks the next candidate. A poll or a refresh that finds no login records it
+  too, without waiting for a request to fail on it.
+- **A stale token.** The daemon refreshes it first. A threshold switch waits
+  for the next check; a switch forced by a limit (a request that was refused)
+  waits for the refresh, then takes the next candidate if the token did not
+  renew.
+- **Old usage.** A target whose reading is older than 45 minutes ranks after
+  the others, and is polled before the switch. A threshold switch waits until
+  the poll lands. A poll never overrides a 429 backoff, so an account the
+  server told to wait is not polled sooner.
+- **A limit seen without a refused request** (the daemon's own check, not a
+  request waiting on it) never waits: it starts the refresh or poll and takes
+  the next candidate whose token and reading are fine right now, or keeps the
+  switch deferred when there is none. A poll skipped because the account is in
+  a 429 backoff says so in the daemon log.
+- **Bounds.** The waits happen only for a switch forced by a limit, never on
+  the path that delivers a response, and together take at most 25 seconds
+  (15 for tokens, 10 for polls) however many candidates fail. A switch forced
+  by a limit whose poll failed or timed out goes ahead on the old reading,
+  rather than leave you on a limited account.
+
+[`chottag policy spread`](how-it-works.md#spreading-sessions-spread) has no
+such check of its own: it relies on the `needs-login` state recorded by the
+daemon's warm pass, usage polls and refreshes, which keeps that account out of
+new placements.
+
 ## Pools
 
 With [pools](how-it-works.md#pools), each `serial` pool is evaluated on its

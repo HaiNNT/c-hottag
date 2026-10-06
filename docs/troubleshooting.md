@@ -44,6 +44,21 @@ still tries a refresh once every 15 minutes, whatever the account's role, and
 if one renews the token the account is back without a login (`refresh C:
 renewed, ...`).
 
+Since 0.9.3 the daemon also records `needs-login` where it sees it: a usage
+poll or a refresh that finds the slot holds no login (the daemon log says
+`usage poll B: no usable login` or `refresh B: failed: no usable login`) marks
+the account and posts one notice, and auto-switch never switches onto it. The
+daemon stops polling it until you log it in again.
+
+## An account shows an old reading, `45% (2h ago)`
+
+`chottag status` shows a reading older than 10 minutes with its age. The
+daemon polls an idle account about every 30 minutes, so a reading hours old
+means the polls are failing: look for `usage poll NAME idle 429` lines in the
+daemon log (it then waits the server's `Retry-After`, else 60 and 120
+minutes), or for a `needs-login` state, which stops polling until you run
+`chottag login NAME`. A rotation-off account is polled every 2 hours.
+
 ## An account's token stays stale
 
 `token: stale` on `chottag status` means the slot's access token has expired.
@@ -190,7 +205,9 @@ C`.
 table chottag learned. Since 0.9.1 these count: a request about a claude.ai
 object (Remote Control, a connector, an artifact, a routine), a request to a
 route chottag's table does not list (what a new Claude Code route looks
-like), and any 404. A 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is the notice above
+like), and a 404 other than on `POST /v1/messages` (since 0.9.3 that one is
+Claude Code's own thread-continue answer and is passed through, marked
+`passed404` in `proxy.jsonl`). A 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is the notice above
 instead. Run
 `chottag trace on`, reproduce the drifted request, then `chottag trace
 summarize`, and open an issue with that output — it holds route shapes,

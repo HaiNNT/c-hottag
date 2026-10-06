@@ -71,6 +71,11 @@ type RefreshEvent struct {
 	// NeedsLogin is set on the attempt that took the slot to needs-login
 	// (ReasonNotRenewing).
 	NeedsLogin bool
+	// NoLogin is set when the slot holds no usable login at all (the
+	// credential is missing, or the Keychain refuses it): nothing a refresh
+	// could renew. A transient read error is not one. It is a different fact from a failed attempt, and the
+	// daemon records needs-login for it (F269).
+	NoLogin bool
 	// Tries and Span describe the run of not-renewed outcomes that ended
 	// with this event (Tries of them, the first Span ago); 0 otherwise.
 	Tries int
@@ -704,6 +709,7 @@ func (m *Manager) attempt(ctx context.Context, s *slot, dir string, forced bool,
 				ev.Detail = failDetail(err)
 			} else {
 				ev.Detail = "no usable login: " + raw.Reason
+				ev.NoLogin = raw.State == creds.StateNeedsLogin
 			}
 		}
 		if s.lockedOut && !errors.Is(err, errSlotBusy) && s.nextTry.Before(now.Add(m.cfg.MaxBackoff)) {

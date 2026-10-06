@@ -44,6 +44,7 @@ import (
 // racing it against the daemon's still-in-flight shutdown I/O intermittently
 // failed the test with "directory not empty" before this waited.
 func TestProxyRunPrintsExportLinesBeforeServing(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	out := newSyncBuf()
@@ -104,6 +105,7 @@ func TestProxyRunPrintsExportLinesBeforeServing(t *testing.T) {
 // existed, an unguarded `defer lw.Close()` on that exact path panicked
 // with the rest of the suite green (review finding, M1c4 Task 3 round 1).
 func TestRunProxyWithSignalLogEmptyDisablesLoggingEndToEnd(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	errb := newSyncBuf() // "chottag proxy listening on <addr>, ..." is its first write
@@ -162,6 +164,7 @@ func TestRunProxyWithSignalLogEmptyDisablesLoggingEndToEnd(t *testing.T) {
 // fully green suite until this test existed. This one sends the signal
 // itself and requires runProxyWithSignal to actually return.
 func TestRunProxyWithSignalActuallyStopsOnASignal(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	errb := newSyncBuf() // "chottag proxy listening on <addr>, ..." is its first write
@@ -230,6 +233,7 @@ func TestRunProxyWithSignalActuallyStopsOnASignal(t *testing.T) {
 // returns must report owners.ErrClosed, which is only possible if Close
 // actually ran (owners.Map's own contract — see its Close doc comment).
 func TestRunProxyWithSignalClosesOwnersWhenNewStatusSinkFails(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 
@@ -426,6 +430,9 @@ func TestRunProxyExitsWithCode130OnASecondSignalHelper(t *testing.T) {
 func TestRunProxyWiresOwnersSaveErrorThrottleIntoOwnSetOnError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
+	// The warm pass now records a slot with no login and posts its notice
+	// (F269); the daemon's notifier must be a stub.
+	stubDaemonNotifier(t)
 
 	s := store.Store{Dir: home}
 	if _, err := s.Update(func(st *store.State) error {

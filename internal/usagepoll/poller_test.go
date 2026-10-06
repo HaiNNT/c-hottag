@@ -83,6 +83,8 @@ func newHarness(t *testing.T) *harness {
 		},
 		Log: &h.log,
 		Now: h.clk.Now,
+		// No jitter by default: 0.5 maps to +0%.
+		Rand: func() float64 { return 0.5 },
 	})
 	return h
 }
@@ -124,7 +126,7 @@ func (h *harness) wantNone(name string) {
 func accts(names ...string) []Account {
 	out := make([]Account, len(names))
 	for i, n := range names {
-		out[i] = Account{Name: n, Dir: "/slots/" + n}
+		out[i] = Account{Name: n, Dir: "/slots/" + n, Rotates: true}
 	}
 	return out
 }
@@ -134,18 +136,18 @@ func okOutcome() Outcome { return Outcome{OK: true, Status: "200"} }
 func TestSyncRosterSeedsStartAndResetPolls(t *testing.T) {
 	h := newHarness(t)
 	h.views["B"] = CacheView{Fresh: false}
-	h.views["C"] = CacheView{Fresh: true}
+	h.views["C"] = CacheView{Fresh: true, UpdatedAt: schedBase.Add(-5 * time.Minute)}
 	h.views["D"] = CacheView{Fresh: true, Limited: true, Until: schedBase.Add(time.Hour)}
 	h.views["E"] = CacheView{Limited: true}
 	h.views["F"] = CacheView{Limited: true, Until: schedBase.Add(-time.Hour)}
 	h.p.SyncRoster(append(accts("A", "B", "C", "D", "E", "F"), Account{Name: "Home"}))
 
-	h.wantPending("A", schedBase, kindStart)                      // no cache row at all
-	h.wantPending("B", schedBase.Add(Stagger), kindStart)         // stale
-	h.wantNone("C")                                               // fresh and unlimited
-	h.wantPending("D", schedBase.Add(time.Hour+Grace), kindReset) // known future reset
-	h.wantPending("E", schedBase.Add(2*Stagger), kindReset)       // reset unknown: check now
-	h.wantPending("F", schedBase.Add(3*Stagger), kindReset)       // reset already passed
+	h.wantPending("A", schedBase, kindStart)                             // no cache row at all
+	h.wantPending("B", schedBase.Add(Stagger), kindStart)                // stale
+	h.wantPending("C", schedBase.Add(IdleEvery-5*time.Minute), kindIdle) // fresh and unlimited: idle poll
+	h.wantPending("D", schedBase.Add(time.Hour+Grace), kindReset)        // known future reset
+	h.wantPending("E", schedBase.Add(2*Stagger), kindReset)              // reset unknown: check now
+	h.wantPending("F", schedBase.Add(3*Stagger), kindReset)              // reset already passed
 	if _, ok := h.p.accts[key("Home")]; ok {
 		t.Fatal("an account with no slot dir joined the roster")
 	}
@@ -184,8 +186,13 @@ func TestRunDueStaggersStartPolls(t *testing.T) {
 	if got := h.fetchedDirs(); len(got) != 3 || got[1] != "/slots/B" || got[2] != "/slots/C" {
 		t.Fatalf("fetched %v, want A, B, C two seconds apart", got)
 	}
-	if ok {
-		t.Fatalf("next in %v, want nothing pending after three unlimited results", wait)
+	if !ok || wait != IdleEvery-2*Stagger {
+		t.Fatalf("next in %v (%v), want the first idle poll IdleEvery after A's update", wait, ok)
+	}
+	for _, n := range []string{"A", "B", "C"} {
+		if e, ok := h.pendingOf(n); !ok || e.kind != kindIdle {
+			t.Fatalf("%s pending = %+v (%v), want an idle poll after its result", n, e, ok)
+		}
 	}
 	if lines := strings.Count(h.log.String(), "\n"); lines != 3 {
 		t.Fatalf("log = %q, want one line per poll", h.log.String())
@@ -244,14 +251,13 @@ func TestUnknownResetBacksOff15Then30Then60(t *testing.T) {
 	h.wantPending("E", h.clk.Now().Add(60*time.Minute), kindReset)
 }
 
-func TestAFailedStartPollIsNotRetried(t *testing.T) {
+func TestAFailedStartPollJoinsTheIdleSchedule(t *testing.T) {
 	h := newHarness(t)
 	h.fetch = func(string) Outcome { return Outcome{Status: "429"} }
 	h.p.SyncRoster(accts("A"))
-	if _, ok := h.runDue(); ok {
-		t.Fatal("a failed start poll was rescheduled")
-	}
-	h.wantNone("A")
+	h.runDue()
+	// A 429 without Retry-After backs off 60 minutes, not the usual 30.
+	h.wantPending("A", schedBase.Add(60*time.Minute), kindIdle)
 	if len(h.applied) != 0 {
 		t.Fatal("a failed poll reached the cache")
 	}
@@ -284,8 +290,8 @@ func TestAStartPollSkippedForNoTokenRetriesOnce(t *testing.T) {
 	}
 
 	h.clk.Advance(TokenRetry)
-	if wait, ok := h.runDue(); ok {
-		t.Fatalf("next in %v, want nothing pending after the retry succeeded", wait)
+	if wait, ok := h.runDue(); !ok || wait != IdleEvery {
+		t.Fatalf("next in %v (%v), want the idle poll IdleEvery after the retry succeeded", wait, ok)
 	}
 	if got := len(h.fetchedDirs()); got != 2 {
 		t.Fatalf("fetched %d, want exactly 2", got)
@@ -294,8 +300,8 @@ func TestAStartPollSkippedForNoTokenRetriesOnce(t *testing.T) {
 		t.Fatalf("log = %q, want both poll lines to show kind start", h.log.String())
 	}
 
-	// A third attempt never happens after the OK.
-	h.clk.Advance(24 * time.Hour)
+	// A third attempt never happens after the OK, before the idle poll.
+	h.clk.Advance(20 * time.Minute)
 	h.runDue()
 	if got := len(h.fetchedDirs()); got != 2 {
 		t.Fatalf("fetched %d after advancing far past the retry, want still 2", got)
@@ -312,8 +318,8 @@ func TestAStartPollRetriesNoTokenOnlyOnce(t *testing.T) {
 	h.wantPending("A", schedBase.Add(TokenRetry), kindStart)
 	h.clk.Advance(TokenRetry)
 	h.runDue()
-	h.wantNone("A")
-	h.clk.Advance(6 * time.Hour)
+	h.wantPending("A", schedBase.Add(TokenRetry+IdleEvery), kindIdle)
+	h.clk.Advance(20 * time.Minute)
 	h.runDue()
 	if got := len(h.fetchedDirs()); got != 2 {
 		t.Fatalf("fetched %d, want exactly 2 attempts even hours later", got)
@@ -355,7 +361,7 @@ func TestAnObservationCancelsTheNoTokenRetry(t *testing.T) {
 	h.wantPending("A", schedBase.Add(TokenRetry), kindStart)
 
 	h.p.Observed("A", false, time.Time{})
-	h.wantNone("A")
+	h.wantPending("A", schedBase.Add(IdleEvery), kindIdle)
 
 	h.clk.Advance(TokenRetry)
 	h.runDue()
@@ -394,7 +400,7 @@ func TestObservedCancelsNoDataPollAndMovesResetPoll(t *testing.T) {
 	h.wantPending("A", schedBase, kindStart)
 
 	h.p.Observed("A", false, time.Time{})
-	h.wantNone("A")
+	h.wantPending("A", schedBase.Add(IdleEvery), kindIdle)
 
 	until := schedBase.Add(2 * time.Hour)
 	h.p.Observed("a", true, until) // case-folded, like every account lookup
@@ -404,8 +410,13 @@ func TestObservedCancelsNoDataPollAndMovesResetPoll(t *testing.T) {
 	h.wantPending("A", until.Add(Grace), kindReset)
 
 	h.p.Observed("A", false, time.Time{})
-	h.wantNone("A")
-
+	h.wantPending("A", schedBase.Add(IdleEvery), kindIdle)
+	h.p.Observed("A", true, time.Time{}) // limited, reset unknown: the idle entry gives way to the backoff
+	h.wantPending("A", schedBase.Add(backoff[0]), kindReset)
+	h.p.Observed("A", false, time.Time{})
+	h.p.mu.Lock()
+	h.p.accts["a"].pending = nil
+	h.p.mu.Unlock()
 	h.p.Observed("A", true, time.Time{}) // limited, reset unknown, nothing pending: back off
 	h.wantPending("A", schedBase.Add(backoff[0]), kindReset)
 
@@ -423,7 +434,7 @@ func TestAnObservationDuringAPollWins(t *testing.T) {
 	h.apply = func(string) Applied { return Applied{Written: true, Limited: true, Until: schedBase.Add(time.Hour)} }
 	h.p.SyncRoster(accts("A"))
 	h.runDue()
-	h.wantNone("A")
+	h.wantPending("A", schedBase.Add(IdleEvery), kindIdle) // Observed's own schedule
 }
 
 func TestADroppedPollIsNotRescheduled(t *testing.T) {
@@ -515,7 +526,7 @@ func TestAPollDueDuringSleepRunsOnWake(t *testing.T) {
 
 func TestRosterRemoveCancelsAndAddSeeds(t *testing.T) {
 	h := newHarness(t)
-	h.views["A"] = CacheView{Fresh: true}
+	h.views["A"] = CacheView{Fresh: true, UpdatedAt: schedBase}
 	h.p.SyncRoster(accts("A", "B"))
 	h.wantPending("B", schedBase, kindStart)
 	h.clk.Advance(time.Minute)
@@ -524,7 +535,7 @@ func TestRosterRemoveCancelsAndAddSeeds(t *testing.T) {
 		t.Fatal("a removed account stayed on the roster")
 	}
 	h.wantPending("C", h.clk.Now(), kindStart)
-	h.wantNone("A") // an existing account is not re-seeded
+	h.wantPending("A", schedBase.Add(IdleEvery), kindIdle) // an existing account is not re-seeded
 }
 
 func TestAnAccountRemovedDuringItsPollIsNotWritten(t *testing.T) {
@@ -751,5 +762,273 @@ func TestNewRefusesAnIncompleteConfig(t *testing.T) {
 			}()
 			New(c)
 		}()
+	}
+}
+
+// jitterHigh and jitterLow are Rand values at the two ends of the +-10%
+// spread.
+func TestIdlePollIsDueAnIntervalAfterTheUpdateWithJitter(t *testing.T) {
+	for _, tc := range []struct {
+		rand float64
+		want time.Duration
+	}{{0, 27 * time.Minute}, {0.5, 30 * time.Minute}, {1, 33 * time.Minute}} {
+		h := newHarness(t)
+		h.p.cfg.Rand = func() float64 { return tc.rand }
+		h.views["A"] = CacheView{Fresh: true, UpdatedAt: schedBase}
+		h.p.SyncRoster(accts("A"))
+		h.wantPending("A", schedBase.Add(tc.want), kindIdle)
+	}
+}
+
+func TestRotationOffAccountIsPolledEveryTwoHours(t *testing.T) {
+	h := newHarness(t)
+	h.views["R"] = CacheView{Fresh: true, UpdatedAt: schedBase}
+	h.p.SyncRoster([]Account{{Name: "R", Dir: "/slots/R"}})
+	h.wantPending("R", schedBase.Add(OffEvery), kindIdle)
+}
+
+func TestIdlePollsAreStaggeredAndRescheduledAfterAResult(t *testing.T) {
+	h := newHarness(t)
+	h.fetch = func(string) Outcome { return okOutcome() }
+	for _, n := range []string{"A", "B", "C"} {
+		h.views[n] = CacheView{Fresh: true, UpdatedAt: schedBase}
+	}
+	h.p.SyncRoster(accts("A", "B", "C"))
+	due := map[string]time.Time{}
+	for _, n := range []string{"A", "B", "C"} {
+		e, _ := h.pendingOf(n)
+		due[n] = e.due
+	}
+	for _, x := range []string{"A", "B", "C"} {
+		for _, y := range []string{"A", "B", "C"} {
+			if x < y {
+				if d := due[x].Sub(due[y]); d > -Stagger && d < Stagger {
+					t.Fatalf("%s and %s are due %v apart, want at least %v", x, y, d.Abs(), Stagger)
+				}
+			}
+		}
+	}
+	h.clk.Advance(IdleEvery + 10*time.Second)
+	h.runDue()
+	if got := len(h.fetchedDirs()); got != 3 {
+		t.Fatalf("fetched %d, want the three idle polls", got)
+	}
+	// Each result schedules the next idle poll IdleEvery later.
+	for _, n := range []string{"A", "B", "C"} {
+		if e, ok := h.pendingOf(n); !ok || e.kind != kindIdle || e.due.Before(h.clk.Now().Add(IdleEvery-time.Minute)) {
+			t.Fatalf("%s pending = %+v (%v), want another idle poll about IdleEvery away", n, e, ok)
+		}
+	}
+	if !strings.Contains(h.log.String(), " idle 200 ") {
+		t.Fatalf("log = %q, want idle polls logged as kind idle", h.log.String())
+	}
+}
+
+func TestIdle429BacksOffSixtyThenOneTwentyAndHonoursRetryAfter(t *testing.T) {
+	h := newHarness(t)
+	h.views["A"] = CacheView{Fresh: true, UpdatedAt: schedBase.Add(-time.Hour)}
+	h.fetch = func(string) Outcome { return Outcome{Status: "429"} }
+	h.p.SyncRoster(accts("A"))
+	h.runDue()
+	h.wantPending("A", schedBase.Add(60*time.Minute), kindIdle)
+	h.clk.Advance(60 * time.Minute)
+	h.runDue()
+	h.wantPending("A", h.clk.Now().Add(120*time.Minute), kindIdle)
+	h.clk.Advance(120 * time.Minute)
+	h.runDue()
+	h.wantPending("A", h.clk.Now().Add(120*time.Minute), kindIdle) // stays at 120
+
+	h.fetch = func(string) Outcome { return Outcome{Status: "429", RetryAfter: 7 * time.Minute} }
+	h.clk.Advance(120 * time.Minute)
+	h.runDue()
+	h.wantPending("A", h.clk.Now().Add(7*time.Minute), kindIdle)
+
+	// Any other failure waits the ordinary interval.
+	h.fetch = func(string) Outcome { return Outcome{Status: "timeout"} }
+	h.clk.Advance(7 * time.Minute)
+	h.runDue()
+	h.wantPending("A", h.clk.Now().Add(IdleEvery), kindIdle)
+}
+
+func TestNeedsLoginStopsPollingAndAnnouncesOnce(t *testing.T) {
+	h := newHarness(t)
+	var told []string
+	h.p.cfg.OnNeedsLogin = func(a string) {
+		told = append(told, a)
+		// What the daemon does: the status row says needs-login from now.
+		h.views[a] = CacheView{NeedsLogin: true, TokenAt: h.clk.Now()}
+	}
+	h.fetch = func(string) Outcome { return Outcome{Status: "no-token", NoToken: true, NeedsLogin: true} }
+	h.p.SyncRoster(accts("A"))
+	h.runDue()
+	h.clk.Advance(24 * time.Hour)
+	h.p.Wake()
+	h.runDue()
+	h.p.SyncRoster(accts("A")) // the roster tick: the row still says nothing is wrong
+	h.runDue()
+	if got := h.fetchedDirs(); len(got) != 1 {
+		t.Fatalf("fetched %v, want the one poll that found the missing login", got)
+	}
+	if len(told) != 1 || told[0] != "A" {
+		t.Fatalf("OnNeedsLogin calls = %v, want exactly one for A", told)
+	}
+	h.wantNone("A")
+}
+
+func TestNeedsLoginAccountPollsAgainAfterTheRowClearsOrALogin(t *testing.T) {
+	h := newHarness(t)
+	h.p.cfg.OnNeedsLogin = func(string) {}
+	h.fetch = func(string) Outcome { return Outcome{Status: "no-token", NoToken: true, NeedsLogin: true} }
+	h.p.SyncRoster(accts("A", "B"))
+	h.runDue()
+	h.clk.Advance(Stagger)
+	h.runDue()
+	h.wantNone("A")
+	h.wantNone("B")
+
+	// The status row says needs-login since T; a login after T lifts it.
+	tokenAt := h.clk.Now()
+	h.views["A"] = CacheView{NeedsLogin: true, TokenAt: tokenAt}
+	h.views["B"] = CacheView{NeedsLogin: true, TokenAt: tokenAt}
+	h.p.SyncRoster(accts("A", "B"))
+	h.wantNone("A")
+	h.wantNone("B")
+	loggedIn := []Account{{Name: "A", Dir: "/slots/A", Rotates: true, LoggedInAt: tokenAt.Add(time.Minute)}, {Name: "B", Dir: "/slots/B", Rotates: true}}
+	h.p.SyncRoster(loggedIn)
+	if _, ok := h.pendingOf("A"); !ok {
+		t.Fatal("A was not polled again after logging in")
+	}
+	h.wantNone("B")
+
+	// B's row clears (a refresh renewed it): polled again too.
+	h.views["B"] = CacheView{}
+	h.p.SyncRoster(loggedIn)
+	if _, ok := h.pendingOf("B"); !ok {
+		t.Fatal("B was not polled again after its needs-login mark cleared")
+	}
+}
+
+func TestSeedNeverPollsAnAccountTheRowSaysNeedsLogin(t *testing.T) {
+	h := newHarness(t)
+	h.views["A"] = CacheView{NeedsLogin: true, TokenAt: schedBase}
+	h.p.SyncRoster(accts("A"))
+	h.wantNone("A")
+	if h.p.PollNow(h.ctx, "A") {
+		t.Fatal("PollNow polled a needs-login account")
+	}
+}
+
+func TestPollNowRunsAheadOfScheduleAndReportsTheResult(t *testing.T) {
+	h := newHarness(t)
+	h.fetch = func(string) Outcome { return okOutcome() }
+	h.views["A"] = CacheView{Fresh: true, UpdatedAt: schedBase}
+	h.p.SyncRoster(accts("A"))
+	h.wantPending("A", schedBase.Add(IdleEvery), kindIdle)
+
+	got := make(chan bool, 1)
+	go func() { got <- h.p.PollNow(h.ctx, "A") }()
+	// PollNow queues the poll and wakes Run; drive the worker by hand once
+	// the poll is queued.
+	for {
+		<-h.p.kick
+		if e, ok := h.pendingOf("A"); ok && e.due.Equal(schedBase) {
+			break
+		}
+	}
+	h.runDue()
+	if !<-got {
+		t.Fatal("PollNow = false, want true for a poll that parsed")
+	}
+	if n := len(h.fetchedDirs()); n != 1 {
+		t.Fatalf("fetched %d, want 1", n)
+	}
+	h.wantPending("A", schedBase.Add(IdleEvery), kindIdle)
+
+	if h.p.PollNow(h.ctx, "Nobody") {
+		t.Fatal("PollNow polled an account that is not on the roster")
+	}
+}
+
+func TestPollNowReturnsFalseWhenTheContextEnds(t *testing.T) {
+	h := newHarness(t)
+	h.p.SyncRoster(accts("A"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if h.p.PollNow(ctx, "A") {
+		t.Fatal("PollNow = true with a cancelled context and no poll run")
+	}
+}
+
+// M3: a pre-switch poll never overrides a 429 backoff (Retry-After included).
+func TestPollNowHonoursA429Backoff(t *testing.T) {
+	h := newHarness(t)
+	h.views["A"] = CacheView{Fresh: true, UpdatedAt: schedBase.Add(-time.Hour)}
+	h.fetch = func(string) Outcome { return Outcome{Status: "429", RetryAfter: 40 * time.Minute} }
+	h.p.SyncRoster(accts("A"))
+	h.runDue()
+	h.wantPending("A", schedBase.Add(40*time.Minute), kindIdle)
+	if h.p.PollNow(h.ctx, "A") {
+		t.Fatal("PollNow = true during a Retry-After backoff")
+	}
+	h.wantPending("A", schedBase.Add(40*time.Minute), kindIdle) // untouched
+	if n := len(h.fetchedDirs()); n != 1 {
+		t.Fatalf("fetched %d, want only the original poll", n)
+	}
+}
+
+func TestPollNowSkipsALimitedAccount(t *testing.T) {
+	h := newHarness(t)
+	h.views["A"] = CacheView{Fresh: true, Limited: true, Until: schedBase.Add(time.Hour)}
+	h.p.SyncRoster(accts("A"))
+	if h.p.PollNow(h.ctx, "A") {
+		t.Fatal("PollNow polled a limited account")
+	}
+	h.wantPending("A", schedBase.Add(time.Hour+Grace), kindReset)
+}
+
+// A 401 that survived a refresh costs a claude spawn per retry: an idle poll
+// backs off like a 429.
+func TestIdlePollThatGaveUpBacksOffLikeA429(t *testing.T) {
+	h := newHarness(t)
+	h.views["A"] = CacheView{Fresh: true, UpdatedAt: schedBase.Add(-time.Hour)}
+	h.fetch = func(string) Outcome { return Outcome{Status: "401 refresh-failed", GaveUp: true} }
+	h.p.SyncRoster(accts("A"))
+	h.runDue()
+	h.wantPending("A", schedBase.Add(60*time.Minute), kindIdle)
+	h.clk.Advance(60 * time.Minute)
+	h.runDue()
+	h.wantPending("A", h.clk.Now().Add(120*time.Minute), kindIdle)
+}
+
+func TestOnOKIsToldOfAPollThatWroteUsage(t *testing.T) {
+	h := newHarness(t)
+	var got []string
+	h.p.SetOnOK(func(a string) { got = append(got, a) })
+	h.fetch = func(string) Outcome { return okOutcome() }
+	h.p.SyncRoster(accts("A"))
+	h.runDue()
+	if len(got) != 1 || got[0] != "A" {
+		t.Fatalf("OnOK calls = %v, want one for A", got)
+	}
+	h.fetch = func(string) Outcome { return Outcome{Status: "429"} }
+	h.clk.Advance(IdleEvery + time.Minute)
+	h.runDue()
+	if len(got) != 1 {
+		t.Fatalf("OnOK calls = %v after a failed poll, want still one", got)
+	}
+}
+
+func TestPollSkipSaysWhy(t *testing.T) {
+	h := newHarness(t)
+	h.views["Lim"] = CacheView{Fresh: true, Limited: true, Until: schedBase.Add(time.Hour)}
+	h.views["Bad"] = CacheView{NeedsLogin: true, TokenAt: schedBase}
+	h.views["Back"] = CacheView{Fresh: true, UpdatedAt: schedBase.Add(-time.Hour)}
+	h.fetch = func(string) Outcome { return Outcome{Status: "429"} }
+	h.p.SyncRoster(accts("Lim", "Bad", "Back", "Ok"))
+	h.runDue() // Back's idle poll fails with a 429
+	for name, want := range map[string]string{"Lim": "limited", "Bad": "needs login", "Back": "in a 429 backoff", "Nobody": "not on the roster"} {
+		if got := h.p.PollSkip(name); got != want {
+			t.Errorf("PollSkip(%s) = %q, want %q", name, got, want)
+		}
 	}
 }

@@ -22,6 +22,10 @@ import (
 func runHome(t *testing.T, dir string, args ...string) (int, string, string) {
 	t.Helper()
 	t.Setenv("CHOTTAG_HOME", dir)
+	if len(args) >= 2 && (args[0] == "proxy" || args[0] == "daemon") && args[1] == "run" {
+		// The daemon's warm pass may post a needs-login notice (F269).
+		cli.StubDaemonNotifierForTest(t)
+	}
 	var out, errb bytes.Buffer
 	code := cli.Run("chottag", args, &out, &errb)
 	return code, out.String(), errb.String()

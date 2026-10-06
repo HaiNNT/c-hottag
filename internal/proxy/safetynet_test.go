@@ -323,7 +323,7 @@ func TestSafetyNetServingRefusalIsReportedNotCountedAsDrift(t *testing.T) {
 	}{
 		{"serving 401", "POST", "https://api.anthropic.com/v1/messages", 401, 0, 1},
 		{"serving 403", "POST", "https://api.anthropic.com/v1/messages", 403, 0, 1},
-		{"serving 404 stays drift", "POST", "https://api.anthropic.com/v1/messages", 404, 1, 0},
+		{"other serving path 404 stays drift", "POST", "https://api.anthropic.com/v1/messages/count_tokens", 404, 1, 0},
 		{"unlisted route stays drift", "GET", "https://api.anthropic.com/some/new/route", 401, 1, 0},
 		{"serving object stays drift", "POST", "https://api.anthropic.com/v1/sessions/sess-1/events", 401, 1, 0},
 		{"object", "GET", "https://api.anthropic.com/api/frame/read/artifact-1", 401, 1, 0},
@@ -455,7 +455,7 @@ func TestSafetyNetSkipsRetryForDeclaredOversizedBody(t *testing.T) {
 		calls.Add(1)
 		n, _ := io.Copy(io.Discard, r.Body)
 		received.Add(n)
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusUnauthorized)
 	})
 	ch := &refusingChooser{}
 	h := proxytest.Start(t, up, proxytest.Options{Choose: ch})
@@ -479,8 +479,8 @@ func TestSafetyNetSkipsRetryForDeclaredOversizedBody(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("client saw %d, want 404 passed straight through unchanged", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("client saw %d, want 401 passed straight through unchanged", resp.StatusCode)
 	}
 	if got := received.Load(); got != int64(bodySize) {
 		t.Fatalf("upstream received %d body bytes, want all %d", got, bodySize)
@@ -522,7 +522,7 @@ func TestSafetyNetNeverTruncatesAnUnreplayableBody(t *testing.T) {
 		received.Add(n)
 		// Refused: an unreplayable body must never be retried or resent —
 		// this refusal must reach the client exactly as the upstream sent it.
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusUnauthorized)
 	})
 	ch := &refusingChooser{}
 	h := proxytest.Start(t, up, proxytest.Options{Choose: ch})
@@ -541,8 +541,8 @@ func TestSafetyNetNeverTruncatesAnUnreplayableBody(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("client saw %d, want 404 passed straight through unchanged", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("client saw %d, want 401 passed straight through unchanged", resp.StatusCode)
 	}
 	if got := received.Load(); got != int64(bodySize) {
 		t.Fatalf("upstream received %d body bytes, want all %d (the body must never be truncated)", got, bodySize)
@@ -576,5 +576,88 @@ func TestSafetyNetLeavesSuccessfulSwapsAlone(t *testing.T) {
 	resp.Body.Close()
 	if ch.refreshes != 0 || h.Server.RouteDrift() != 0 {
 		t.Fatalf("refreshes=%d drift=%d, want 0/0", ch.refreshes, h.Server.RouteDrift())
+	}
+}
+
+// TestSafetyNetPassesServingMessages404 is F270: a 404 on a serving
+// POST /v1/messages (a Message Threads continue for a thread the account
+// does not hold) reaches Claude Code unchanged, with no refresh, no resend
+// on Home's login, no drift and no refusal report, and the trace record says
+// passed404.
+func TestSafetyNetPassesServingMessages404(t *testing.T) {
+	const upBody = `{"type":"error","error":{"type":"not_found_error","message":"thread"}}`
+	var mu sync.Mutex
+	var seen []string
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, upBody)
+	})
+	ch := &refusingChooser{}
+	var refusals atomic.Int32
+	h := proxytest.Start(t, up, proxytest.Options{
+		Choose:           ch,
+		OnServingRefusal: func(string, int, bool, string, string) { refusals.Add(1) },
+	})
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || string(got) != upBody {
+		t.Fatalf("client saw %d %q, want the 404 body unchanged", resp.StatusCode, got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0] != "Bearer tok-stale" {
+		t.Fatalf("upstream saw %v, want exactly one request on the swapped account", seen)
+	}
+	if n := ch.refreshes; n != 0 {
+		t.Fatalf("refreshes = %d, want 0", n)
+	}
+	if d := h.Server.RouteDrift(); d != 0 {
+		t.Fatalf("RouteDrift = %d, want 0", d)
+	}
+	if refusals.Load() != 0 {
+		t.Fatalf("serving refusals reported = %d, want 0", refusals.Load())
+	}
+	r := h.Records(t, "req", 1)[0]
+	if !r.Passed404 || r.Drift || r.Refused != 0 {
+		t.Fatalf("record = %+v, want passed404 only", r)
+	}
+}
+
+// A 404 on an object route still refreshes, resends and counts as drift.
+func TestSafetyNetObject404StillDrifts(t *testing.T) {
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer sk-ant-oat01-home" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	ch := &refusingChooser{}
+	h := proxytest.Start(t, up, proxytest.Options{Choose: ch})
+	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/frame/read/artifact-1", nil)
+	req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if d := h.Server.RouteDrift(); d != 1 {
+		t.Fatalf("RouteDrift = %d, want 1", d)
+	}
+	if ch.refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1", ch.refreshes)
+	}
+	if r := h.Records(t, "req", 1)[0]; r.Passed404 || !r.Drift {
+		t.Fatalf("record = %+v, want drift and not passed404", r)
 	}
 }

@@ -40,14 +40,19 @@ type Record struct {
 	// not a chottag routing error. Never set together with Drift — a
 	// drift means a resend on the client's own login DID happen, which
 	// this path never does.
-	OwnerRefused bool   `json:"ownerRefused,omitempty"`
-	Status       int    `json:"status,omitempty"`
-	Millis       int64  `json:"ms,omitempty"`
-	ReqType      string `json:"reqType,omitempty"`
-	RespType     string `json:"respType,omitempty"`
-	Upgrade      string `json:"upgrade,omitempty"`
-	ReqShape     any    `json:"reqShape,omitempty"`
-	RespShape    any    `json:"respShape,omitempty"`
+	OwnerRefused bool `json:"ownerRefused,omitempty"`
+	// Passed404 marks a serving /v1/messages request whose swapped account
+	// answered 404, returned to Claude Code unchanged (F270): a Message
+	// Threads continue for a thread that account does not hold, which
+	// Claude Code retries as a create itself. Never set together with Drift.
+	Passed404 bool   `json:"passed404,omitempty"`
+	Status    int    `json:"status,omitempty"`
+	Millis    int64  `json:"ms,omitempty"`
+	ReqType   string `json:"reqType,omitempty"`
+	RespType  string `json:"respType,omitempty"`
+	Upgrade   string `json:"upgrade,omitempty"`
+	ReqShape  any    `json:"reqShape,omitempty"`
+	RespShape any    `json:"respShape,omitempty"`
 	// RespHeaderNames, RespLimitHeaders, RespErrorType and RespResetAt hold
 	// `trace run --limit-fingerprint`'s redacted usage-limit fingerprint
 	// (gate G6, spec §6.2): only they, never error.message or any other

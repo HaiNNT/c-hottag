@@ -10,7 +10,22 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/HaiNNT/c-hottag/internal/creds"
 )
+
+// maxRetryAfter bounds an honoured Retry-After.
+const maxRetryAfter = 24 * time.Hour
+
+// retryAfter reads a Retry-After given as whole seconds; 0 for anything
+// else (an HTTP date, a negative or unparsable value).
+func retryAfter(v string) time.Duration {
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return min(time.Duration(n)*time.Second, maxRetryAfter)
+}
 
 // Timeout bounds one poll request, from dial to the last body byte (spec
 // §6.4).
@@ -71,18 +86,20 @@ func newFetcher(c FetchConfig, scale float64) Fetcher {
 		// Token refreshes through the product's own path when the token is
 		// stale (in the background: this call then reports !ok, and the
 		// poll is skipped). A slot that needs login never gets a poll.
-		tok, _, ok := c.Tokens.Token(ctx, dir)
+		tok, cs, ok := c.Tokens.Token(ctx, dir)
 		if !ok {
-			return Outcome{Status: "no-token", NoToken: true}
+			// A needs-login slot is the poller's to record (F269): the
+			// creds status is the only place that says so.
+			return Outcome{Status: "no-token", NoToken: true, NeedsLogin: cs.State == creds.StateNeedsLogin}
 		}
-		code, body, err := get(ctx, c.Client, c.URL, tok)
+		code, body, hdr, err := get(ctx, c.Client, c.URL, tok)
 		retried := false
 		if err == nil && code == http.StatusUnauthorized {
 			if tok, ok = c.Tokens.ForceRefresh(ctx, dir); !ok {
 				return Outcome{Status: "401 refresh-failed", GaveUp: true}
 			}
 			retried = true
-			code, body, err = get(ctx, c.Client, c.URL, tok)
+			code, body, hdr, err = get(ctx, c.Client, c.URL, tok)
 		}
 		prefix := ""
 		if retried {
@@ -92,7 +109,11 @@ func newFetcher(c FetchConfig, scale float64) Fetcher {
 			return Outcome{Status: prefix + errStatus(err), GaveUp: retried}
 		}
 		if code != http.StatusOK {
-			return Outcome{Status: prefix + strconv.Itoa(code), GaveUp: retried}
+			out := Outcome{Status: prefix + strconv.Itoa(code), GaveUp: retried}
+			if code == http.StatusTooManyRequests {
+				out.RetryAfter = retryAfter(hdr.Get("Retry-After"))
+			}
+			return out
 		}
 		res, err := parse(body, scale)
 		if err != nil {
@@ -111,22 +132,22 @@ func newFetcher(c FetchConfig, scale float64) Fetcher {
 }
 
 // get sends one poll request and reads at most maxBody of the answer.
-func get(ctx context.Context, c *http.Client, endpoint, token string) (int, []byte, error) {
+func get(ctx context.Context, c *http.Client, endpoint, token string) (int, []byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := c.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
-	return resp.StatusCode, body, nil
+	return resp.StatusCode, body, resp.Header, nil
 }
 
 // errStatus names a transport failure for the log without its text: a

@@ -304,6 +304,7 @@ func TestDaemonPollerConfigUsesTheSinkAndTheUpstreamProxy(t *testing.T) {
 // builds the poller from its own token manager, sink, stderr and
 // --upstream-proxy, hooks it into observe, and runDaemon seeds and runs it.
 func TestRunProxyWiresThePoller(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	addSlotAccount(t, home, "A")

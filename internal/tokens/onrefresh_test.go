@@ -389,7 +389,7 @@ func TestAReadErrorAfterExitZeroIsAFailureNotANonRenewal(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		tryWarm(m, clk, bigSpan)
 		got := ev.last(t)
-		if got.Outcome != tokens.OutcomeFailed || got.Detail != "no usable login: read-error" {
+		if got.Outcome != tokens.OutcomeFailed || got.Detail != "no usable login: read-error" || got.NoLogin {
 			t.Fatalf("try %d: %+v", i, got)
 		}
 	}
@@ -522,5 +522,21 @@ func TestNotRenewedEventCarriesTheTriesAndSpan(t *testing.T) {
 	got := ev.last(t)
 	if !got.NeedsLogin || got.Tries != 3 || got.Span != 12*time.Minute {
 		t.Fatalf("event = %+v, want 3 tries over 12m", got)
+	}
+}
+
+// F269: a slot with no login at all says so in the event, so the daemon can
+// record needs-login; a transient read error (above) does not.
+func TestAMissingLoginIsFlaggedNoLoginOnTheRefreshEvent(t *testing.T) {
+	clk := newSyncClock(t0)
+	f := &fakeSlot{err: creds.ErrNoLogin}
+	ev := newEvents()
+	m := newObservedManager(f, clk, ev)
+	// A needs-login slot is not warmed, so ForceRefresh is the path that
+	// still attempts it.
+	m.ForceRefresh(context.Background(), slot)
+	got := ev.last(t)
+	if got.Outcome != tokens.OutcomeFailed || got.Detail != "no usable login: no-login" || !got.NoLogin {
+		t.Fatalf("event = %+v, want a failed refresh flagged NoLogin", got)
 	}
 }

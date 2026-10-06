@@ -693,3 +693,46 @@ func TestRemoteWarmerAlsoWarmsAccountsWithRecentValidateSessions(t *testing.T) {
 		t.Fatalf("warmed %v, want A, S and C once each (a removed account skipped)", seen)
 	}
 }
+
+// F269: every rotating account is warmed, not just serving, remote and
+// sticky ones: auto-switch may move any of them onto the serving role.
+func TestWarmerWarmsEveryRotatingAccountButNotAnIdleRotationOffOne(t *testing.T) {
+	st := staleRemoteState()
+	st.Accounts = append(st.Accounts,
+		store.Account{Name: "B", Dir: "/slots/B"},
+		store.Account{Name: "C", Dir: "/slots/C"},
+		store.Account{Name: "Off", Dir: "/slots/Off", NoRotate: true})
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	fw := &fakeWarm{}
+	w, _ := warmRig(t, st, fw, &now)
+	w.pass(context.Background(), false)
+	dirs := map[string]int{}
+	for _, c := range fw.callsSnapshot() {
+		dirs[c.dir]++
+	}
+	want := map[string]int{"/slots/S": 1, "/slots/A": 1, "/slots/B": 1, "/slots/C": 1}
+	if len(dirs) != len(want) {
+		t.Fatalf("warmed %v, want exactly %v (each once; the rotation-off non-remote account is left alone)", dirs, want)
+	}
+	for d := range want {
+		if dirs[d] != 1 {
+			t.Fatalf("warmed %v, want %v", dirs, want)
+		}
+	}
+}
+
+// M4: the warm pass records needs-login where it sees it, once per
+// transition.
+func TestWarmerRecordsNeedsLoginOncePerTransition(t *testing.T) {
+	st := staleRemoteState()
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	fw := &fakeWarm{status: map[string]creds.Status{"/slots/S": {State: creds.StateNeedsLogin}}}
+	w, _ := warmRig(t, st, fw, &now)
+	var recorded []string
+	w.needsLogin = func(a string) { recorded = append(recorded, a) }
+	w.pass(context.Background(), false)
+	w.pass(context.Background(), false)
+	if len(recorded) != 1 || recorded[0] != "S" {
+		t.Fatalf("recorded %v, want exactly one for S", recorded)
+	}
+}

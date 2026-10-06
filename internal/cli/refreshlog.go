@@ -38,17 +38,13 @@ type refreshSeen struct {
 }
 
 func (r *refreshReporter) onRefresh(ev tokens.RefreshEvent) {
-	if r.sink != nil && ev.Outcome == tokens.OutcomeRenewed {
-		r.sink.setTokenCleared(ev.Account, r.now())
+	if ev.Outcome == tokens.OutcomeRenewed {
+		recordRecovered(r.sink, r.dn, ev.Account, r.now())
 	}
-	if ev.NeedsLogin {
-		if r.sink != nil {
-			r.sink.setTokenState(ev.Account, creds.StateNeedsLogin)
-		}
-		if r.dn != nil {
-			r.dn.markStale(ev.Account)
-			r.dn.events.NeedsLogin(ev.Account)
-		}
+	if ev.NeedsLogin || ev.NoLogin {
+		// NoLogin (F269): the slot holds no login to renew; a lockout is
+		// not the only way an account needs one.
+		recordNeedsLogin(r.sink, r.dn, ev.Account)
 	}
 	if r.log == nil {
 		return
@@ -72,6 +68,34 @@ func (r *refreshReporter) onRefresh(ev tokens.RefreshEvent) {
 	fmt.Fprintln(r.log, line)
 	if ev.NeedsLogin {
 		fmt.Fprintf(r.log, "chottag: refresh %s: still expired after %d tries over %dm; it needs a login (run: chottag login %s)\n", ev.Account, ev.Tries, int(ev.Span.Round(time.Minute)/time.Minute), ev.Account)
+	}
+}
+
+// recordNeedsLogin writes needs-login where it is seen (F269): the account's
+// status token state, which the planner reads, and one NeedsLogin notice
+// (notify.Events posts it once until the account answers again). sink and dn
+// may be nil.
+func recordNeedsLogin(sink *statusSink, dn *daemonNotify, account string) {
+	if sink != nil {
+		sink.setTokenState(account, creds.StateNeedsLogin)
+	}
+	if dn != nil {
+		dn.markStale(account)
+		dn.events.NeedsLogin(account)
+	}
+}
+
+// recordRecovered is recordNeedsLogin's counterpart: the account's login
+// works (a renewal, a poll that parsed), so a needs-login or stale mark is
+// cleared and its needs-login notice is armed again, as a 2xx on the account
+// would (F269, review 11). sink and dn may be nil.
+func recordRecovered(sink *statusSink, dn *daemonNotify, account string, at time.Time) {
+	if sink != nil {
+		sink.setTokenCleared(account, at)
+	}
+	if dn != nil {
+		dn.beginChoose(account)
+		dn.events.AccountOK(account)
 	}
 }
 

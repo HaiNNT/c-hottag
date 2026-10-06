@@ -29,7 +29,14 @@ type Account struct {
 	// round 2, targetOverPoint): a stale reading at or above its point
 	// still counts as over when the window's reset is known and still
 	// ahead, since the reading can only have grown since it was taken.
-	Fresh            bool
+	Fresh bool
+	// Recent reports usage younger than status.RecentAfter (it is set for a
+	// fresh reading too). A recent reading is trusted like a fresh one when
+	// choosing a TARGET (F268); only Fresh can make the serving account
+	// leave. A reading that is neither is old: it keeps targetOverPoint's
+	// lower-bound rule, ranks after every non-old candidate, and the daemon
+	// polls it before switching onto it (Decision.TargetOld).
+	Recent           bool
 	Has5h, Has7d     bool    // the server reported a utilization
 	Pct5h, Pct7d     float64 // 0-100
 	Reset5h, Reset7d time.Time
@@ -144,7 +151,8 @@ func overPoint(a Account, p Params, now time.Time) (Window, int, bool) {
 // over-point account as an eligible target and ping-pongs onto it once the
 // cooldown ends.
 func targetOverPoint(a Account, p Params, now time.Time) (Window, int, bool) {
-	if a.Fresh {
+	if a.Fresh || a.Recent {
+		a.Fresh = true // recent usage is as good as fresh for choosing a target
 		return overPoint(a, p, now)
 	}
 	for _, w := range []Window{Win5h, Win7d} {
@@ -161,6 +169,24 @@ func targetOverPoint(a Account, p Params, now time.Time) (Window, int, bool) {
 		}
 	}
 	return "", 0, false
+}
+
+// old reports usage that is neither fresh nor recent (or missing).
+func (a Account) old() bool { return !a.Fresh && !a.Recent }
+
+// preferCurrent ranks old candidates after the rest: with any non-old
+// candidate, only those compete; otherwise all do.
+func preferCurrent(cands []Account) []Account {
+	var cur []Account
+	for _, c := range cands {
+		if !c.old() {
+			cur = append(cur, c)
+		}
+	}
+	if len(cur) == 0 {
+		return cands
+	}
+	return cur
 }
 
 // Input is everything one planning decision needs (M4 spec §2, §9).
@@ -238,6 +264,9 @@ type Decision struct {
 	// trigger's fallback (item 1, review round 3): no candidate was below
 	// its own switch point, so Target was picked despite being above it.
 	Fallback bool
+	// TargetOld reports that Target's usage is old (neither fresh nor
+	// recent): the daemon polls it, bounded, before the switch (F268).
+	TargetOld bool
 	// Reason is the one-line summary `chottag auto` and `chottag status`
 	// show, e.g. "holding A (5h 96%, resets in 9m)".
 	Reason string
@@ -350,6 +379,9 @@ func (in Input) leave(d Decision, s Account) Decision {
 		return d
 	}
 	d.Action, d.Target, d.Continuity, d.Gain, d.Fallback = ActionSwitch, target, score, gain, fellBack
+	if t, found := find(in.Accounts, target); found {
+		d.TargetOld = t.old()
+	}
 	if fellBack {
 		d.Reason = fmt.Sprintf("switched %s -> %s (%s; %s above its switch point)", s.Name, target, triggerText(d), target)
 	} else {
@@ -389,6 +421,7 @@ func Fallback(cands, roster []Account, p Params, burn float64, now time.Time) (s
 	if len(cands) == 0 {
 		return "", 0, 0, false
 	}
+	cands = preferCurrent(cands)
 	if p.Order == OrderRegistration {
 		return cands[0].Name, 0, 0, true
 	}
@@ -424,6 +457,7 @@ func (in Input) pickTarget(s Account) (string, time.Duration, time.Duration, boo
 	if len(cands) == 0 {
 		return "", 0, 0, false
 	}
+	cands = preferCurrent(cands)
 	if in.Params.Order == OrderRegistration {
 		return cands[0].Name, 0, 0, true
 	}

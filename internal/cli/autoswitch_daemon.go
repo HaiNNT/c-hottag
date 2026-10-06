@@ -16,6 +16,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
+	"github.com/HaiNNT/c-hottag/internal/tokens"
 	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 	usagehdr "github.com/HaiNNT/c-hottag/internal/usage"
 )
@@ -41,6 +42,32 @@ type autoSwitcher struct {
 	// fake is the fake-util knob's re-applier (fakeutil_on.go): a no-op in
 	// a release build. It runs before every decision.
 	fake func(time.Time)
+
+	// The pre-swap guard's seams (F268, F269). nil skips that part of the
+	// guard. tokenStatus is tokens.Manager.Status (a read, no spawn), warmFor
+	// is WarmFor, pollNow is usagepoll.Poller.PollNow; after is time.After.
+	tokenStatus func(dir string) creds.Status
+	warmFor     func(ctx context.Context, dir string, within time.Duration, trigger string) (creds.Status, bool)
+	// awaitToken is tokens.Manager.Await: it waits for a refresh already in
+	// flight or backing off, forcing one when none is, until ctx ends.
+	awaitToken func(ctx context.Context, dir string)
+	pollNow    func(ctx context.Context, account string) bool
+	// pollSkip says why pollNow would not poll an account now ("" if it
+	// would): usagepoll.Poller.PollSkip. nil means it always would.
+	pollSkip func(account string) string
+	after    func(time.Duration) <-chan time.Time
+	// spawn starts a background goroutine (default: go); a test runs it
+	// inline so that "nothing was started" can be asserted without a race.
+	spawn func(func())
+	// gs and wait are the guard's state for the evaluation in progress, both
+	// under mu: gs carries what earlier rounds learned, wait is the one wait
+	// the round asks evaluateFor to make with mu released (H1).
+	gs   *guardState
+	wait *guardWait
+	// tried is when a background refresh or poll for an account was last
+	// started by the guard (under mu), so a deferred threshold switch does
+	// not start one on every tick.
+	tried map[string]time.Time
 
 	// spread, if non-nil, is the spread policy's placement engine: while
 	// state.json's policy is spread, evaluate marks accounts and keeps
@@ -283,7 +310,7 @@ func (a *autoSwitcher) wallRetry(ctx context.Context, account string, h http.Hea
 	}
 	var sw *status.AutoSwitch
 	if strings.EqualFold(account, st.PoolOf(pool).Serving) {
-		sw = a.evaluateFor(now, true, pool)
+		sw = a.evaluateFor(ctx, now, true, pool, true)
 	}
 	window := string(planWindow(v.Window))
 	tag := poolTag(st, pool)
@@ -334,7 +361,7 @@ func (a *autoSwitcher) retried(from, to string, code int, window string, sw *sta
 // evaluate makes one decision and acts on it, for the default pool's
 // deferNotice; see evaluateFor.
 func (a *autoSwitcher) evaluate(now time.Time, deferNotice bool) *status.AutoSwitch {
-	return a.evaluateFor(now, deferNotice, store.DefaultPool)
+	return a.evaluateFor(context.Background(), now, deferNotice, store.DefaultPool, false)
 }
 
 // evaluateFor decides for every pool, each on its own (M8): a serial pool
@@ -345,13 +372,46 @@ func (a *autoSwitcher) evaluate(now time.Time, deferNotice bool) *status.AutoSwi
 // emit once the resend's outcome is known (ruling 5, revised: review round 1
 // item 2); the other pools' notices go out at once. status.json's auto
 // object is the default pool's decision.
-func (a *autoSwitcher) evaluateFor(now time.Time, deferNotice bool, want string) *status.AutoSwitch {
+//
+// canWait is true only for a wall retry, whose request is already waiting: a
+// LIMIT switch may then wait, without a.mu held, for a stale target's token
+// or an old target's usage (guardTarget). Every other caller (the usage
+// hook, the tick) must never wait: it defers and starts the work in the
+// background.
+func (a *autoSwitcher) evaluateFor(ctx context.Context, now time.Time, deferNotice bool, want string, canWait bool) *status.AutoSwitch {
+	gs := &guardState{canWait: canWait, want: want, ctx: ctx, remaining: refreshWaitBound + preSwitchPollBound,
+		tokenDone: map[string]bool{}, pollDone: map[string]pollOutcome{}, excluded: map[string]map[string]func(*autoswitch.Account){}}
+	var sw *status.AutoSwitch
+	// Enough rounds for every account to need a token wait and a poll, plus
+	// the round that decides.
+	rounds := 1
+	if st, err := a.state(); err == nil {
+		rounds = 2*len(st.Accounts) + 1
+	}
+	for round := 0; round < rounds; round++ {
+		s, w := a.evaluateOnce(now, deferNotice, want, gs)
+		if s != nil {
+			sw = s // a switch made in an earlier round must not be lost
+		}
+		if w == nil {
+			return sw
+		}
+		a.runWait(gs, w) // mu is not held
+	}
+	return sw
+}
+
+// evaluateOnce is one planning round under a.mu. It returns the wait, if any,
+// the round needs made before it can decide (then it has only deferred).
+func (a *autoSwitcher) evaluateOnce(now time.Time, deferNotice bool, want string, gs *guardState) (*status.AutoSwitch, *guardWait) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.gs, a.wait = gs, nil
+	defer func() { a.gs = nil }()
 	a.fake(now)
 	st, err := a.state()
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	for name := range a.others {
 		if !st.HasPool(name) {
@@ -400,7 +460,7 @@ func (a *autoSwitcher) evaluateFor(now time.Time, deferNotice bool, want string)
 		UserChosen: def.UserChosen, BurnRate: a.burn.Rate(), Pools: others,
 	}
 	a.sink.setAuto(a.published, anySw)
-	return wantSw
+	return wantSw, a.wait
 }
 
 // evaluateSerial is one serial pool's decision. v is the pool's view
@@ -445,10 +505,16 @@ func (a *autoSwitcher) evaluateSerial(now time.Time, deferNotice bool, pool stri
 		p.fallbackTarget = false
 	}
 
-	d := autoswitch.Plan(autoswitch.Input{
-		Now: now, Enabled: v.AutoOn(), Params: params, Serving: v.Serving, Accounts: accts,
-		LastSoftSwitch: p.lastSoft, UserChosen: p.userChosen, FallbackTarget: p.fallbackTarget, Burn: a.burn.Rate(),
-	})
+	plan := func(as []autoswitch.Account) autoswitch.Decision {
+		return autoswitch.Plan(autoswitch.Input{
+			Now: now, Enabled: v.AutoOn(), Params: params, Serving: v.Serving, Accounts: as,
+			LastSoftSwitch: p.lastSoft, UserChosen: p.userChosen, FallbackTarget: p.fallbackTarget, Burn: a.burn.Rate(),
+		})
+	}
+	d := plan(accts)
+	if d.Action == autoswitch.ActionSwitch {
+		d = a.guardTarget(now, pool, v, accts, d, plan)
+	}
 	var sw *status.AutoSwitch
 	switch d.Action {
 	case autoswitch.ActionSwitch:
@@ -463,6 +529,280 @@ func (a *autoSwitcher) evaluateSerial(now time.Time, deferNotice bool, pool stri
 		p.lastLogKey = ""
 	}
 	return sw, status.Auto{Decision: d.Reason, UserChosen: p.userChosen}
+}
+
+// The pre-swap guard's bounds (F268, F269).
+const (
+	// refreshWaitBound is how long a LIMIT switch waits for a stale target's
+	// token to refresh: the selector's own bound for a remote request.
+	refreshWaitBound = 15 * time.Second
+	// preSwitchPollBound is how long a LIMIT switch waits for the usage poll
+	// of an old target.
+	preSwitchPollBound = 10 * time.Second
+	// guardRetryEvery is the least time between two background refreshes or
+	// polls the guard starts for one account while a threshold switch waits.
+	guardRetryEvery = 5 * time.Minute
+)
+
+// guardState is what one evaluateFor call has learned across its rounds. Only
+// that call's goroutine uses it (under mu inside a round).
+type guardState struct {
+	canWait bool
+	want    string          // the wall retry's pool: the only one that may wait
+	ctx     context.Context // the wall retry's request
+	// remaining is the LIMIT wait budget left: refreshWaitBound +
+	// preSwitchPollBound in all, whatever the number of candidates (H1).
+	remaining time.Duration
+	tokenDone map[string]bool        // "pool|account": its token wait was made
+	pollDone  map[string]pollOutcome // "pool|account": its poll was made
+	excluded  map[string]map[string]func(*autoswitch.Account)
+}
+
+type pollOutcome struct{ ok, timedOut bool }
+
+// guardWait is one wait a round asks for.
+type guardWait struct {
+	poll         bool // else a token wait
+	pool         string
+	account, dir string
+}
+
+// guardTarget checks the planner's target before a swap (F269, F268), and
+// plans again without a target that fails:
+//   - needs login: never swapped to. It is recorded (status token state, one
+//     notice) and the plan is made again without it.
+//   - stale token: without canWait (a threshold switch, the usage hook, the
+//     tick) the refresh is started in the background and the switch waits for
+//     the next evaluation. A LIMIT switch with canWait asks evaluateFor to
+//     wait for it, mu released, within the shared budget, then takes the
+//     next candidate if the token did not renew.
+//   - old usage: the same, with a poll of the target. A LIMIT switch whose
+//     poll failed or timed out goes ahead on the old reading rather than
+//     leave the user on a limited account (ruling 6b); a threshold switch
+//     keeps deferring.
+//
+// A deferral returns a stay with the reason. Caller holds a.mu; it never
+// waits.
+func (a *autoSwitcher) guardTarget(now time.Time, pool string, v store.State, accts []autoswitch.Account, d autoswitch.Decision, plan func([]autoswitch.Account) autoswitch.Decision) autoswitch.Decision {
+	gs := a.gs
+	limit := d.Trigger == autoswitch.TriggerLimit && gs.canWait && pool == gs.want
+	excluded := gs.excluded[pool]
+	if excluded == nil {
+		excluded = map[string]func(*autoswitch.Account){}
+		gs.excluded[pool] = excluded
+	}
+	applied := func(as []autoswitch.Account) []autoswitch.Account {
+		out := append([]autoswitch.Account(nil), as...)
+		for i := range out {
+			if fn, ok := excluded[strings.ToLower(out[i].Name)]; ok {
+				fn(&out[i])
+			}
+		}
+		return out
+	}
+	d = plan(applied(accts))
+	var first *autoswitch.Decision
+	var firstWhy string
+	var tmp []string
+	for range len(accts) + 2 {
+		if d.Action != autoswitch.ActionSwitch {
+			if first != nil {
+				// Every later candidate failed too: back to deferring on the
+				// first one, as if none had been tried.
+				for _, k := range tmp {
+					delete(excluded, k)
+				}
+				d = *first
+				d.Action, d.Reason = autoswitch.ActionStay, fmt.Sprintf("staying on %s (switch to %s deferred: %s)", d.From, d.Target, firstWhy)
+				d.Target = ""
+			}
+			return d
+		}
+		t, ok := findExact(&v, d.Target)
+		if !ok {
+			return d
+		}
+		key := strings.ToLower(t.Name)
+		dkey := pool + "|" + key
+		deferred := func(why string) autoswitch.Decision {
+			d.Action, d.Reason = autoswitch.ActionStay, fmt.Sprintf("staying on %s (switch to %s deferred: %s)", d.From, d.Target, why)
+			d.Target = ""
+			return d
+		}
+		// tryNext: a LIMIT that cannot wait (the tick, the usage hook) starts
+		// the work in the background and takes the next candidate whose
+		// token and data are fine right now; with none, it keeps deferring.
+		tryNext := func(why string) (autoswitch.Decision, bool) {
+			if d.Trigger != autoswitch.TriggerLimit {
+				return deferred(why), false
+			}
+			if first == nil {
+				c := d
+				first, firstWhy = &c, why
+			}
+			excluded[key] = func(x *autoswitch.Account) { x.Rotates = false }
+			tmp = append(tmp, key)
+			nd := plan(applied(accts))
+			if nd.Action == autoswitch.ActionSwitch {
+				d = nd
+				return d, true
+			}
+			for _, k := range tmp {
+				delete(excluded, k)
+			}
+			d = *first
+			return deferred(firstWhy), false
+		}
+		request := func(poll bool) {
+			if a.wait == nil {
+				a.wait = &guardWait{poll: poll, pool: pool, account: t.Name, dir: t.Dir}
+			}
+		}
+		if a.tokenStatus != nil {
+			switch st := a.tokenStatus(t.Dir); st.State {
+			case creds.StateNeedsLogin:
+				fmt.Fprintf(a.log, "chottag: auto: not switching to %s: it needs login (run: chottag login %s)\n", t.Name, t.Name)
+				recordNeedsLogin(a.sink, a.notify, t.Name)
+				excluded[key] = func(x *autoswitch.Account) { x.NeedsLogin = true }
+				d = plan(applied(accts))
+				continue
+			case creds.StateStale:
+				if !limit {
+					a.background(now, "warm|"+key, func(ctx context.Context) { a.warmTarget(ctx, t.Dir) })
+					if nd, ok := tryNext("its token is refreshing"); !ok {
+						return nd
+					}
+					continue
+				}
+				if !gs.tokenDone[dkey] && gs.remaining > 0 && a.awaitToken != nil {
+					request(false)
+					return deferred("waiting for its token to refresh")
+				}
+				fmt.Fprintf(a.log, "chottag: auto: %s's token did not renew in time; taking the next candidate\n", t.Name)
+				excluded[key] = func(x *autoswitch.Account) { x.Rotates = false }
+				d = plan(applied(accts))
+				continue
+			}
+		}
+		if d.TargetOld && a.pollNow != nil {
+			res, done := gs.pollDone[dkey]
+			skip := ""
+			if a.pollSkip != nil {
+				skip = a.pollSkip(t.Name)
+			}
+			switch {
+			case skip != "":
+				// No poll will run: say so, not that one failed.
+				if limit {
+					fmt.Fprintf(a.log, "chottag: auto: %s's usage is old and not polled now (%s); switching on its old reading\n", t.Name, skip)
+					return d
+				}
+				if nd, ok := tryNext("its usage is old and not polled now (" + skip + ")"); !ok {
+					return nd
+				}
+				continue
+			case !limit:
+				a.background(now, "poll|"+key, func(ctx context.Context) { a.pollNow(ctx, t.Name) })
+				if nd, ok := tryNext("its usage is old; polling it"); !ok {
+					return nd
+				}
+				continue
+			case !done && gs.remaining > 0:
+				request(true)
+				return deferred("waiting for its usage poll")
+			case done && !res.ok:
+				why := "failed"
+				if res.timedOut {
+					why = "timed out after " + short(preSwitchPollBound)
+				}
+				fmt.Fprintf(a.log, "chottag: auto: usage poll of %s %s; switching on its old reading\n", t.Name, why)
+			case !done:
+				fmt.Fprintf(a.log, "chottag: auto: no time left to poll %s; switching on its old reading\n", t.Name)
+			}
+		}
+		return d
+	}
+	return d
+}
+
+// runWait makes the wait w asks for, without a.mu, within what is left of the
+// LIMIT budget, and records what happened for the next round.
+func (a *autoSwitcher) runWait(gs *guardState, w *guardWait) {
+	bound := refreshWaitBound
+	if w.poll {
+		bound = preSwitchPollBound
+	}
+	bound = min(bound, gs.remaining)
+	start := time.Now()
+	var ok, timedOut bool
+	if w.poll {
+		ok, timedOut = a.waitFor(gs.ctx, bound, func(ctx context.Context) bool { return a.pollNow(ctx, w.account) })
+	} else {
+		_, timedOut = a.waitFor(gs.ctx, bound, func(ctx context.Context) bool { a.awaitToken(ctx, w.dir); return true })
+	}
+	spent := time.Since(start)
+	if timedOut {
+		spent = bound // a timer the test fired reads as the whole bound
+	}
+	gs.remaining = max(gs.remaining-spent, 0)
+	k := w.pool + "|" + strings.ToLower(w.account)
+	if w.poll {
+		gs.pollDone[k] = pollOutcome{ok: ok, timedOut: timedOut}
+	} else {
+		gs.tokenDone[k] = true
+	}
+}
+
+// warmTarget refreshes a stale target's token through the manager.
+func (a *autoSwitcher) warmTarget(ctx context.Context, dir string) {
+	if a.warmFor != nil {
+		a.warmFor(ctx, dir, warmWindow, tokens.TriggerWarm)
+	}
+}
+
+// waitFor runs fn on its own goroutine and waits for it, at most bound. The
+// context fn gets is cancelled when the wait ends, so a poll stops with it.
+// It reports fn's answer and whether the bound ended the wait.
+func (a *autoSwitcher) waitFor(parent context.Context, bound time.Duration, fn func(ctx context.Context) bool) (ok, timedOut bool) {
+	after := a.after
+	if after == nil {
+		after = time.After
+	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	done := make(chan bool, 1)
+	go func() { done <- fn(ctx) }()
+	select {
+	case ok := <-done:
+		return ok, false
+	case <-after(bound):
+		return false, true
+	case <-parent.Done():
+		return false, true // the request is gone: stop waiting for it
+	}
+}
+
+// background starts fn on its own goroutine, bounded by the larger of the two
+// waits, unless one with the same key started within guardRetryEvery. Caller
+// holds a.mu.
+func (a *autoSwitcher) background(now time.Time, key string, fn func(ctx context.Context)) {
+	if last, ok := a.tried[key]; ok && now.Sub(last) < guardRetryEvery {
+		return
+	}
+	if a.tried == nil {
+		a.tried = map[string]time.Time{}
+	}
+	a.tried[key] = now
+	run := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), max(refreshWaitBound, preSwitchPollBound))
+		defer cancel()
+		fn(ctx)
+	}
+	if a.spawn != nil {
+		a.spawn(run)
+		return
+	}
+	go run()
 }
 
 // swapFailedHarmlessly reports a swap error that resolves itself on the next
@@ -486,6 +826,17 @@ func (a *autoSwitcher) trySwitch(now time.Time, deferNotice bool, pool string, p
 		// decision changes or the backoff elapses.
 		d.Reason = fmt.Sprintf("staying on %s (switch to %s not made: could not write state)", d.From, d.Target)
 		return nil
+	}
+	// The target is checked again right before the swap: the guard's check
+	// was made on an earlier read.
+	if a.tokenStatus != nil {
+		if cur, err := a.state(); err == nil {
+			if t, ok := findExact(&cur, d.Target); ok && a.tokenStatus(t.Dir).State == creds.StateNeedsLogin {
+				recordNeedsLogin(a.sink, a.notify, t.Name)
+				d.Reason = fmt.Sprintf("staying on %s (switch to %s not made: it needs login)", d.From, d.Target)
+				return nil
+			}
+		}
 	}
 	swapped, err := a.store.SwapPoolServing(pool, d.From, d.Target)
 	if err != nil {

@@ -7,6 +7,21 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.9.3] - 2026-10-06
+
+### Fixed
+
+- A 404 on `POST /v1/messages` is no longer treated as route drift. Claude Code 2.1.290's Message Threads continue a thread that only the account that created it holds, and Claude Code resends the turn as a create when it gets a 404. chottag used to refresh the account, retry, and send the turn again on Home's login (which could run it on Home's quota), add about 4 seconds, and count route drift with a notice. Now the 404 goes back unchanged, and `proxy.jsonl` marks the record `passed404`. A 401 or 403, and a 404 on any other route, are unchanged.
+- Auto-switch no longer moves onto an account whose login is gone. A poll, refresh or warm pass that finds no login marks it `needs-login` (one notice), and every rotating account's token is kept warm.
+- Auto-switch checks its target before a swap: it refreshes a stale token and polls an old reading, bounded and never blocking responses.
+- Idle accounts' usage is polled about every 30 minutes (2 hours for rotation-off accounts), with 429 backoff, so it no longer goes stale.
+
+### Changed
+
+- `chottag status` shows an older reading with its age (`45% (2h ago)`), or `unknown (reset since)`, instead of `unknown`.
+
+  See [release notes](docs/release-notes/v0.9.3.md).
+
 ## [0.9.2] - 2026-10-04
 
 ### Fixed
@@ -361,6 +376,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.9.3]: docs/release-notes/v0.9.3.md
 [0.9.2]: docs/release-notes/v0.9.2.md
 [0.9.1]: docs/release-notes/v0.9.1.md
 [0.9.0]: docs/release-notes/v0.9.0.md

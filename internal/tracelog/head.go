@@ -26,7 +26,7 @@ func NewID() string {
 //   - Millis and Err: not known until the stream ends.
 //   - ReqShape and RespShape: body-derived (`--shapes`), and the response
 //     body is unread at header time.
-//   - Upgrade, Unreplayable, UnreplayableBytes, OwnerRefused and Mark: not
+//   - Upgrade, Unreplayable, UnreplayableBytes, OwnerRefused, Passed404 and Mark: not
 //     in the spec's list; they stay on the final record only.
 //
 // The fingerprint fields are copied: FingerprintLimit derives them from

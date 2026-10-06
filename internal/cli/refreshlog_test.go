@@ -169,6 +169,28 @@ func TestRefreshReporterNeedsLoginSetsStatusAndNotifies(t *testing.T) {
 	}
 }
 
+// F269: a refresh that finds no login at all records needs-login and posts
+// one notice, not only a lockout does.
+func TestRefreshReporterNoLoginSetsStatusAndNotifiesOnce(t *testing.T) {
+	g := newRefreshRig(t)
+	ev := tokens.RefreshEvent{Account: "C", Outcome: tokens.OutcomeFailed, Detail: "no usable login: no-login", NoLogin: true}
+	g.rr.onRefresh(ev)
+	g.rr.onRefresh(ev)
+	if g.token("C") != creds.StateNeedsLogin {
+		t.Fatalf("token = %q, want needs-login", g.token("C"))
+	}
+	notices := drainNotices(t, g.dn, g.rec)
+	if len(notices) != 1 || !strings.Contains(notices[0].body, "chottag login C") {
+		t.Fatalf("notices = %+v, want exactly one naming `chottag login C`", notices)
+	}
+	// An ordinary failure still records nothing.
+	g2 := newRefreshRig(t)
+	g2.rr.onRefresh(tokens.RefreshEvent{Account: "C", Outcome: tokens.OutcomeFailed, Detail: "exit status 1"})
+	if g2.token("C") == creds.StateNeedsLogin {
+		t.Fatal("a plain failure recorded needs-login")
+	}
+}
+
 func TestShortDurations(t *testing.T) {
 	for d, want := range map[time.Duration]string{
 		7*time.Hour + 59*time.Minute: "7h59m", 2 * time.Minute: "2m", 90 * time.Second: "1m30s", 30 * time.Second: "30s", -time.Minute: "0s",
@@ -260,5 +282,35 @@ func TestRefreshLineForAnUnchangedTokenNamesTheTriggerAndTime(t *testing.T) {
 		Detail: "token unchanged, not yet due", Took: 1200 * time.Millisecond})
 	if want := "chottag: refresh C: token unchanged, not yet due (warm, 1.2s)"; line != want {
 		t.Fatalf("line = %q, want %q", line, want)
+	}
+}
+
+// Review 11: a needs-login notice fires again after the account recovers (a
+// renewal) and then loses its login again.
+func TestRefreshReporterRenewalRearmsTheNeedsLoginNotice(t *testing.T) {
+	g := newRefreshRig(t)
+	bad := tokens.RefreshEvent{Account: "C", Outcome: tokens.OutcomeFailed, Detail: "no usable login: no-login", NoLogin: true}
+	g.rr.onRefresh(bad)
+	if n := len(drainNotices(t, g.dn, g.rec)); n != 1 {
+		t.Fatalf("first: %d notices, want 1", n)
+	}
+	g.rr.onRefresh(tokens.RefreshEvent{Account: "C", Outcome: tokens.OutcomeRenewed, ExpiresIn: time.Hour})
+	g.rr.onRefresh(bad)
+	if n := len(drainNotices(t, g.dn, g.rec)); n != 1 {
+		t.Fatalf("after a recovery: %d notices, want 1 more", n)
+	}
+}
+
+func TestRecordRecoveredClearsTheMarkAndRearmsTheNotice(t *testing.T) {
+	g := newRefreshRig(t)
+	recordNeedsLogin(g.sink, g.dn, "C")
+	drainNotices(t, g.dn, g.rec)
+	recordRecovered(g.sink, g.dn, "C", g.now)
+	if g.token("C") != creds.StateOK {
+		t.Fatalf("token = %q, want ok after a poll that worked", g.token("C"))
+	}
+	recordNeedsLogin(g.sink, g.dn, "C")
+	if n := len(drainNotices(t, g.dn, g.rec)); n != 1 {
+		t.Fatalf("%d notices after recovery and a new loss, want 1", n)
 	}
 }

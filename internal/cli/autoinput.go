@@ -118,6 +118,7 @@ func planAccounts(st *store.State, f *status.File, now time.Time) []autoswitch.A
 		pa.LimitedUntil, pa.Limited = knownLimit(f, a.Name, now)
 		if f != nil {
 			pa.Fresh = f.Fresh(a.Name, now)
+			pa.Recent = f.Recent(a.Name, now)
 			for _, row := range f.Accounts {
 				if !strings.EqualFold(row.Name, a.Name) {
 					continue

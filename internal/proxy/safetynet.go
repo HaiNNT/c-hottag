@@ -43,6 +43,13 @@ type safetyNet struct {
 	serving          bool
 	onRefused        func(status int)
 	onServingRefusal func(account string, status int, resent bool)
+	// F270: for a serving POST /v1/messages, Claude Code's
+	// Message Threads send a continue for a thread the answering account
+	// does not hold and get 404; Claude Code retries that itself as a
+	// create. A 404 there is that account's genuine answer, so RoundTrip
+	// returns it unchanged: no refresh, retry, Home resend or drift count.
+	// 401/403 are unaffected (R158). onPassed404 marks the trace record.
+	onPassed404 func()
 	// ownerAnswer is F241/R96: true for a request to MCPProxyHost whose
 	// account was chosen from the owner map. A connector id's own owner
 	// account answering 401/403/404 is that owner's genuine protocol
@@ -109,6 +116,13 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 	firstRefused := resp.StatusCode
+	if s.serving && req.Method == http.MethodPost && req.URL.Path == "/v1/messages" && firstRefused == http.StatusNotFound {
+		if s.onPassed404 != nil {
+			s.onPassed404()
+		}
+		s.finishWall(false, resp, err)
+		return resp, err
+	}
 	if s.ownerAnswer {
 		// The connector's own owner account refused this call: its answer,
 		// not a chottag routing error (F241/R96). Return it as is — no

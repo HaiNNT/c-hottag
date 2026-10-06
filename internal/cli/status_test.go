@@ -364,3 +364,27 @@ func TestStatusJSONLabel(t *testing.T) {
 		t.Errorf("label = %v, want dev", got)
 	}
 }
+
+// F268: an old reading is shown with its age, not as "unknown", and the
+// JSON keeps stale: true with updatedAt.
+func TestStatusShowsOldUsageWithItsAge(t *testing.T) {
+	home := t.TempDir()
+	seedState(t, home, "D", "A")
+	var f status.File
+	f.Observe("D", knownSnapshot(0.45, 0.1, time.Now().Add(-2*time.Hour-time.Minute)), noVerdict())
+	saveStatus(t, home, f)
+	_, out, errb := runHome(t, home, "status")
+	if !strings.Contains(out, "45% (2h ago)") || !strings.Contains(out, "10% (2h ago)") {
+		t.Fatalf("output = %q (stderr %q); want old readings with their age", out, errb)
+	}
+	_, js, _ := runHome(t, home, "status", "--json")
+	var got status.File
+	if err := json.Unmarshal([]byte(js), &got); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	for _, a := range got.Accounts {
+		if a.Name == "D" && (!a.Stale || a.Usage == nil || a.Usage.UpdatedAt.IsZero()) {
+			t.Fatalf("D = %+v, want stale: true and usage.updatedAt kept", a)
+		}
+	}
+}

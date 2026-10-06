@@ -19,6 +19,7 @@ import (
 )
 
 func TestDaemonRunChdirsToItsHome(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	writeStateWithPort(t, home, 1) // any port: the chdir stub fails the start before any bind
@@ -51,6 +52,7 @@ func TestDaemonRunChdirsToItsHome(t *testing.T) {
 // "original cwd" a relative --log must resolve against is simply whatever
 // this test binary's cwd already is.
 func TestDaemonRunResolvesARelativeLogBeforeChdir(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	writeStateWithPort(t, home, 1) // any port: the chdir stub fails the start before any bind
@@ -94,6 +96,7 @@ func TestDaemonRunResolvesARelativeLogBeforeChdir(t *testing.T) {
 // process's whole remaining life, but must not leak into whatever runs in
 // this same test binary next.
 func TestDaemonRunPinsAnAbsoluteCHOTTAGHOMEBeforeChdir(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	wantCwd, err := os.Getwd()
 	if err != nil {
@@ -130,6 +133,7 @@ func TestDaemonRunPinsAnAbsoluteCHOTTAGHOMEBeforeChdir(t *testing.T) {
 // CHOTTAG_HOME after daemonChdir moves it there. Same technique as
 // TestDaemonRunResolvesARelativeLogBeforeChdir above.
 func TestDaemonRunResolvesARelativeClaudePathBeforeChdir(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	writeStateWithPort(t, home, 1) // any port: the chdir stub fails the start before any bind

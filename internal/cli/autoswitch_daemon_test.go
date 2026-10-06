@@ -950,6 +950,13 @@ func TestRunProxyWiresAutoSwitch(t *testing.T) {
 	now := time.Now()
 	writeNotifyStatus(t, home, busyRow("A", 97, now, 3*time.Hour), freshRow("B", 10, 10, now))
 	rec := stubDaemonNotifier(t)
+	// The pre-swap guard reads the target's token state (F269): B has a
+	// usable login.
+	prevRead := credsReadForTest
+	t.Cleanup(func() { credsReadForTest = prevRead })
+	credsReadForTest = func(configDir string) (creds.Token, error) {
+		return creds.Token{AccessToken: "tok-" + filepath.Base(configDir), ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}
 
 	errb := newSyncBuf()
 	sig := make(chan os.Signal, 2)

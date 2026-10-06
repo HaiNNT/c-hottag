@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/status"
+	"github.com/HaiNNT/c-hottag/internal/store"
 	usagehdr "github.com/HaiNNT/c-hottag/internal/usage"
 	"github.com/HaiNNT/c-hottag/internal/usagepoll"
 )
@@ -111,6 +113,41 @@ func TestSinkCachedReportsFreshnessAndLimit(t *testing.T) {
 	}
 	if v := sink.cached("a", now.Add(status.StaleAfter)); v.Fresh {
 		t.Fatalf("10 minutes later (and case-folded): %+v, want stale", v)
+	}
+}
+
+// F268, F269: the poller's cache view carries the usage's age and the status
+// row's needs-login mark; the roster it gets carries rotation and the login time.
+func TestSinkCachedReportsUpdateTimeAndNeedsLogin(t *testing.T) {
+	sink, err := newStatusSink(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	now := time.Now().Round(0)
+	sink.poll("A", sinkPollResult(0.3, 0.2, now.Add(time.Hour), now), now)
+	if v := sink.cached("A", now); !v.UpdatedAt.Equal(now) || v.NeedsLogin {
+		t.Fatalf("view = %+v, want UpdatedAt %v and no needs-login", v, now)
+	}
+	sink.setTokenState("A", creds.StateNeedsLogin)
+	v := sink.cached("a", now)
+	if !v.NeedsLogin || v.TokenAt.IsZero() {
+		t.Fatalf("view = %+v, want needs-login with its time", v)
+	}
+	sink.setTokenCleared("A", now)
+	if v := sink.cached("A", now); v.NeedsLogin {
+		t.Fatalf("view = %+v after the mark cleared", v)
+	}
+}
+
+func TestPollAccountsCarryRotationAndLoginTime(t *testing.T) {
+	at := time.Date(2026, 10, 6, 1, 2, 3, 0, time.UTC)
+	got := pollAccounts(store.State{Accounts: []store.Account{
+		{Name: "A", Dir: "/slots/A", LoggedInAt: at},
+		{Name: "R", Dir: "/slots/R", NoRotate: true},
+	}})
+	if len(got) != 2 || !got[0].Rotates || !got[0].LoggedInAt.Equal(at) || got[1].Rotates {
+		t.Fatalf("pollAccounts = %+v", got)
 	}
 }
 

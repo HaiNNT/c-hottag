@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/usagepoll"
 )
 
@@ -21,7 +22,17 @@ func (c *statusSink) cached(account string, now time.Time) usagepoll.CacheView {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	limited, until := c.limitStateLocked(account)
-	return usagepoll.CacheView{Fresh: c.file.Fresh(account, now), Limited: limited, Until: until}
+	v := usagepoll.CacheView{Fresh: c.file.Fresh(account, now), Limited: limited, Until: until}
+	for _, a := range c.file.Accounts {
+		if strings.EqualFold(a.Name, account) {
+			v.NeedsLogin, v.TokenAt = a.Token == creds.StateNeedsLogin, a.TokenAt
+			if a.Usage != nil {
+				v.UpdatedAt = a.Usage.UpdatedAt
+			}
+			break
+		}
+	}
+	return v
 }
 
 // poll is usagepoll.Config.Apply: folds one poll result into the cache

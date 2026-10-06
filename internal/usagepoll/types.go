@@ -3,9 +3,11 @@
 // §6.3); this package only covers an account that has sent no traffic and
 // re-checks a limited account so its reset is noticed.
 //
-// It polls on events only, never on a per-account interval: daemon start,
-// a limited account's reset, a wake from sleep, and a roster change. One
-// worker, one request in flight, at most one pending poll per account.
+// It polls on events (daemon start, a limited account's reset, a wake from
+// sleep, a roster change) and, for an account that is neither limited nor
+// in need of a login, on an idle schedule: IdleEvery after its last usage
+// update, so no account's usage goes stale for good (F268). One worker, one
+// request in flight, at most one pending poll per account.
 //
 // It never logs, stores or returns a token or a response body. The only
 // body-derived values that leave this package are the two windows' usage
@@ -49,6 +51,11 @@ type Outcome struct {
 	// and Token started a background refresh instead (spec §6.4 detail
 	// 1). A start or reset poll skipped this way is retried once, TokenRetry later.
 	NoToken bool
+	// NeedsLogin means the slot holds no usable login: the poll never went
+	// out, and none will until the account logs in again (F269).
+	NeedsLogin bool
+	// RetryAfter is a 429's Retry-After, 0 when absent or unusable.
+	RetryAfter time.Duration
 	// Status is the daemon.log detail: an HTTP status code (e.g. "200",
 	// "429"), a "401>"-prefixed retry (e.g. "401>200", "401>error"),
 	// "no-token", "401 refresh-failed", "timeout", "error", "200
@@ -71,6 +78,12 @@ type TokenSource interface {
 type Account struct {
 	Name string
 	Dir  string
+	// Rotates is false for a rotation-off account (the remote): it is
+	// polled every OffEvery instead of IdleEvery.
+	Rotates bool
+	// LoggedInAt is when `chottag login` last confirmed the account; a
+	// needs-login mark older than it no longer applies.
+	LoggedInAt time.Time
 }
 
 // CacheView is what the status cache says about one account right now,
@@ -79,6 +92,12 @@ type CacheView struct {
 	Fresh   bool      // usage present and younger than status.StaleAfter
 	Limited bool      // the cache's limited flag
 	Until   time.Time // the cache's limitedUntil; zero means unknown
+	// UpdatedAt is when the cache's usage was last updated (zero: never).
+	UpdatedAt time.Time
+	// NeedsLogin is the status row's token state, with TokenAt the time it
+	// was set.
+	NeedsLogin bool
+	TokenAt    time.Time
 }
 
 // Applied is what the cache write did with a Result.

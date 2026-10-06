@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/exit"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
@@ -211,6 +212,14 @@ func TestFakeLimitAtDaemonStartMakesNextExit3(t *testing.T) {
 	// runs, or TestMain's panicking osascript backstop takes this tagged
 	// test binary down (PF1, M2b T5 preflight M1).
 	rec := stubDaemonNotifier(t)
+	// The daemon's warm pass records an account with no login as needs-login
+	// (F269), which `next` would report instead of the simulated limit: give
+	// every slot a usable token.
+	prevRead := credsReadForTest
+	t.Cleanup(func() { credsReadForTest = prevRead })
+	credsReadForTest = func(configDir string) (creds.Token, error) {
+		return creds.Token{AccessToken: "tok-" + filepath.Base(configDir), ExpiresAt: time.Now().Add(time.Hour)}, nil
+	}
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	for _, n := range []string{"A", "B", "C"} {

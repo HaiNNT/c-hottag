@@ -633,6 +633,14 @@ daemon is currently passing requests through on Home's login instead of
 the account you chose. Also `chottag ls`. It takes no flags. With more than
 one pool it adds a `POOLS` column and a line per pool (see below).
 
+A reading older than 10 minutes is shown with its age instead of as a live
+number: `45% (2h ago)`. The daemon polls an idle account about every 30
+minutes (the remote and other rotation-off accounts every 2 hours), so an
+age beyond that points to an account the poll cannot reach (`needs-login`,
+or a poll that keeps failing). `unknown` means chottag has never read the
+account's usage. In `--json` such an account has `stale: true` and the
+reading's time in `usage.updatedAt`. A window that has reset since an old reading shows `unknown (reset since)`.
+
 ```json
 {
   "version": 1,
@@ -1073,7 +1081,7 @@ Its checks, in the order they run:
 | `daemon-identity` | a running daemon proved it holds this install's proxy secret | `chottag daemon restart` |
 | `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
 | `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
-| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404, refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted | `chottag trace on` |
+| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted | `chottag trace on` |
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |

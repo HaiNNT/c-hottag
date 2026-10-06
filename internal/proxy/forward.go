@@ -451,6 +451,7 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 			}
 		},
 		onOwnerAnswer: func() { rec.OwnerRefused = true },
+		onPassed404:   func() { rec.Passed404 = true },
 		onUnreplayableRefusal: func(n int64) {
 			rec.Unreplayable = true
 			rec.UnreplayableBytes = n

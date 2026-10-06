@@ -240,6 +240,7 @@ func TestRosterTickWritesSessionsToStatusJSON(t *testing.T) {
 // request through the fake backend, a roster tick, then the session shows
 // with its sid and the account that served it.
 func TestSessionCredentialThroughTheDaemonReachesStatusJSON(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	addSlotAccount(t, home, "A")

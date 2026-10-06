@@ -335,6 +335,7 @@ func TestDaemonTraceWireSetsTheThreeTraceFields(t *testing.T) {
 // (OnClaudeVersion wired). Deleting the wire line zeroes all three cfg
 // fields at once and leaves both files untouched, failing this test.
 func TestRunProxyWiresTheDaemonTrace(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	setTraceWindow(t, home, time.Now().Add(time.Hour))

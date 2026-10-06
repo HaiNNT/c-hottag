@@ -225,6 +225,7 @@ func rawConnect(t *testing.T, addr, host, authHeader string) int {
 // succeeds, the health endpoint's proof verifies against that same secret,
 // and the secret itself never lands in daemon.log, proxy.jsonl or stderr.
 func TestDaemonRequiresTheSecretEndToEnd(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 

@@ -36,6 +36,7 @@ func refuseListen(t *testing.T, onListen func()) {
 // corruption daemonLogSibling exists to prevent, just to report that it
 // cannot start.
 func TestDaemonRunRefusesWhileAnotherDaemonHoldsTheLock(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	writeStateWithPort(t, home, closedPort(t))
@@ -61,6 +62,7 @@ func TestDaemonRunRefusesWhileAnotherDaemonHoldsTheLock(t *testing.T) {
 // At the moment of the bind, the lock is held and its record is this
 // process's own.
 func TestDaemonRunHoldsTheLockWithItsOwnRecordAtTheBind(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	writeStateWithPort(t, home, closedPort(t))
@@ -91,6 +93,7 @@ func TestDaemonRunHoldsTheLockWithItsOwnRecordAtTheBind(t *testing.T) {
 // go when the function returns, or the next test's daemon in any home this
 // process reuses would be refused.
 func TestDaemonRunReleasesTheLockWhenItReturns(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	writeStateWithPort(t, home, closedPort(t))

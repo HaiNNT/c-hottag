@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -26,16 +27,33 @@ var backoff = [...]time.Duration{15 * time.Minute, 30 * time.Minute, 60 * time.M
 // (F159).
 const TokenRetry = 30 * time.Second
 
+// IdleEvery is how long after an account's last usage update its idle poll
+// is due (F268), and OffEvery the same for a rotation-off account. Each is
+// spread by +-IdleJitter, so accounts do not all come due together.
+const (
+	IdleEvery  = 30 * time.Minute
+	OffEvery   = 2 * time.Hour
+	IdleJitter = 0.1
+)
+
+// idleBackoff is an idle poll's schedule after a 429 that carried no usable
+// Retry-After: 60 minutes, then 120 for every further one (F268).
+var idleBackoff = [...]time.Duration{60 * time.Minute, 120 * time.Minute}
+
 type kind int
 
 const (
 	kindStart kind = iota + 1 // "no data": missing or stale usage
 	kindReset                 // re-check a limited account
+	kindIdle                  // keep an unlimited account's usage from going stale
 )
 
 func (k kind) String() string {
-	if k == kindStart {
+	switch k {
+	case kindStart:
 		return "start"
+	case kindIdle:
+		return "idle"
 	}
 	return "reset"
 }
@@ -61,6 +79,13 @@ type acct struct {
 	gen       uint64 // bumped by Observed; a poll that lost a race to it reschedules nothing
 	limited   bool
 	until     time.Time
+	rotates   bool
+	loggedIn  time.Time
+	// needsLogin: the account has no usable login, so nothing is polled
+	// until the status row stops saying so, or the account logs in again.
+	needsLogin bool
+	// waiters are PollNow callers waiting for this account's poll to end.
+	waiters []chan bool
 }
 
 // Config configures a Poller. Fetch, Cached and Apply are required.
@@ -79,6 +104,16 @@ type Config struct {
 	Now func() time.Time
 	// After is the timer. Default: time.After.
 	After func(time.Duration) <-chan time.Time
+	// Rand returns a number in [0,1) for the idle schedule's jitter.
+	// Default: math/rand.
+	Rand func() float64
+	// OnNeedsLogin is told, outside the poller's lock, that a poll found
+	// account without a usable login. The daemon records the token state
+	// and posts the notice there.
+	OnNeedsLogin func(account string)
+	// OnOK is told, outside the poller's lock, that a poll of account wrote
+	// usage: the account's login works.
+	OnOK func(account string)
 }
 
 // Poller is the events-only usage poll scheduler (spec §6.4).
@@ -106,6 +141,9 @@ func New(cfg Config) *Poller {
 	}
 	if cfg.After == nil {
 		cfg.After = time.After
+	}
+	if cfg.Rand == nil {
+		cfg.Rand = rand.Float64
 	}
 	return &Poller{cfg: cfg, kick: make(chan struct{}, 1), accts: map[string]*acct{}}
 }
@@ -140,11 +178,18 @@ func (p *Poller) SyncRoster(accounts []Account) {
 	p.mu.Unlock()
 
 	type seed struct {
-		a Account
-		v CacheView
+		a      Account
+		v      CacheView
+		resume bool // a stopped needs-login account that may poll again
 	}
 	var seeds []seed
 	cur := make(map[string]Account, len(accounts))
+	stopped := map[string]bool{}
+	p.mu.Lock()
+	for k, st := range p.accts {
+		stopped[k] = st.needsLogin
+	}
+	p.mu.Unlock()
 	for _, a := range accounts {
 		if a.Dir == "" {
 			continue
@@ -152,7 +197,11 @@ func (p *Poller) SyncRoster(accounts []Account) {
 		cur[key(a.Name)] = a
 		if !known[key(a.Name)] {
 			// Outside p.mu: Cached takes the status sink's lock.
-			seeds = append(seeds, seed{a, p.cfg.Cached(a.Name, now)})
+			seeds = append(seeds, seed{a: a, v: p.cfg.Cached(a.Name, now)})
+		} else if stopped[key(a.Name)] {
+			if v := p.cfg.Cached(a.Name, now); !needsLogin(v, a) {
+				seeds = append(seeds, seed{a: a, v: v, resume: true})
+			}
 		}
 	}
 
@@ -162,6 +211,7 @@ func (p *Poller) SyncRoster(accounts []Account) {
 			// A case-only rename keeps the key; take the configured
 			// spelling for the writes and log lines (F175).
 			st.dir, st.name = a.Dir, a.Name
+			st.rotates, st.loggedIn = a.Rotates, a.LoggedInAt
 		} else {
 			delete(p.accts, k)
 		}
@@ -169,27 +219,81 @@ func (p *Poller) SyncRoster(accounts []Account) {
 	slot := 0
 	for _, s := range seeds {
 		k := key(s.a.Name)
-		if _, ok := p.accts[k]; ok {
+		if st, ok := p.accts[k]; ok {
+			if s.resume && st.needsLogin {
+				st.needsLogin = false
+				st.limited, st.until = s.v.Limited, s.v.Until
+				st.pending = p.seedEntry(s.a, s.v, now, &slot)
+			}
 			continue
 		}
 		p.accts[k] = &acct{
-			name: s.a.Name, dir: s.a.Dir,
+			name: s.a.Name, dir: s.a.Dir, rotates: s.a.Rotates, loggedIn: s.a.LoggedInAt,
 			limited: s.v.Limited, until: s.v.Until,
-			pending: seedEntry(s.v, now, &slot),
+			needsLogin: needsLogin(s.v, s.a),
 		}
+		p.accts[k].pending = p.seedEntry(s.a, s.v, now, &slot)
 	}
 	p.mu.Unlock()
 	p.nudge()
 }
 
-// seedEntry is the first pending poll for an account that just joined.
-func seedEntry(v CacheView, now time.Time, slot *int) *entry {
+// needsLogin reports whether the status row says a has no usable login: the
+// row's mark counts until the account logs in again.
+func needsLogin(v CacheView, a Account) bool {
+	return v.NeedsLogin && !a.LoggedInAt.After(v.TokenAt)
+}
+
+// every is how long after an update an account's idle poll is due, before
+// jitter.
+func (st *acct) every() time.Duration {
+	if st.rotates {
+		return IdleEvery
+	}
+	return OffEvery
+}
+
+// jittered spreads d by +-IdleJitter.
+func (p *Poller) jittered(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (1 + IdleJitter*(2*p.cfg.Rand()-1)))
+}
+
+// idleEntry is st's next idle poll, due after from + its interval and no
+// closer than Stagger to another account's pending idle poll. Caller holds
+// p.mu.
+func (p *Poller) idleEntry(st *acct, from time.Time, step int) *entry {
+	return p.idleAt(st, from.Add(p.jittered(st.every())), step)
+}
+
+// idleAt is an idle entry due at due, moved later while another account's
+// pending idle poll sits within Stagger of it. Caller holds p.mu.
+func (p *Poller) idleAt(st *acct, due time.Time, step int) *entry {
+	for moved := true; moved; {
+		moved = false
+		for _, o := range p.accts {
+			if o == st || o.pending == nil || o.pending.kind != kindIdle {
+				continue
+			}
+			if d := o.pending.due.Sub(due); d > -Stagger && d < Stagger {
+				due, moved = o.pending.due.Add(Stagger), true
+			}
+		}
+	}
+	return &entry{due: due, kind: kindIdle, step: step}
+}
+
+// seedEntry is the first pending poll for an account that just joined or
+// resumed. Caller holds p.mu.
+func (p *Poller) seedEntry(a Account, v CacheView, now time.Time, slot *int) *entry {
 	staggered := func(k kind) *entry {
 		e := &entry{due: now.Add(time.Duration(*slot) * Stagger), kind: k}
 		*slot++
 		return e
 	}
+	st := p.accts[key(a.Name)]
 	switch {
+	case st.needsLogin:
+		return nil
 	case v.Limited && !v.Until.IsZero() && v.Until.Add(Grace).After(now):
 		return &entry{due: v.Until.Add(Grace), kind: kindReset}
 	case v.Limited:
@@ -197,7 +301,27 @@ func seedEntry(v CacheView, now time.Time, slot *int) *entry {
 	case !v.Fresh:
 		return staggered(kindStart)
 	}
-	return nil
+	// Fresh usage: its idle poll is due an interval after its last update.
+	e := p.idleEntry(st, v.UpdatedAt, 0)
+	if e.due.Before(now) {
+		e = staggered(kindIdle)
+	}
+	return e
+}
+
+// SetOnNeedsLogin installs Config.OnNeedsLogin after construction, for a
+// daemon that builds the poller before the notifier it reports to.
+func (p *Poller) SetOnNeedsLogin(fn func(account string)) {
+	p.mu.Lock()
+	p.cfg.OnNeedsLogin = fn
+	p.mu.Unlock()
+}
+
+// SetOnOK installs Config.OnOK after construction.
+func (p *Poller) SetOnOK(fn func(account string)) {
+	p.mu.Lock()
+	p.cfg.OnOK = fn
+	p.mu.Unlock()
 }
 
 // Observed is the status sink's hook after an observation that carried
@@ -219,12 +343,14 @@ func (p *Poller) Observed(account string, limited bool, until time.Time) {
 	}
 	st.gen++
 	st.limited, st.until = limited, until
+	// Traffic answered on the account's own login: it has one.
+	st.needsLogin = false
 	switch {
 	case !limited:
-		st.pending = nil
+		st.pending = p.idleEntry(st, now, 0)
 	case !until.IsZero() && until.Add(Grace).After(now):
 		st.pending = &entry{due: until.Add(Grace), kind: kindReset}
-	case st.pending == nil || st.pending.kind == kindStart:
+	case st.pending == nil || st.pending.kind != kindReset:
 		st.pending = &entry{due: now.Add(backoff[0]), kind: kindReset, step: 1}
 	}
 	p.mu.Unlock()
@@ -339,6 +465,7 @@ func (p *Poller) poll(ctx context.Context, j job) {
 	case <-ctx.Done():
 		p.mu.Lock()
 		j.st.inflight = false
+		p.release(j.st, false)
 		p.mu.Unlock()
 		return
 	case out = <-result:
@@ -349,8 +476,18 @@ func (p *Poller) poll(ctx context.Context, j job) {
 		// land after the sink closes.
 		p.mu.Lock()
 		j.st.inflight = false
+		p.release(j.st, false)
 		p.mu.Unlock()
 		return
+	}
+	if out.NeedsLogin && p.registered(j) {
+		p.mu.Lock()
+		fn := p.cfg.OnNeedsLogin
+		p.mu.Unlock()
+		if fn != nil {
+			// Outside p.mu: it writes the status cache and posts a notice.
+			fn(j.name)
+		}
 	}
 	var ap Applied
 	if out.OK && p.registered(j) {
@@ -358,6 +495,84 @@ func (p *Poller) poll(ctx context.Context, j job) {
 	}
 	fmt.Fprintf(p.cfg.Log, "chottag: usage poll %s %s %s %s\n", j.name, j.kind, out.Status, p.cfg.Now().Sub(sent).Round(time.Millisecond))
 	p.finish(j, out, ap)
+	if out.OK && ap.Written {
+		p.mu.Lock()
+		fn := p.cfg.OnOK
+		p.mu.Unlock()
+		if fn != nil {
+			fn(j.name) // outside p.mu: it writes the status cache
+		}
+	}
+}
+
+// release wakes the PollNow callers waiting on st. Caller holds p.mu.
+func (p *Poller) release(st *acct, ok bool) {
+	for _, w := range st.waiters {
+		w <- ok // 1-buffered
+	}
+	st.waiters = nil
+}
+
+// PollSkip says why PollNow would not poll account right now ("" when it
+// would): not on the roster, needs login, limited, or backing off a 429. It
+// changes nothing.
+func (p *Poller) PollSkip(account string) string {
+	now := p.cfg.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.skipReasonLocked(p.accts[key(account)], now)
+}
+
+// skipReasonLocked is PollSkip's rule. Caller holds p.mu.
+func (p *Poller) skipReasonLocked(st *acct, now time.Time) string {
+	switch {
+	case st == nil:
+		return "not on the roster"
+	case st.needsLogin:
+		return "needs login"
+	case st.limited:
+		return "limited"
+	}
+	if e := st.pending; !st.inflight && e != nil && e.kind == kindIdle && e.step > 0 && e.due.After(now) {
+		// Backing off a 429 (its Retry-After, else 60 then 120 minutes): the
+		// server asked for quiet, and a caller that wants an answer sooner
+		// does not get to override it.
+		return "in a 429 backoff"
+	}
+	return ""
+}
+
+// PollNow asks for account's poll to run at once, ahead of its schedule,
+// and waits for it to end (or ctx to be done). It reports whether a poll
+// went out and parsed. The poll runs on the one worker, so it never
+// overlaps another; an account that is limited, needs a login or is not on
+// the roster is not polled (false). The pre-switch poll of an old target
+// uses it (F268).
+func (p *Poller) PollNow(ctx context.Context, account string) bool {
+	now := p.cfg.Now()
+	ch := make(chan bool, 1)
+	p.mu.Lock()
+	st := p.accts[key(account)]
+	if p.skipReasonLocked(st, now) != "" {
+		p.mu.Unlock()
+		return false
+	}
+	st.waiters = append(st.waiters, ch)
+	if !st.inflight {
+		if st.pending == nil {
+			st.pending = &entry{due: now, kind: kindIdle}
+		} else {
+			st.pending.due = now
+		}
+	}
+	p.mu.Unlock()
+	p.nudge()
+	select {
+	case ok := <-ch:
+		return ok
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // registered reports whether j's account is still on the roster.
@@ -373,9 +588,18 @@ func (p *Poller) finish(j job, out Outcome, ap Applied) {
 	now := p.cfg.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// Under the same lock as the reschedule, so a PollNow that arrives after
+	// it cannot be handed this poll's answer.
+	defer p.release(j.st, out.OK)
 	j.st.inflight = false
 	if p.accts[key(j.name)] != j.st || j.st.gen != j.gen || j.st.pending != nil {
 		return // removed, observed or re-queued while in flight
+	}
+	if out.NeedsLogin {
+		// Nothing is polled until the status row stops saying so, or the
+		// account logs in again (F269).
+		j.st.needsLogin = true
+		return
 	}
 	if out.OK {
 		if !ap.Written {
@@ -384,6 +608,7 @@ func (p *Poller) finish(j job, out Outcome, ap Applied) {
 		j.st.limited, j.st.until = ap.Limited, ap.Until
 		switch {
 		case !ap.Limited:
+			j.st.pending = p.idleEntry(j.st, now, 0)
 		case !ap.Until.IsZero() && ap.Until.Add(Grace).After(now):
 			j.st.pending = &entry{due: ap.Until.Add(Grace), kind: kindReset}
 		default:
@@ -402,8 +627,22 @@ func (p *Poller) finish(j job, out Outcome, ap Applied) {
 		j.st.pending = &entry{due: now.Add(TokenRetry), kind: j.kind, step: j.step, tokenRetried: true}
 		return
 	}
-	if j.kind == kindStart {
-		return // otherwise a start poll is not retried
+	if j.kind != kindReset {
+		// A failed start or idle poll joins the idle schedule (F268): a 429
+		// waits its Retry-After, else 60 then 120 minutes; any other failure
+		// waits the ordinary interval.
+		if out.Status == "429" || out.Status == "401>429" || out.GaveUp {
+			// GaveUp: a 401 that survived a refresh costs a claude spawn per
+			// retry, so it backs off like a 429 instead of every interval.
+			wait := out.RetryAfter
+			if wait <= 0 {
+				wait = max(idleBackoff[min(j.step, len(idleBackoff)-1)], j.st.every())
+			}
+			j.st.pending = p.idleAt(j.st, now.Add(wait), j.step+1)
+			return
+		}
+		j.st.pending = p.idleEntry(j.st, now, 0)
+		return
 	}
 	if out.GaveUp {
 		return // a 401 waits for the next event

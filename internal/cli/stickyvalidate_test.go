@@ -365,6 +365,7 @@ func TestWireStickyValidateReportsADamagedFileAndStartsEmpty(t *testing.T) {
 }
 
 func TestDaemonOpensTheValidateSessionsFile(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	t.Setenv("HOME", home)

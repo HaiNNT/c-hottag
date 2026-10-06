@@ -268,11 +268,13 @@ func TestRenderStatusNeverPrintsZeroForUnknown(t *testing.T) {
 	if bLine == "" {
 		t.Fatalf("no row for B found in output: %q", out)
 	}
-	if strings.Contains(bLine, "90%") || strings.Contains(bLine, "10%") {
-		t.Fatalf("B row = %q; a stale observation must render unknown for BOTH windows even though the numbers are known", bLine)
+	// F268: an older observation keeps its numbers, marked with their age,
+	// so it can never be read as a live one.
+	if strings.Count(bLine, "(20m ago)") != 2 || !strings.Contains(bLine, "90% (20m ago)") || !strings.Contains(bLine, "10% (20m ago)") {
+		t.Fatalf("B row = %q, want both windows shown with their age, not as live numbers", bLine)
 	}
-	if strings.Count(bLine, "unknown") != 2 {
-		t.Fatalf("B row = %q, want \"unknown\" under both 5h and 7d, not one column blank", bLine)
+	if strings.Contains(bLine, " ok") {
+		t.Fatalf("B row = %q; an old observation must not read as ok", bLine)
 	}
 }
 
@@ -766,5 +768,23 @@ func TestPassthroughReasonPrefersTokenStateAndDetail(t *testing.T) {
 				t.Errorf("passthroughReason(%+v) = %q, want %q", c.e, got, c.want)
 			}
 		})
+	}
+}
+
+// Review 9: a window that has reset since an old reading is not shown with
+// its old number.
+func TestRenderStatusDoesNotShowAnOldNumberForAWindowThatResetSince(t *testing.T) {
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	at := now.Add(-6 * time.Hour)
+	p96, p10 := 96.0, 10.0
+	f := status.File{Accounts: []status.Account{{Name: "B", Usage: &status.Usage{
+		FiveHourPct: &p96, SevenDayPct: &p10, UpdatedAt: at,
+		FiveHourResetsAt: at.Add(time.Hour), SevenDayResetsAt: at.Add(72 * time.Hour),
+	}}}}
+	var buf bytes.Buffer
+	renderStatus(&buf, f, now)
+	out := buf.String()
+	if strings.Contains(out, "96%") || !strings.Contains(out, "unknown (reset since)") || !strings.Contains(out, "10% (6h ago)") {
+		t.Fatalf("output = %q, want the reset 5h window unknown (reset since) and the 7d one with its age", out)
 	}
 }

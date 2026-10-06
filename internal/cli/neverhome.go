@@ -110,6 +110,10 @@ type remoteWarmer struct {
 	// after the pool moved on is still answered by its own account. nil lists
 	// none.
 	sticky func() []string
+	// needsLogin, when set, records an account the pass found without a login
+	// (recordNeedsLogin: the status row and one notice); it is called once per
+	// transition, like the log line.
+	needsLogin func(account string)
 	// after schedules f once, d from now; nil is time.AfterFunc. A test
 	// replaces it to drive the wake delay by hand.
 	after func(d time.Duration, f func()) *time.Timer
@@ -232,8 +236,8 @@ func (w *remoteWarmer) stop(bound time.Duration) bool {
 	}
 }
 
-// pass warms each distinct remote and serving account of every pool, and each
-// account with a recent validate session, once.
+// pass warms each distinct remote and serving account of every pool, each
+// rotating account, and each account with a recent validate session, once.
 func (w *remoteWarmer) pass(ctx context.Context, wake bool) {
 	st, err := w.state()
 	if err != nil {
@@ -249,6 +253,15 @@ func (w *remoteWarmer) pass(ctx context.Context, wake bool) {
 	for _, pool := range st.PoolNames() {
 		p := st.PoolOf(pool)
 		names = append(names, p.Remote, p.Serving)
+	}
+	// Every rotating account too (F269): auto-switch may move any of them
+	// onto the serving role, and a token nobody warmed can have lapsed (or
+	// the login with it) by then. Warm only spawns within warmWindow of an
+	// expiry, so this costs about three refreshes per account per day.
+	for _, a := range st.Accounts {
+		if a.Rotates() {
+			names = append(names, a.Name)
+		}
 	}
 	if w.sticky != nil {
 		names = append(names, w.sticky()...)
@@ -311,6 +324,9 @@ func (w *remoteWarmer) note(account string, st creds.Status) {
 		w.logged = map[string]bool{}
 	}
 	w.logged[account] = true
+	if w.needsLogin != nil {
+		w.needsLogin(account)
+	}
 	if w.log != nil {
 		if st.Reason == tokens.ReasonNotRenewing {
 			fmt.Fprintf(w.log, "chottag: account %s needs login (its refresh does not renew the token); it is probed every %s until then (run: chottag login %s)\n", account, short(15*time.Minute), account)

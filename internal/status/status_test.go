@@ -1005,3 +1005,19 @@ func TestEnsureRosterReportsWhetherAnythingChanged(t *testing.T) {
 		}
 	}
 }
+
+func TestRecentIsLongerThanFresh(t *testing.T) {
+	base := time.Unix(1789870000, 0)
+	var f status.File
+	f.Observe("A", usage.Snapshot{Known: true, At: base}, usage.Verdict{})
+	at := base.Add(20 * time.Minute)
+	if f.Fresh("A", at) || !f.Recent("A", at) {
+		t.Fatalf("20 min old: Fresh %v Recent %v, want not fresh but recent", f.Fresh("A", at), f.Recent("A", at))
+	}
+	if !f.Recent("A", base.Add(status.RecentAfter-time.Second)) || f.Recent("A", base.Add(status.RecentAfter)) {
+		t.Fatal("Recent must end exactly at RecentAfter")
+	}
+	if f.Recent("Nobody", base) {
+		t.Fatal("an unknown account counted as recent")
+	}
+}

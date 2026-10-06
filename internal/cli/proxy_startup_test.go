@@ -30,6 +30,7 @@ import (
 // failing inside home(), which needs os.Getwd to fail. It shares the
 // "home" row's write site, so that row covers it.
 func TestEveryPreServeFailureReachesTheRealStderr(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	const listenRefused = "test: listen refused"
 	origListen := listenTCP
 	listenTCP = func(network, addr string) (net.Listener, error) { return nil, errors.New(listenRefused) }
@@ -140,6 +141,7 @@ func TestEveryPreServeFailureReachesTheRealStderr(t *testing.T) {
 // stderr, so startupErr is nil and a failure must appear on it once, not
 // twice (spec §4.6: "nothing changes").
 func TestForegroundProxyRunWritesAPreServeFailureOnce(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	t.Setenv("CHOTTAG_HOME", t.TempDir())
 	var stderr bytes.Buffer
 	if code := runProxyWithSignal([]string{"run", "--listen", "0.0.0.0:0"}, io.Discard, &stderr, nil, nil); code != 2 {
@@ -199,6 +201,7 @@ func TestStartupWriterReturnsStderrAloneWhenStartupErrIsNil(t *testing.T) {
 // for `daemon run`'s daemon.log with a writer whose Write always fails:
 // startupErr (the real stderr) must still carry the pre-serve failure.
 func TestRunProxyWithSignalPreServeFailureReachesStartupErrEvenWhenStderrFails(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	t.Setenv("CHOTTAG_HOME", t.TempDir())
 	failing := alwaysFailWriter{err: errors.New("test: daemon.log write failed")}
 	var startupErr bytes.Buffer

@@ -35,6 +35,13 @@ import (
 // consumer reports "unknown" rather than acting on it (§6.3).
 const StaleAfter = 10 * time.Minute
 
+// RecentAfter is how long usage still counts as recent: the daemon's idle
+// poll keeps an account's usage within IdleEvery (30 minutes) of now, and
+// 15 minutes more tolerate a poll that is late or failed once (F268). Recent
+// usage is trusted to choose an auto-switch target, but only fresh usage
+// (StaleAfter) can make the serving account leave.
+const RecentAfter = 45 * time.Minute
+
 // Version is the cache schema version.
 const Version = 1
 
@@ -864,6 +871,18 @@ func (f *File) Fresh(account string, now time.Time) bool {
 		if strings.EqualFold(f.Accounts[i].Name, account) {
 			u := f.Accounts[i].Usage
 			return u != nil && now.Sub(u.UpdatedAt) < StaleAfter
+		}
+	}
+	return false
+}
+
+// Recent reports whether this account's usage is younger than RecentAfter.
+// Fresh usage is recent too.
+func (f *File) Recent(account string, now time.Time) bool {
+	for i := range f.Accounts {
+		if strings.EqualFold(f.Accounts[i].Name, account) {
+			u := f.Accounts[i].Usage
+			return u != nil && now.Sub(u.UpdatedAt) < RecentAfter
 		}
 	}
 	return false

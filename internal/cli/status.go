@@ -127,10 +127,10 @@ func runStatus(home string, args []string, r *reporter) int {
 
 	now := time.Now()
 	// Stale states each account's freshness explicitly (spec §6.3, contract
-	// 5): the human table already renders "unknown" instead of a number for
-	// a stale account (via Fresh, below), but --json used to keep emitting
-	// the raw, no-longer-trustworthy percentages with nothing saying not to
-	// trust them. Set for both surfaces from the same clock, so they always
+	// 5): the human table shows an older reading with its age ("45% (2h
+	// ago)", F268) instead of as if it were live, but --json used to keep
+	// emitting the raw, no-longer-trustworthy percentages with nothing
+	// saying not to trust them. Set for both surfaces from the same clock, so they always
 	// agree.
 	for i := range f.Accounts {
 		f.Accounts[i].Stale = !f.Fresh(f.Accounts[i].Name, now)
@@ -375,9 +375,18 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 	for _, a := range f.Accounts {
 		fresh := f.Fresh(a.Name, now)
 		five, seven := "unknown", "unknown"
-		if fresh {
+		switch {
+		case fresh:
 			five = pctOrUnknown(a.Usage.FiveHourPct)
 			seven = pctOrUnknown(a.Usage.SevenDayPct)
+		case a.Usage != nil && !a.Usage.UpdatedAt.IsZero():
+			// Older data still says something (F268): show it with its age
+			// instead of hiding it behind "unknown". A window that has reset
+			// since the reading was taken is refilled (the planner counts it
+			// as 0%), so its old number is not shown at all.
+			age := now.Sub(a.Usage.UpdatedAt)
+			five = pctWithAge(a.Usage.FiveHourPct, a.Usage.FiveHourResetsAt, now, age)
+			seven = pctWithAge(a.Usage.SevenDayPct, a.Usage.SevenDayResetsAt, now, age)
 		}
 		state := "-"
 		switch {
@@ -646,6 +655,32 @@ func pctOrUnknown(p *float64) string {
 		return "unknown"
 	}
 	return fmt.Sprintf("%.0f%%", *p)
+}
+
+// pctWithAge renders a reading that is no longer fresh: "45% (2h ago)".
+// Without a percentage it is "unknown", and so it is, with a note, once the
+// window has reset since the reading.
+func pctWithAge(p *float64, resetsAt, now time.Time, age time.Duration) string {
+	if p == nil {
+		return "unknown"
+	}
+	if !resetsAt.IsZero() && !resetsAt.After(now) {
+		return "unknown (reset since)"
+	}
+	return fmt.Sprintf("%.0f%% (%s ago)", *p, ageWords(age))
+}
+
+// ageWords is a coarse age: "35m", "2h", "3d".
+func ageWords(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	}
+	return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 }
 
 // orderAccounts sorts f.Accounts to match order (state.json's registration
@@ -1203,7 +1238,11 @@ func newPassthroughHook(sink *statusSink, print func(selector.Event)) func(selec
 		if e.Kind == "passthrough" {
 			sink.setPassthrough(e.Account, passthroughReason(e))
 			// This event hook, not a periodic per-account sweep, is
-			// Account.Token's writer (F92): a sweep calling
+			// Account.Token's writer (F92; R161 adds the warm pass and the
+			// usage poll, which record needs-login where they see it. The
+			// warm pass reads every rotating slot each minute as the
+			// product's own refresh path, which is the one sweep chottag
+			// accepts, and the design spec says so): a separate sweep calling
 			// tokens.Manager.Status for every configured account on the
 			// roster tick would, once its 30s ReadTTL cache lapses, reach
 			// Manager.read's m.cfg.Read(dir) — a macOS Keychain read — on a

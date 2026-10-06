@@ -23,13 +23,14 @@ type stubTokens struct {
 	refreshed string
 	dirs      []string
 	refreshes int
+	state     creds.TokenState // what Token reports as the slot's state
 }
 
 func (s *stubTokens) Token(_ context.Context, dir string) (string, creds.Status, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirs = append(s.dirs, dir)
-	return s.token, creds.Status{}, s.token != ""
+	return s.token, creds.Status{State: s.state}, s.token != ""
 }
 
 func (s *stubTokens) ForceRefresh(_ context.Context, dir string) (string, bool) {
@@ -418,5 +419,37 @@ func TestNewFetcherRefusesAnIncompleteConfig(t *testing.T) {
 func TestDefaultURLIsTheCapturedEndpoint(t *testing.T) {
 	if DefaultURL != "https://api.anthropic.com/api/oauth/usage" {
 		t.Fatalf("DefaultURL = %q", DefaultURL)
+	}
+}
+
+func TestFetchReportsNeedsLoginFromTheCredsStatus(t *testing.T) {
+	srv, hits := usageServer(t, func(http.ResponseWriter, string) { t.Error("a request went out for a slot with no login") })
+	tokens := &stubTokens{state: creds.StateNeedsLogin}
+	out := testFetcher(srv, tokens, 100)(context.Background(), "/slots/A")
+	if out.OK || !out.NoToken || !out.NeedsLogin || hits.Load() != 0 {
+		t.Fatalf("outcome = %+v, hits = %d; want no-token with NeedsLogin and no request", out, hits.Load())
+	}
+	// A merely stale slot is not needs-login.
+	tokens.state = creds.StateStale
+	if out := testFetcher(srv, tokens, 100)(context.Background(), "/slots/A"); !out.NoToken || out.NeedsLogin {
+		t.Fatalf("outcome = %+v, want no-token without NeedsLogin for a stale slot", out)
+	}
+}
+
+func TestFetchCarriesARetryAfterOnA429(t *testing.T) {
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{{"120", 2 * time.Minute}, {"", 0}, {"soon", 0}, {"-5", 0}, {"999999999", maxRetryAfter}} {
+		srv, _ := usageServer(t, func(w http.ResponseWriter, _ string) {
+			if tc.header != "" {
+				w.Header().Set("Retry-After", tc.header)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+		})
+		out := testFetcher(srv, &stubTokens{token: "t"}, 100)(context.Background(), "/slots/A")
+		if out.OK || out.Status != "429" || out.RetryAfter != tc.want {
+			t.Fatalf("Retry-After %q: outcome = %+v, want status 429 and RetryAfter %v", tc.header, out, tc.want)
+		}
 	}
 }

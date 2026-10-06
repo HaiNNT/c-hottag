@@ -651,3 +651,63 @@ func TestSimTreatsANaNPercentageAsUnknown(t *testing.T) {
 		t.Fatalf("sim.Pct5h = %v, want 0: a NaN reading counts as unknown", sa.Pct5h)
 	}
 }
+
+// F268: three data ages. A recent (not fresh) reading is trusted for choosing
+// a target but cannot make the serving account leave; an old one ranks after
+// the recent ones and is flagged for the daemon's pre-switch poll.
+func TestRecentUsageDoesNotMakeServingLeave(t *testing.T) {
+	a := acct("A", TierMax5x, 96, 3*time.Hour, 40, 72*time.Hour)
+	a.Fresh, a.Recent = false, true
+	d := Plan(input(ModeBalanced, "A", a, acct("B", TierMax5x, 10, 4*time.Hour, 20, 72*time.Hour)))
+	if d.Action != ActionStay {
+		t.Fatalf("Plan = %+v, want a stay: only fresh usage can make serving leave", d)
+	}
+}
+
+func TestRecentTargetUsageCountsAsFreshForTheOverPointRule(t *testing.T) {
+	// Old data keeps targetOverPoint's lower-bound rule: a reset that has
+	// passed or is unknown leaves it "below"; recent data is judged like
+	// fresh data, whatever its reset says.
+	b := acct("B", TierMax5x, 96, -time.Minute, 10, 72*time.Hour) // 5h reset already passed
+	b.Fresh = false
+	if got := Eligible(b, Preset(ModeBalanced), t0); got != "" {
+		t.Fatalf("old B whose reset passed: Eligible = %q, want eligible", got)
+	}
+	b.Recent = true
+	b.Reset5h = t0.Add(3 * time.Hour)
+	if got := Eligible(b, Preset(ModeBalanced), t0); got != ReasonAboveSwitch {
+		t.Fatalf("recent B at 96%%: Eligible = %q, want %q", got, ReasonAboveSwitch)
+	}
+}
+
+func TestOldTargetRanksAfterRecentOnesAndIsFlagged(t *testing.T) {
+	a := acct("A", TierMax5x, 100, 3*time.Hour, 40, 72*time.Hour)
+	a.Limited, a.LimitedUntil, a.LimitWindow = true, t0.Add(3*time.Hour), Win5h
+	old := acct("B", TierMax5x, 0, time.Hour, 0, 72*time.Hour) // first in order, best on paper
+	old.Fresh = false
+	recent := acct("C", TierMax5x, 30, 4*time.Hour, 20, 72*time.Hour)
+	recent.Fresh, recent.Recent = false, true
+	for _, mode := range []Mode{ModeBalanced, ModeCacheOptimize} {
+		d := Plan(input(mode, "A", a, old, recent))
+		if d.Action != ActionSwitch || d.Target != "C" || d.TargetOld {
+			t.Fatalf("%s: Plan = %+v, want the recent C, not flagged old", mode, d)
+		}
+	}
+	d := Plan(input(ModeBalanced, "A", a, old))
+	if d.Action != ActionSwitch || d.Target != "B" || !d.TargetOld {
+		t.Fatalf("Plan = %+v, want the only candidate B, flagged TargetOld", d)
+	}
+}
+
+func TestLimitFallbackAlsoRanksOldAfterRecent(t *testing.T) {
+	a := acct("A", TierMax5x, 100, 3*time.Hour, 40, 72*time.Hour)
+	a.Limited, a.LimitedUntil, a.LimitWindow = true, t0.Add(3*time.Hour), Win5h
+	old := acct("B", TierMax5x, 97, 4*time.Hour, 10, 72*time.Hour) // over its point: fallback only
+	old.Fresh = false
+	recent := acct("C", TierMax5x, 98, 4*time.Hour, 10, 72*time.Hour)
+	recent.Fresh, recent.Recent = false, true
+	d := Plan(input(ModeBalanced, "A", a, old, recent))
+	if d.Action != ActionSwitch || !d.Fallback || d.Target != "C" || d.TargetOld {
+		t.Fatalf("Plan = %+v, want the fallback to take the recent C", d)
+	}
+}

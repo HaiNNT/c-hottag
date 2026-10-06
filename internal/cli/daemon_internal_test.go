@@ -40,6 +40,7 @@ func writeStateWithPort(t *testing.T, home string, port int) {
 // 127.0.0.1:0 is safe — the kernel picks an ephemeral port, never the
 // product's real default.
 func TestDaemonRefusesAPortThatIsTaken(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +81,7 @@ func TestDaemonRefusesAPortThatIsTaken(t *testing.T) {
 // is hardcoded to nil) — an error instead makes runDaemonCmd fail fast
 // (exit 1) and return, which is all this test needs.
 func TestRunDaemonCmdListensOnStateJSONsPort(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	writeStateWithPort(t, home, 51234) // never bound: listenTCP is stubbed below
@@ -107,6 +109,7 @@ func TestRunDaemonCmdListensOnStateJSONsPort(t *testing.T) {
 // failure that happens before the proxy begins serving must reach the real
 // stderr too, not just logw.
 func TestDaemonRunWritesAPreServeStartupFailureToRealStderr(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	// A corrupt state.json makes store.Store.Load() fail.
@@ -140,6 +143,7 @@ func TestDaemonRunWritesAPreServeStartupFailureToRealStderr(t *testing.T) {
 // failure below (a corrupt state.json) is runDaemonRun's first write to
 // logw, so it is what actually triggers the rotation.
 func TestDaemonRunPreServeFailureReachesRealStderrEvenWhenDaemonLogWriteFails(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	if err := os.WriteFile(filepath.Join(home, "state.json"), []byte("{not json"), 0o600); err != nil {
@@ -190,6 +194,7 @@ func TestDaemonRejectsAMissingSubcommand(t *testing.T) {
 // every input (review finding, M1c4 Task 6 fix round 2 — an earlier,
 // broader redaction did exactly that).
 func TestDaemonRunRejectsAStrayPositionalArgument(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	t.Setenv("CHOTTAG_HOME", t.TempDir())
 	var out, errb strings.Builder
 	if got := runDaemonCmd([]string{"run", "somearg", "--log", ""}, newReporter(false, &out, &errb)); got != 2 {
@@ -213,6 +218,7 @@ func TestDaemonRunRejectsAStrayPositionalArgument(t *testing.T) {
 // TestDaemonRunRejectsAStrayPositionalArgument above pins that ordinary
 // values are not swept up by the same check.
 func TestDaemonRunRedactsACredentialShapedStrayArgument(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	t.Setenv("CHOTTAG_HOME", t.TempDir())
 	var out, errb strings.Builder
 	if got := runDaemonCmd([]string{"run", "bob:hunter2@proxy:8080"}, newReporter(false, &out, &errb)); got != 2 {
@@ -355,6 +361,7 @@ func listenTCPTripwire(t *testing.T) {
 // test`. The stub makes that path fail fast and observably instead,
 // regardless of which validation layer the mutation defeats.
 func TestDaemonRunHonoursTheUpstreamProxyEnvFallback(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	t.Setenv(shim.UpstreamProxyEnvVar, "http://user:secret@nowhere:1/%zz")
@@ -382,6 +389,7 @@ func TestDaemonRunHonoursTheUpstreamProxyEnvFallback(t *testing.T) {
 // listenTCPTripwire is the safety net for the same reason as
 // TestDaemonRunHonoursTheUpstreamProxyEnvFallback just above.
 func TestDaemonRunExplicitUpstreamFlagOverridesTheEnvFallback(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	t.Setenv(shim.UpstreamProxyEnvVar, "http://user:secret@nowhere:1/%zz")
@@ -424,6 +432,7 @@ func TestDaemonRunExplicitUpstreamFlagOverridesTheEnvFallback(t *testing.T) {
 // default port (§4.8's "never bind 47821" rule) — even though the check
 // working correctly never lets control reach that far.
 func TestDaemonRunRejectsLogPointedAtDaemonLogItself(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	daemonLogPath := filepath.Join(home, "daemon.log")
@@ -468,6 +477,7 @@ func TestDaemonRunRejectsLogPointedAtDaemonLogItself(t *testing.T) {
 // and the documented diagnostic file (daemon.log) is blank. Asserting
 // positively on both sinks, and that they carry the SAME line, closes that.
 func TestDaemonRunRejectsABadUpstreamProxyWithoutLeakingCredentials(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	var out, errb strings.Builder
@@ -523,6 +533,7 @@ func TestDaemonRunRejectsABadUpstreamProxyWithoutLeakingCredentials(t *testing.T
 // runDaemonCmd's listen call site actually uses st.ResolvedPort() — that is
 // TestRunDaemonCmdListensOnStateJSONsPort's job, above.
 func TestRunDaemonCmdReachesTheComputedDefaultLogPath(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 
@@ -574,6 +585,7 @@ func TestRunDaemonCmdReachesTheComputedDefaultLogPath(t *testing.T) {
 // never the fixed default: reaching the real listener at all is exactly
 // what this test needs and every sibling test in this file avoids.
 func TestRunDaemonCmdWiresDaemonLogAsRunProxyWithSignalsStdout(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 
@@ -687,6 +699,7 @@ func TestRunDaemonCmdWiresDaemonLogAsRunProxyWithSignalsStdout(t *testing.T) {
 // TestDaemonRunRejectsLogPointedAtDaemonLogItself above calls runDaemonCmd
 // directly for the exact-path case.
 func TestDaemonRunRejectsALogOnARotationSibling(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	for i := 1; i <= daemonLogKeep; i++ {
 		name := fmt.Sprintf("daemon.log.%d", i)
 		t.Run(name, func(t *testing.T) {
@@ -765,6 +778,7 @@ func stripLogStamp(t *testing.T, content string) string {
 
 // TestDaemonLogLinesAreStampedWithTheInjectedClock holds the exact format.
 func TestDaemonLogLinesAreStampedWithTheInjectedClock(t *testing.T) {
+	stubDaemonNotifier(t) // the warm pass may post a needs-login notice (F269)
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
 	orig := daemonLogClock

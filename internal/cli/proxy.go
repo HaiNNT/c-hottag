@@ -274,6 +274,8 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	// outside the chottag_fakeusage build (fakeutil_off.go).
 	fake := applyFakeUtil(os.Getenv, cache.State, sink, stderr, time.Now())
 	as := newAutoSwitcher(store.Store{Dir: h}, cache, sink, dn, stderr, fake)
+	as.tokenStatus, as.warmFor = tm.Status, tm.WarmFor
+	as.awaitToken = func(ctx context.Context, dir string) { tm.Await(ctx, dir) }
 
 	// The spread policy's placements (M7): loaded now, so a daemon restart
 	// keeps every session on its account; saved on change and at shutdown.
@@ -309,6 +311,14 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	var poller pollScheduler
 	if p := newDaemonPoller(stderr, tm, sink, upstreamURL); p != nil {
 		sink.setOnObserved(p.Observed)
+		// A poll that finds no login records it where the planner and the
+		// notifier look (F269), then the poller leaves the account alone.
+		p.SetOnNeedsLogin(func(account string) {
+			fmt.Fprintf(stderr, "chottag: usage poll %s: no usable login; not polled until it logs in again (run: chottag login %s)\n", account, account)
+			recordNeedsLogin(sink, dn, account)
+		})
+		p.SetOnOK(func(account string) { recordRecovered(sink, dn, account, timeNow()) })
+		as.pollNow, as.pollSkip = p.PollNow, p.PollSkip
 		poller = p
 	}
 
@@ -349,6 +359,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Update:     ul,
 			Restart:    rl,
 			Warm: &remoteWarmer{state: cache.State, warm: tm.Warm, probe: tm.LockedOut, sticky: stickyAccounts, log: stderr, now: timeNow,
+				needsLogin: func(account string) { recordNeedsLogin(sink, dn, account) },
 				wakeWarm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
 					return tm.WarmFor(ctx, dir, within, tokens.TriggerWake)
 				}},
@@ -400,7 +411,7 @@ func pollAccounts(st store.State) []usagepoll.Account {
 		if a.Dir == "" {
 			continue
 		}
-		out = append(out, usagepoll.Account{Name: a.Name, Dir: a.Dir})
+		out = append(out, usagepoll.Account{Name: a.Name, Dir: a.Dir, Rotates: a.Rotates(), LoggedInAt: a.LoggedInAt})
 	}
 	return out
 }

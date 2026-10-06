@@ -79,8 +79,13 @@ running, or finished within the last 30 seconds, the retry waits for it and
 uses its new token), and if that is
 refused too, it sends the request once on Claude Code's own login (never, with
 more than one pool, or for a remote or owner request). For a request about a
-claude.ai object, to a route the table does not list, or answered 404, this
+claude.ai object, to a route the table does not list, or answered 404 (other than on `POST /v1/messages`, below), this
 counts as route drift (`chottag doctor`'s `route-drift` row and its notice).
+A 404 on `POST /v1/messages` is the exception, since 0.9.3: Claude Code's Message
+Threads continue a thread only the account that created it holds, and Claude Code
+sends the turn again as a create when it gets a 404, so the daemon returns that
+404 unchanged (no refresh, retry, Home resend, drift count or notice) and marks
+the `proxy.jsonl` record `passed404`.
 For a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` it is the account's login being refused
 instead: the daemon log gets a line, the
 notice names the account and the status (at most once an hour per account),
@@ -136,10 +141,22 @@ account happens to be `remote` at the time.
 The daemon reads each account's 5h and 7d usage out of the API's own
 response headers as it forwards them; for an account that has sent no
 traffic (idle, or already limited and waiting on a reset), it falls back
-to its own occasional poll of `/api/oauth/usage`. Either way, the result
+to its own poll of `/api/oauth/usage`: at daemon start, when a limit is due
+to reset, and on an idle schedule, about 30 minutes after the account's last
+usage update (2 hours for a rotation-off account such as the remote), spread
+by a tenth either way and 2 seconds apart. A poll that fails with a 429 waits
+the server's `Retry-After`, else 60 and then 120 minutes. A poll that finds
+the account has no usable login records `needs-login` (one notice) and stops
+polling it until it logs in again. Either way, the result
 lands in a derived view in `cache/status.json` — the file
 `chottag status` reads. Auto-switch acts on that same view, moving
-`serving` before an account runs out ([auto-switch](auto-switch.md)).
+`serving` before an account runs out ([auto-switch](auto-switch.md)). It
+tells three ages of reading apart: fresh (under 10 minutes), the only age
+that can make the serving account leave; recent (under 45 minutes), trusted
+to choose a target; and old, ranked after the recent ones.
+
+The daemon keeps every rotating account's token warm, not only the serving
+and remote ones, so that an account auto-switch picks has a usable login. The same pass records `needs-login` (one notice) for an account whose login it finds gone.
 
 ## Spreading sessions (spread)
 
