@@ -23,11 +23,10 @@ func TestNamesShowDefaultWritesNothing(t *testing.T) {
 func TestNamesSetPersistsAndIsShown(t *testing.T) {
 	notifyHome(t)
 	want := map[string]string{
-		"model": "names: model (also a Haiku topic for a first prompt with no branch)\n",
-		"off":   "names: off\n",
-		"on":    "names: on (branch, then Claude's title)\n",
+		"off": "names: off\n",
+		"on":  "names: on (branch, then Claude's title)\n",
 	}
-	for _, mode := range []string{"model", "off", "on"} {
+	for _, mode := range []string{"off", "on"} {
 		if code, out, errs := runChottag(t, "names", mode); code != exit.OK || out != want[mode] {
 			t.Fatalf("names %s = %d %q; stderr %q", mode, code, out, errs)
 		}
@@ -39,7 +38,7 @@ func TestNamesSetPersistsAndIsShown(t *testing.T) {
 
 func TestNamesBadValueAndExtraArgs(t *testing.T) {
 	notifyHome(t)
-	if code, _, errs := runChottag(t, "names", "maybe"); code != exit.Usage || !strings.Contains(errs, "on, model or off") {
+	if code, _, errs := runChottag(t, "names", "maybe"); code != exit.Usage || !strings.Contains(errs, "on or off") {
 		t.Fatalf("bad value = %d %q", code, errs)
 	}
 	if code, _, _ := runChottag(t, "names", "on", "off"); code != exit.Usage {
@@ -47,14 +46,25 @@ func TestNamesBadValueAndExtraArgs(t *testing.T) {
 	}
 }
 
+func TestNamesModelIsRemovedAndChangesNothing(t *testing.T) {
+	home := notifyHome(t)
+	code, _, errs := runChottag(t, "names", "model")
+	if code != exit.Usage || !strings.Contains(errs, "removed in 0.10.2") {
+		t.Fatalf("names model = %d %q", code, errs)
+	}
+	if _, err := os.Stat(filepath.Join(home, "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("names model wrote state.json (stat: %v)", err)
+	}
+}
+
 func TestNamesJSON(t *testing.T) {
 	notifyHome(t)
-	code, out, errs := runChottag(t, "names", "model", "--json")
+	code, out, errs := runChottag(t, "names", "off", "--json")
 	if code != exit.OK {
 		t.Fatalf("code %d; stderr %q", code, errs)
 	}
-	if doc := decodeOneDocument(t, out); doc["names"] != "model" {
-		t.Fatalf("doc %v, want names model", doc)
+	if doc := decodeOneDocument(t, out); doc["names"] != "off" {
+		t.Fatalf("doc %v, want names off", doc)
 	}
 }
 
@@ -64,12 +74,12 @@ func TestStatusNamesLineAndJSON(t *testing.T) {
 	if strings.Contains(out, "names:") {
 		t.Errorf("status shows names while on:\n%s", out)
 	}
-	runChottag(t, "names", "model")
+	runChottag(t, "names", "off")
 	_, out, _ = runChottag(t, "status")
-	if !strings.Contains(out, "names: model\n") {
+	if !strings.Contains(out, "names: off\n") {
 		t.Errorf("status lacks names line:\n%s", out)
 	}
-	for _, mode := range []string{"model", "on"} {
+	for _, mode := range []string{"off", "on"} {
 		runChottag(t, "names", mode)
 		_, out, _ = runChottag(t, "status", "--json")
 		if doc := decodeOneDocument(t, out); doc["names"] != mode {
@@ -78,17 +88,15 @@ func TestStatusNamesLineAndJSON(t *testing.T) {
 	}
 }
 
-// TestNameSessionModePrecedence: the env overrides the stored mode (0 off,
-// model model); any other env value is ignored.
+// TestNameSessionModePrecedence: the env 0 overrides the stored mode to off;
+// any other env value, including the removed model, is ignored.
 func TestNameSessionModePrecedence(t *testing.T) {
 	cases := []struct {
 		state, env string
-		wantModel  bool
 		wantSilent bool
 	}{
-		{"on", "", false, false}, {"on", "0", false, true}, {"on", "model", true, false}, {"on", "junk", false, false},
-		{"model", "", true, false}, {"model", "0", false, true}, {"model", "model", true, false}, {"model", "junk", true, false},
-		{"off", "", false, true}, {"off", "0", false, true}, {"off", "model", true, false}, {"off", "junk", false, true},
+		{"on", "", false}, {"on", "0", true}, {"on", "model", false}, {"on", "junk", false},
+		{"off", "", true}, {"off", "0", true}, {"off", "model", true}, {"off", "junk", true},
 	}
 	for _, c := range cases {
 		t.Run(c.state+"/"+c.env, func(t *testing.T) {
@@ -97,15 +105,22 @@ func TestNameSessionModePrecedence(t *testing.T) {
 				t.Fatalf("names: %d %q", code, errs)
 			}
 			t.Setenv("CHOTTAG_NAME_SESSIONS", c.env)
-			calls := stubModel(t, `{"subtype":"success","is_error":false,"result":"Fix date test"}`, nil)
 			out := e.hookPrompt(t, "Add a retry to the upload client")
 			if c.wantSilent != (out == "") {
 				t.Fatalf("out %q, silent want %v", out, c.wantSilent)
 			}
-			if got := len(*calls) == 1; got != c.wantModel {
-				t.Fatalf("model calls %d, want model %v", len(*calls), c.wantModel)
-			}
 		})
+	}
+}
+
+// A stored "model" from 0.10.1 reads as on.
+func TestNameSessionStoredModelReadsAsOn(t *testing.T) {
+	e := newNSEnv(t, "ref: refs/heads/main\n")
+	if err := os.WriteFile(filepath.Join(e.home, "state.json"), []byte(`{"names":"model"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.hookPrompt(t, "Add a retry"); !strings.Contains(out, `"sessionTitle":"Acme 09:07"`) {
+		t.Fatalf("out %q, want the fallback name", out)
 	}
 }
 
@@ -122,11 +137,11 @@ func TestNameSessionUnreadableStateMeansOn(t *testing.T) {
 func init() {
 	registerJSONCases(
 		jsonCase{
-			name: "names model sets the mode", command: "names",
-			setup: func(t *testing.T) []string { notifyHome(t); return []string{"names", "model"} },
+			name: "names off sets the mode", command: "names",
+			setup: func(t *testing.T) []string { notifyHome(t); return []string{"names", "off"} },
 			check: func(t *testing.T, doc map[string]any) {
-				if doc["names"] != "model" {
-					t.Errorf("doc = %v, want names model", doc)
+				if doc["names"] != "off" {
+					t.Errorf("doc = %v, want names off", doc)
 				}
 			},
 		},

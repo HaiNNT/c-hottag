@@ -76,7 +76,8 @@ Claude Code treats a 401, 403 or 404 as final, so a request swapped onto an
 account that is then refused is never passed back as is: the daemon refreshes
 that account's token and tries once more (if the account's refresh is already
 running, or finished within the last 30 seconds, the retry waits for it and
-uses its new token), and if that is
+uses its new token, never the one that was just refused, and a second retry
+follows if a newer token appeared meanwhile), and if that is
 refused too, it sends the request once on Claude Code's own login (never, with
 more than one pool, or for a remote or owner request). For a request about a
 claude.ai object, to a route the table does not list, or answered 404 (other than on `POST /v1/messages`, below), this
@@ -95,7 +96,12 @@ For a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` it is the accou
 instead: the daemon log gets a line, the
 notice names the account and the status (at most once an hour per account),
 and `proxy.jsonl`'s `refused` field holds the first refused status beside
-`drift`.
+`drift`. That record never has `drift: true` for such a refusal, even when the
+resend on Claude Code's own login is answered with something else (a 404, say).
+`refusedType` holds the first refusal's upstream `error.type` and `errType`
+the final response's, when it was a 400 or more: only one of `invalid_request_error`,
+`authentication_error`, `permission_error`, `not_found_error`, `request_too_large`,
+`rate_limit_error`, `api_error`, `overloaded_error`, or `other`; never the message.
 
 ## Which account a request uses
 

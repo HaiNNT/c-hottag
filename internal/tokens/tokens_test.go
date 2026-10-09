@@ -1686,3 +1686,98 @@ func TestForceRefreshWaitEndsWithTheCallersContext(t *testing.T) {
 	}
 	close(release)
 }
+
+// R176: a 401 on the token the slot already holds, within recentRenewal of
+// a renewal, must not be answered with that same token: the credential was
+// rotated again behind the cache, and a forced refresh finds the new one.
+func TestForceRefreshFromReReadsWhenTheRenewedTokenIsTheRejectedOne(t *testing.T) {
+	now := time.Date(2026, 10, 9, 15, 41, 0, 0, time.UTC)
+	f := &fakeSlot{tok: tok(now.Add(time.Minute))}
+	f.onRefresh = func(f *fakeSlot) { f.tok = tok(now.Add(8 * time.Hour)) }
+	m := newManager(f, &now, false)
+	if _, renewed := m.Warm(context.Background(), slot, time.Hour); !renewed {
+		t.Fatal("the warm refresh did not renew")
+	}
+	rejected := f.token().AccessToken
+	newer := tok(now.Add(9 * time.Hour))
+	f.setOnRefresh(func(*fakeSlot) {}) // the next refresh leaves the rotated credential alone
+	f.setToken(newer)
+	now = now.Add(2 * time.Second)
+	got, ok := m.ForceRefreshFrom(context.Background(), slot, rejected)
+	if !ok || got != newer.AccessToken {
+		t.Fatalf("ForceRefreshFrom = %q, %v; want the newer token %q", got, ok, newer.AccessToken)
+	}
+}
+
+// R176: the 401 came on the token a renewal has just replaced: the renewed
+// token is the answer, with no second refresh.
+func TestForceRefreshFromAfterARenewalReturnsTheNewToken(t *testing.T) {
+	now := time.Date(2026, 10, 9, 15, 41, 0, 0, time.UTC)
+	old := tok(now.Add(time.Minute))
+	f := &fakeSlot{tok: old}
+	f.onRefresh = func(f *fakeSlot) { f.tok = tok(now.Add(8 * time.Hour)) }
+	m := newManager(f, &now, false)
+	if _, renewed := m.Warm(context.Background(), slot, time.Hour); !renewed {
+		t.Fatal("the warm refresh did not renew")
+	}
+	now = now.Add(time.Second)
+	got, ok := m.ForceRefreshFrom(context.Background(), slot, old.AccessToken)
+	if !ok || got != f.token().AccessToken {
+		t.Fatalf("ForceRefreshFrom = %q, %v; want the renewed token", got, ok)
+	}
+	if f.refreshCount() != 1 {
+		t.Fatalf("refreshes = %d, want 1", f.refreshCount())
+	}
+}
+
+// R176: a 401 that arrives while the slot's refresh is in flight waits for
+// it and gets its new token.
+func TestForceRefreshFromWaitsForARefreshInFlight(t *testing.T) {
+	now := time.Date(2026, 10, 9, 15, 41, 0, 0, time.UTC)
+	started, release := make(chan struct{}), make(chan struct{})
+	old := tok(now.Add(time.Minute))
+	f := &fakeSlot{tok: old}
+	f.onRefresh = func(f *fakeSlot) {
+		close(started)
+		<-release
+		f.tok = tok(now.Add(8 * time.Hour))
+	}
+	m := newManager(f, &now, false)
+	warmed := make(chan struct{})
+	go func() { m.Warm(context.Background(), slot, time.Hour); close(warmed) }()
+	<-started
+	type res struct {
+		tok string
+		ok  bool
+	}
+	out := make(chan res, 1)
+	probe := newWaitProbe()
+	go func() {
+		got, ok := m.ForceRefreshFrom(probe, slot, old.AccessToken)
+		out <- res{got, ok}
+	}()
+	<-probe.waiting
+	close(release)
+	<-warmed
+	r := <-out
+	if !r.ok || r.tok != f.token().AccessToken {
+		t.Fatalf("ForceRefreshFrom = %q, %v; want the renewed token", r.tok, r.ok)
+	}
+	if f.refreshCount() != 1 {
+		t.Fatalf("refreshes = %d, want 1", f.refreshCount())
+	}
+}
+
+// R176: with no refresh in flight and the cache holding the rejected token,
+// it behaves as ForceRefresh: one real refresh.
+func TestForceRefreshFromWithNothingInFlightForcesARefresh(t *testing.T) {
+	now := time.Date(2026, 10, 9, 15, 41, 0, 0, time.UTC)
+	cur := tok(now.Add(time.Hour))
+	f := &fakeSlot{tok: cur}
+	f.onRefresh = func(f *fakeSlot) { f.tok = tok(now.Add(8 * time.Hour)) }
+	m := newManager(f, &now, false)
+	got, ok := m.ForceRefreshFrom(context.Background(), slot, cur.AccessToken)
+	if !ok || got != f.token().AccessToken || f.refreshCount() != 1 {
+		t.Fatalf("ForceRefreshFrom = %q, %v after %d refreshes", got, ok, f.refreshCount())
+	}
+}

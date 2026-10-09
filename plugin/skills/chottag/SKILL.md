@@ -2,7 +2,7 @@
 name: chottag
 description: Switch which Claude account Claude Code uses on this machine, with chottag (c-hottag). Use when the user wants to switch Claude accounts, change the serving or remote account, add or log in an account, check usage or limits across accounts, or fix a chottag install, or mentions chottag or hottag. Runs chottag with --json and never edits ~/.claude.
 argument-hint: "[chottag command and arguments, e.g. tag B]"
-allowed-tools: Bash(chottag status:*), Bash(chottag doctor --json), Bash(chottag update --check --json), Bash(chottag version:*), Bash(chottag tag:*), Bash(chottag next:*), Bash(chottag remote:*), Bash(chottag rotate:*), Bash(chottag auto:*), Bash(chottag notify:*), Bash(chottag plan:*)
+allowed-tools: Bash(chottag status:*), Bash(chottag doctor --json), Bash(chottag update --check --json), Bash(chottag version:*), Bash(chottag tag:*), Bash(chottag next:*), Bash(chottag remote:*), Bash(chottag rotate:*), Bash(chottag auto:*), Bash(chottag notify:*), Bash(chottag plan:*), Bash(chottag sessions:*), Bash(chottag names), Bash(chottag names --json)
 ---
 
 # chottag: switch Claude accounts
@@ -76,9 +76,11 @@ Without arguments, work out what the user wants and use "Common tasks".
    `help`. The daemon starts by itself when `claude` runs.
 8. **Only read-only commands and everyday switches run without a permission
    prompt**: `status`, `doctor --json`, `update --check --json`, `version`,
-   `tag`, `next`, `remote`, `rotate`, `auto`, `notify`, `plan`. Everything
+   `tag`, `next`, `remote`, `rotate`, `auto`, `notify`, `plan`, `sessions`
+   (it only reads) and `names` with no mode (`names --json` shows it). Setting
+   a names mode (`names on|off`) asks first, as does everything
    else (`login`, `logout`, `doctor --fix`, `update`, `rename`, `uninstall`,
-   `sessions`, `resume`,
+   `resume`,
    `policy`, `pool add`, `pool join`, `pool leave`, `pool rm`)
    asks the user first. That is deliberate; don't work around it.
 
@@ -201,8 +203,10 @@ the `pool add`). Once a pool exists the shim also refuses every session,
 | several accounts show one email (legitimate when one login is in several orgs; before 0.8.3 a login, before 0.8.4 a refresh could also write the serving account's email into another account's slot; `doctor` lists them as an info `identities` row; `adopt` does not warn about a wrong email that was already recorded) | for the accounts that are wrong only: upgrade with `chottag update` (ask first), `chottag daemon restart` (tell the user first), then `chottag login <name>` for each affected account (the user does the browser step) |
 | remove an account | `chottag logout <name> --json` (ask first; see below) |
 | check or repair the install | `chottag doctor --json`, then `chottag doctor --fix --json` if the user agrees |
-| the user lost their Claude Code sessions after a crash or quitting cmux | run `chottag sessions --json` first and show the user the list (`sessions[]`: `dir`, `pool`, `title` when it has one, `command`); then, if they agree, `chottag resume --json` relaunches them in their cmux tabs and directories (`placement` is `tab`, `new-tab`, `new-workspace`, `print` or `failed`; `resume_failed` means some could not be, and they stay in the list; `resume_busy` means another resume is running). The list holds only sessions lost in the last 24 hours. `chottag resume --print --json` only prints the commands and marks nothing; `--pick` is for a human at a terminal. Both ask first: they are not pre-approved. `chottag sessions --all --json` lists every recorded session. `chottag name-session` is the plugin's own `UserPromptSubmit` hook, which names each session after its branch and Claude Code's generated title; never run it by hand, and `chottag names off` turns it off, and `chottag names model` adds a short Haiku-made topic to the name of a session with no branch (up to about 4 s at its first prompt) |
-| session names (on, model: also a Haiku topic for a session with no branch, off) | `chottag names model --json` / `chottag names on --json` / `chottag names off --json`; `chottag names --json` shows it |
+| the user lost their Claude Code sessions after a crash or quitting cmux | run `chottag sessions --json` first and show the user the list (`sessions[]`: `dir`, `pool`, `title` when it has one, `command`); then, if they agree, `chottag resume --json` relaunches them in their cmux tabs and directories (`placement` is `tab`, `new-tab`, `new-workspace`, `print` or `failed`; `resume_failed` means some could not be, and they stay in the list; `resume_busy` means another resume is running). The list holds only sessions lost in the last 24 hours. `chottag resume --print --json` only prints the commands and marks nothing; `--pick` is for a human at a terminal. Both ask first: they are not pre-approved. `chottag sessions --all --json` lists every recorded session. `chottag name-session` is the plugin's own `UserPromptSubmit` hook, which names each session after its branch and Claude Code's generated title; never run it by hand, and `chottag names off` turns it off |
+| session names (on, off; the old `model` was removed in 0.10.2 and fails) | `chottag names on --json` / `chottag names off --json`; `chottag names --json` shows it |
+| a notice says an artifact's (or session's, connector's, environment's) owner is unknown | it is not route drift: the remote account could not open an object chottag has no owner for (for example one made outside chottag); other accounts were tried for reads. Usually do nothing. If the user knows which account owns it, `chottag own <kind> <id> <account> --json` (asks first: not pre-approved) |
+| a "route drift" notice | a swapped request stayed refused after a retry, so the route table may not match this Claude Code version. The notice's next step is `chottag trace on` (asks first: not pre-approved) |
 | desktop notifications | `chottag notify on --json` / `chottag notify off --json` |
 | automatic switching near a limit (on by default) | `chottag auto --json`; `chottag auto off --json` / `chottag auto on --json` |
 | auto-switch mode | `chottag auto mode balanced --json` or `chottag auto mode cache-optimize --json` |
@@ -266,6 +270,9 @@ also switches the update check off.
 ## Reading results
 
 - `status`: `daemon.liveSessions` counts the live sessions chottag launched.
+  `lostSessions`, when present, is how many sessions were lost together at
+  the last crash: offer the lost-sessions flow (`chottag sessions`, then
+  `resume` if the user agrees).
   `serving` and `remote` are account NAMES that index `accounts[]`.
   Usage percentages are 0–100. An absent percentage means unknown: never show
   it as 0%. With `stale: true` the numbers are kept: show them with their age
@@ -322,7 +329,7 @@ commands the user types themselves:
 - `/ct next`: `chottag next` (with `--pool P` in a session of pool `P`)
 - `/ct tag NAME`: `chottag tag NAME` (with `--pool P` likewise)
 - `/ct pool`: `chottag pool`
-- `/ct names [on|model|off]`: `chottag names [on|model|off]`
+- `/ct names [on|off]`: `chottag names [on|off]`
 - `/ct help`: the list
 
 In a chottag session it also stops `/login` and `/logout`: "`/login` here would

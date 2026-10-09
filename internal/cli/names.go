@@ -7,7 +7,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/store"
 )
 
-const namesUsage = "usage: chottag names [on|model|off]"
+const namesUsage = "usage: chottag names [on|off]"
 
 // namesResult is `names --json`'s one field: the mode after the command.
 type namesResult struct {
@@ -17,8 +17,6 @@ type namesResult struct {
 // namesText is the one-line description of a mode.
 func namesText(mode string) string {
 	switch mode {
-	case store.NamesModel:
-		return "names: model (also a Haiku topic for a first prompt with no branch)"
 	case store.NamesOff:
 		return "names: off"
 	}
@@ -39,9 +37,11 @@ func runNames(args []string, r *reporter) int {
 	}
 	if len(args) == 1 {
 		switch args[0] {
-		case store.NamesOn, store.NamesModel, store.NamesOff:
+		case store.NamesOn, store.NamesOff:
+		case "model":
+			return r.Fail(exit.Usage, codeUsage, "the model topic was removed in 0.10.2; session names stay on", nil)
 		default:
-			return r.Fail(exit.Usage, codeUsage, fmt.Sprintf("names takes on, model or off, not %q", args[0]), nil)
+			return r.Fail(exit.Usage, codeUsage, fmt.Sprintf("names takes on or off, not %q", args[0]), nil)
 		}
 	}
 	h, err := home()

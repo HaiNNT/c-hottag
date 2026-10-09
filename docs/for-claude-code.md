@@ -226,6 +226,11 @@ Tell the user, in these words or close to them:
   has no chottag PATH entry), and resume it with `claude --continue` or
   `claude --resume`.
 
+Sessions also get names automatically from their first prompt (the branch,
+then Claude Code's generated title) when the chottag plugin is installed.
+`chottag names off` turns that off, and `/ct names` changes the mode from
+inside Claude Code.
+
 Then offer a way to see which login a session uses that adds nothing to
 its conversation (don't use a `!` command for this: its output lands in
 the chat):
@@ -233,7 +238,8 @@ the chat):
 1. **The status card.** The plugin's mod (Claude Code 2.1.287 or newer) already
    draws a compact card above the prompt with the account, both usage windows and
    their resets, and shows `/ct` commands, notices and a `/login` guard: tell the
-   user it appears in a new session, and offer the status line below only for an
+   user it appears in a new session (its `/ct` commands include `status`, `next`,
+   `tag`, `pool`, `names` and `help`), and offer the status line below only for an
    older Claude Code or when they also want it there (both can show). Check with
    `claude --version`.
 2. **The status line.** `chottag statusline` prints
@@ -274,7 +280,18 @@ their terminal tabs. `chottag resume --print` only prints. Each listed
 session has a `title` when its transcript holds one. The plugin also runs
 `chottag name-session` as a Claude Code hook, to name sessions after their
 branch and generated title; it needs no action from you, and
-`chottag names off` turns it off, and `chottag names model` adds a short model-made topic to the name of a session with no branch. See [resume.md](resume.md).
+`chottag names off` turns it off. See [resume.md](resume.md).
+
+## Two notices
+
+- "an artifact's (or session's, connector's, environment's) owner is
+  unknown": the remote account could not open an object chottag has no owner
+  for, for example one made outside chottag. Other accounts were tried for
+  reads. It is not route drift; usually do nothing. If the user knows the
+  owning account, `chottag own <kind> <id> <account>` records it (ask first).
+- "route drift": a swapped request stayed refused after a retry, so the route
+  table may not match this Claude Code version. The notice names the next
+  step, `chottag trace on` (ask first).
 
 ## Managing chottag afterwards
 

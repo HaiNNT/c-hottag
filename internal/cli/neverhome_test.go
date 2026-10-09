@@ -736,3 +736,99 @@ func TestWarmerRecordsNeedsLoginOncePerTransition(t *testing.T) {
 		t.Fatalf("recorded %v, want exactly one for S", recorded)
 	}
 }
+
+// R176: a 401 during a login renewal. Through the real selector, chooser and
+// token manager: the upstream refuses the old token once the renewal has
+// started; the request that carried it waits for the renewal and goes out
+// again with the new token, so the client sees 200.
+func TestRefusedTokenDuringARenewalIsRetriedWithTheRenewedToken(t *testing.T) {
+	now := time.Date(2026, 10, 9, 15, 41, 0, 0, time.UTC)
+	slot := &e2eSlot{tok: creds.Token{AccessToken: "tok-old", ExpiresAt: now.Add(time.Minute)}}
+	started, release := make(chan struct{}), make(chan struct{})
+	slot.refresh = func(s *e2eSlot) error {
+		close(started)
+		s.mu.Unlock() // the fake read must work while the "claude" runs
+		<-release
+		s.mu.Lock()
+		s.tok = creds.Token{AccessToken: "tok-new", ExpiresAt: now.Add(8 * time.Hour)}
+		return nil
+	}
+	tm := tokens.New(tokens.Config{
+		Read: slot.read, Refresh: slot,
+		LockPath: func(dir string) string { return dir + "/.lock" },
+		TryLock:  func(string) (func() error, bool, error) { return func() error { return nil }, true, nil },
+		Now:      func() time.Time { return now },
+	})
+	st := staleRemoteState()
+	stateFn := func() (store.State, error) { return st, nil }
+	sel := selector.New(selector.Config{State: stateFn, Tokens: tm, Owners: fakeOwners{}})
+	var mu sync.Mutex
+	var seen []string
+	h := proxytest.Start(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		mu.Lock()
+		seen = append(seen, auth)
+		mu.Unlock()
+		if auth == "Bearer tok-old" {
+			w.WriteHeader(http.StatusUnauthorized)
+			close(release) // the renewal finishes while the 401 is handled
+		}
+	}), proxytest.Options{Choose: &chooser{sel: sel, tm: tm, state: stateFn}})
+
+	warmed := make(chan struct{})
+	go func() { tm.Warm(context.Background(), "/slots/A", time.Hour); close(warmed) }()
+	<-started
+	resp := postRemote(t, h)
+	defer resp.Body.Close()
+	<-warmed
+	mu.Lock()
+	defer mu.Unlock()
+	if resp.StatusCode != http.StatusOK || len(seen) != 2 || seen[0] != "Bearer tok-old" || seen[1] != "Bearer tok-new" {
+		t.Fatalf("status %d, upstream saw %v; want tok-old refused, then tok-new accepted", resp.StatusCode, seen)
+	}
+}
+
+// R176: the renewed token is the one refused, because the credential was
+// rotated again behind the cache. The retry carries the newest token.
+func TestRefusedRenewedTokenIsRetriedWithTheNewestCredential(t *testing.T) {
+	now := time.Date(2026, 10, 9, 15, 41, 0, 0, time.UTC)
+	slot := &e2eSlot{tok: creds.Token{AccessToken: "tok-old", ExpiresAt: now.Add(time.Minute)}}
+	slot.refresh = func(s *e2eSlot) error {
+		s.tok = creds.Token{AccessToken: "tok-new", ExpiresAt: now.Add(8 * time.Hour)}
+		return nil
+	}
+	tm := tokens.New(tokens.Config{
+		Read: slot.read, Refresh: slot,
+		LockPath: func(dir string) string { return dir + "/.lock" },
+		TryLock:  func(string) (func() error, bool, error) { return func() error { return nil }, true, nil },
+		Now:      func() time.Time { return now },
+	})
+	if _, renewed := tm.Warm(context.Background(), "/slots/A", time.Hour); !renewed {
+		t.Fatal("the warm refresh did not renew")
+	}
+	slot.mu.Lock()
+	slot.refresh = func(*e2eSlot) error { return nil }
+	slot.tok = creds.Token{AccessToken: "tok-newest", ExpiresAt: now.Add(9 * time.Hour)}
+	slot.mu.Unlock()
+	st := staleRemoteState()
+	stateFn := func() (store.State, error) { return st, nil }
+	sel := selector.New(selector.Config{State: stateFn, Tokens: tm, Owners: fakeOwners{}})
+	var mu sync.Mutex
+	var seen []string
+	h := proxytest.Start(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		mu.Lock()
+		seen = append(seen, auth)
+		mu.Unlock()
+		if auth != "Bearer tok-newest" {
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}), proxytest.Options{Choose: &chooser{sel: sel, tm: tm, state: stateFn}})
+	resp := postRemote(t, h)
+	defer resp.Body.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if resp.StatusCode != http.StatusOK || seen[len(seen)-1] != "Bearer tok-newest" {
+		t.Fatalf("status %d, upstream saw %v; want the newest token to be sent after the refusal", resp.StatusCode, seen)
+	}
+}

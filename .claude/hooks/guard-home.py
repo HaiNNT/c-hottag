@@ -275,6 +275,8 @@ def chottag_is_readonly(args, installed=False):
         return "--fix" not in words
     if first in CHOTTAG_READONLY_BARE and len(words) == 1:
         return True
+    if first == "names" and len(words) == 1:
+        return True  # shows the mode; `names on|off` sets it
     if first == "trace" and len(words) >= 2 and words[1] == "summarize":
         return True
     if first == "daemon" and len(words) >= 2 and words[1] == "logs":

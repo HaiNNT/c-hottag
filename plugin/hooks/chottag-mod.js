@@ -9,7 +9,7 @@
 
 // MOD_VERSION is this plugin's version, set by `scripts/release bump` and tested
 // against plugin.json. A chottag newer than it means the plugin is behind.
-export const MOD_VERSION = '0.10.1'
+export const MOD_VERSION = '0.10.2'
 const VERSION_CHECK_MS = 600000
 const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]*)?/
 const CLEAN_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,64}$/
@@ -17,7 +17,9 @@ const CLEAN_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,64}$/
 const DESCRIBE = /^-(\d+-g[0-9a-f]+(-dirty)?|dirty)$/
 
 const CT_VERBS = ['status', 'next', 'tag', 'pool', 'names', 'help']
-const NAMES_MODES = ['on', 'model', 'off']
+// 'model' was removed in 0.10.2; it still passes through so the CLI's own
+// error shows instead of the help text.
+const NAMES_MODES = ['on', 'off', 'model']
 // The store's own account-name rule: it must start with a letter or digit, so a
 // NAME can never read as an option (--unpin).
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/
@@ -54,7 +56,7 @@ export const CT_HELP = [
   '  /ct next          serve the next account in rotation',
   '  /ct tag NAME      serve the account NAME',
   '  /ct pool          list the pools',
-  '  /ct names [on|model|off]  show or set session names',
+  '  /ct names [on|off]  show or set session names',
   '  /ct help          this list',
 ].join('\n')
 
@@ -519,7 +521,7 @@ export function register(on) {
     $.clock.every(REFRESH_MS, () => refresh($).catch(failed))
     try {
       // Registered last: a refused name throws. (/chottag is the skill's.)
-      await $.command.register({ name: 'ct', description: 'chottag: status, next, tag NAME, pool, names', argumentHint: '[status|next|tag NAME|pool|names [on|model|off]|help]' })
+      await $.command.register({ name: 'ct', description: 'chottag: status, next, tag NAME, pool, names', argumentHint: '[status|next|tag NAME|pool|names [on|off]|help]' })
     } catch (err) {
       await $.ui.log('chottag: could not register /ct: ' + err)
     }

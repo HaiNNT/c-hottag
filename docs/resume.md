@@ -81,7 +81,7 @@ resume --pick` show a `TITLE` column, so a lost session is easy to recognise.
 To read a title, chottag opens the session's transcript and looks only at its
 `ai-title` and `custom-title` records. It never logs or stores a title; per
 session it keeps only a hash of the name it set. Turn naming off with
-`chottag names off`. With `chottag names model`, a session on `main` or outside git is named `<folder> · <topic>` from its first prompt instead of `<folder> HH:MM`. Without the plugin, add the hooks to
+`chottag names off`. Without the plugin, add the hooks to
 `~/.claude/settings.json`:
 
 ```json

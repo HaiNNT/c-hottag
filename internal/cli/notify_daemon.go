@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -249,17 +250,22 @@ func notifyUsageHook(dn *daemonNotify, next func(string, int, http.Header)) func
 
 // servingRefusalHook is proxy.Config.OnServingRefusal (R158): a swapped
 // serving request whose account's login was refused twice. Every one gets a
-// daemon.log line with the account, the first refused status, the method and
+// daemon.log line with the account, the first refused status and its upstream error type, the method and
 // the templated path (never a token, a body, a query or a proxy setting);
 // the notice is limited to one per account per hour inside notify.Events.
 // dn may be nil (a daemon built without notifications).
-func servingRefusalHook(log io.Writer, dn *daemonNotify) func(account string, status int, resent bool, method, path string) {
-	return func(account string, status int, resent bool, method, path string) {
+func servingRefusalHook(log io.Writer, dn *daemonNotify) func(account string, status int, errType string, resent bool, method, path string) {
+	return func(account string, status int, errType string, resent bool, method, path string) {
 		fate := "sent on Home's own login"
 		if !resent {
 			fate = "not resent"
 		}
-		fmt.Fprintf(log, "chottag: %s's login was refused (%d) on %s %s; %s\n", account, status, cleanLogField(method), cleanLogField(path), fate)
+		code := strconv.Itoa(status)
+		if errType != "" {
+			// An allowlisted token from the proxy (R177), never body text.
+			code += " " + errType
+		}
+		fmt.Fprintf(log, "chottag: %s's login was refused (%s) on %s %s; %s\n", account, code, cleanLogField(method), cleanLogField(path), fate)
 		if dn != nil {
 			dn.events.ServingRefused(account, status, resent)
 		}

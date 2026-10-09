@@ -7,6 +7,24 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.2] - 2026-10-09
+
+### Changed
+
+- The chottag skill and the guide for Claude Code explain the unknown-owner and route-drift notices, `lostSessions` and session names; the skill runs the read-only `chottag sessions` and `chottag names` without asking.
+
+### Removed
+
+- `chottag names model` (and `/ct names model`) is removed: it exits 2 and changes nothing. Each topic was a separate `claude -p` call, too slow to finish in time and possibly charged as extra usage. A saved `model` setting, or `CHOTTAG_NAME_SESSIONS=model`, now means `on`. chottag no longer runs a model or `claude -p`.
+
+### Fixed
+
+- The `proxy.jsonl` record of a refused or failed request gains `refusedType` and `errType`, the upstream error type (a fixed list of Anthropic's, else `other`; never the message), and the `login was refused` log line names it: `(401 authentication_error)`.
+- A refused login on `/v1/messages` or `POST /api/oauth/validate` no longer sets `drift: true` on its record when the resend on your own login is answered with another status; it was never counted by `route-drift`.
+- Hardening: the retry after a 401 never reuses the token that was just refused, waits for a login renewal in flight, and tries once more if a newer token appeared meanwhile.
+
+  See [release notes](docs/release-notes/v0.10.2.md).
+
 ## [0.10.1] - 2026-10-09
 
 ### Security
@@ -417,6 +435,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.2]: docs/release-notes/v0.10.2.md
 [0.10.1]: docs/release-notes/v0.10.1.md
 [0.10.0]: docs/release-notes/v0.10.0.md
 [0.9.4]: docs/release-notes/v0.9.4.md

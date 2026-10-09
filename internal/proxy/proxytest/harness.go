@@ -42,7 +42,7 @@ type Options struct {
 	OnUsage          func(account string, status int, h http.Header)
 	OnUsageError     func(error)
 	// OnServingRefusal is Config.OnServingRefusal (R158).
-	OnServingRefusal func(account string, status int, resent bool, method, path string)
+	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)
 	// OnUnknownOwner, OnOwnerFound and Now are Config's (M12/R168).
 	OnUnknownOwner func(account, kind, idHash string, status int)
 	OnOwnerFound   func(kind, idHash, found, tried string, status int)

@@ -130,8 +130,8 @@ type State struct {
 	// explicit JSON null decodes to, is on. `chottag notify off` writes
 	// false, and `notify on` writes true.
 	Notify *bool `json:"notify,omitempty"`
-	// Names is the session-naming mode (R174): "on", "model" or "off". Absent
-	// is on; read it through NamesMode.
+	// Names is the session-naming mode (R174): "on" or "off". Absent or
+	// unknown (the removed "model") is on; read it through NamesMode.
 	Names string `json:"names,omitempty"`
 	// Trace is the trace-mode window (M2c). nil (also what an explicit JSON
 	// null decodes to) is off. A pointer so a state that never traced
@@ -215,15 +215,14 @@ func (s State) NotifyOn() bool { return s.Notify == nil || *s.Notify }
 
 // Session-naming modes (R174).
 const (
-	NamesOn    = "on"
-	NamesModel = "model"
-	NamesOff   = "off"
+	NamesOn  = "on"
+	NamesOff = "off"
 )
 
 // NamesMode is the effective session-naming mode: absent or unknown is on.
 func (s State) NamesMode() string {
 	switch s.Names {
-	case NamesModel, NamesOff:
+	case NamesOff:
 		return s.Names
 	}
 	return NamesOn

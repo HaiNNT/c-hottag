@@ -218,12 +218,12 @@ request that chottag sent as account C on a conversation route
 chottag refreshed C's token and tried again, so the request went out once on
 your own (Home) login instead. It is not route drift. Since 0.9.1 the notice
 comes at most once an hour per account, and the daemon log has a line for each
-one: `2026-10-03 17:28:23 chottag: C's login was refused (401) on POST
-/v1/messages; sent on Home's own login` (with more than one pool, the line
+one: `2026-10-03 17:28:23 chottag: C's login was refused (401 authentication_error) on POST
+/v1/messages; sent on Home's own login` (since 0.10.2 the line names the upstream error type when the reply had one; with more than one pool, the line
 ends `; not resent`, and so does the notice's text: nothing goes out on Home's
 login). If it was a one-off (for example C's token was renewed at that moment),
 nothing is needed: since 0.9.1 a request refused while C's refresh is running
-waits for it and retries with the new token. If it repeats, run `chottag login
+waits for it and retries with the new token (since 0.10.2 never with the token that was just refused). If it repeats, run `chottag login
 C`.
 
 ## An object's owner is unknown

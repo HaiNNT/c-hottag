@@ -41,8 +41,15 @@ type safetyNet struct {
 	// drift (R158). onRefused marks the trace record with the first refused
 	// status; onServingRefusal reports the account and that status.
 	serving          bool
-	onRefused        func(status int)
-	onServingRefusal func(account string, status int, resent bool)
+	onRefused        func(status int, errType string)
+	onServingRefusal func(account string, status int, errType string, resent bool)
+	// onResent is called when the request is sent again on the client's own
+	// login: the response is then not the account's (usage, owner records).
+	onResent func()
+	// firstType is the first refusal's upstream error.type (R177).
+	firstType string
+	// sentBearer is the token retryAtWall sent on another account, "" until it does.
+	sentBearer string
 	// F270: for a serving POST /v1/messages, Claude Code's
 	// Message Threads send a continue for a thread the answering account
 	// does not hold and get 404; Claude Code retries that itself as a
@@ -102,6 +109,17 @@ type safetyNet struct {
 	wallTo   string
 }
 
+// maxRefreshRetries bounds the refresh-and-retry rounds: the second only runs
+// when the chooser can name a newer token than the one just refused.
+const maxRefreshRetries = 2
+
+func (s *safetyNet) refresh(ctx context.Context, rejected string) (string, bool) {
+	if rr, ok := s.chooser.(RejectedRefresher); ok {
+		return rr.RefreshRejected(ctx, s.account, rejected)
+	}
+	return s.chooser.Refresh(ctx, s.account)
+}
+
 func refused(status int) bool {
 	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound
 }
@@ -125,6 +143,7 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 	firstRefused := resp.StatusCode
+	s.firstType = errTypeOf(resp)
 	if s.serving && req.Method == http.MethodPost && req.URL.Path == "/v1/messages" && firstRefused == http.StatusNotFound {
 		if s.onPassed404 != nil {
 			s.onPassed404()
@@ -173,7 +192,23 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, err
 	}
 
-	if tok, ok := s.chooser.Refresh(req.Context(), s.account); ok {
+	// R176: a refusal can be the token a login renewal has just replaced. The
+	// retry carries the token that renewal made (a renewal in flight is waited
+	// for), and when that one is refused too while a newer one exists, once
+	// more; only a refusal that survives this counts as the account's.
+	rejected := s.sentBearer
+	if rejected == "" {
+		rejected = strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	}
+	rounds := 1
+	if _, ok := s.chooser.(RejectedRefresher); ok {
+		rounds = maxRefreshRetries
+	}
+	for attempt := 0; attempt < rounds; attempt++ {
+		tok, ok := s.refresh(req.Context(), rejected)
+		if !ok || (attempt > 0 && tok == rejected) {
+			break
+		}
 		retry := clone(req, body)
 		retry.Header.Set("Authorization", "Bearer "+tok)
 		drain(resp)
@@ -193,6 +228,10 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		// (e.g. a reset connection) while the client is still waiting —
 		// exactly the case the safety net exists for, so it must not be
 		// treated as a synthesized failure.
+		if err != nil {
+			break
+		}
+		rejected = tok
 	}
 
 	if s.noOriginal {
@@ -229,6 +268,9 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 // account's login being refused instead (R158). resent
 // says the request was then sent again on the client's own login.
 func (s *safetyNet) countRefusal(status int, resent bool) {
+	if resent && s.onResent != nil {
+		s.onResent()
+	}
 	if s.probe != nil {
 		// An object whose owner chottag does not know: reported as that
 		// (M12/R168), never as route drift. A resend on the client's own
@@ -239,17 +281,20 @@ func (s *safetyNet) countRefusal(status int, resent bool) {
 		s.probe.onUnknown(status)
 		return
 	}
-	if s.onDrift != nil {
-		s.onDrift()
-	}
 	if s.onRefused != nil {
-		s.onRefused(status)
+		s.onRefused(status, s.firstType)
 	}
 	if s.serving && (status == http.StatusUnauthorized || status == http.StatusForbidden) {
+		// R177: the account's login was refused, whatever the resend on the
+		// client's own login then answers: never drift, on the record or in
+		// the counter.
 		if s.onServingRefusal != nil {
-			s.onServingRefusal(s.account, status, resent)
+			s.onServingRefusal(s.account, status, s.firstType, resent)
 		}
 		return
+	}
+	if s.onDrift != nil {
+		s.onDrift()
 	}
 	s.drift.Add(1)
 }
@@ -309,6 +354,7 @@ func (s *safetyNet) retryAtWall(req *http.Request, body []byte, first *http.Resp
 	resend.Header.Set("Authorization", "Bearer "+tok)
 	resend.Header.Del("X-Api-Key")
 	s.account = acct
+	s.sentBearer = tok
 	if s.onRetarget != nil {
 		s.onRetarget(acct)
 	}

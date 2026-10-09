@@ -321,10 +321,6 @@ type Env struct {
 	Home      string           // $CHOTTAG_HOME
 	ConfigDir string           // Claude's config dir
 	Now       func() time.Time // for the <folder> HH:MM fallback
-	// Model, when set (CHOTTAG_NAME_SESSIONS=model, R172), makes a topic
-	// from the first prompt; "" means none. Called at most once, only for
-	// a session's first name with no branch and no generated title.
-	Model func(prompt string) string
 }
 
 // Decide returns the name to set, and whether to print it. A failure to
@@ -370,11 +366,6 @@ func Decide(in Input, env Env) (string, bool) {
 	if base == "" {
 		folder := filepath.Base(filepath.Clean(in.Cwd))
 		base = folder + " " + env.Now().Format("15:04")
-		if env.Model != nil && in.SessionTitle == "" && !have && title == "" && in.Prompt != "" {
-			if t := env.Model(in.Prompt); t != "" {
-				base, title = folder, t
-			}
-		}
 	}
 	name := Compose(base, title)
 	if name == "" {
@@ -391,46 +382,4 @@ func Decide(in Input, env Env) (string, bool) {
 		return "", false
 	}
 	return name, true
-}
-
-// Model title (R172).
-const (
-	// ModelPromptRunes is how much of the prompt is sent to the model.
-	ModelPromptRunes = 1000
-	modelInstruction = "Give a 3 to 6 word title for this task. Reply with the title only."
-	maxModelRunes    = 60
-	maxModelWords    = 8
-)
-
-// ModelStdin is the child's whole stdin: one instruction line, a blank line,
-// then the prompt cut to its first ModelPromptRunes characters.
-func ModelStdin(prompt string) string {
-	if rs := []rune(prompt); len(rs) > ModelPromptRunes {
-		prompt = string(rs[:ModelPromptRunes])
-	}
-	return modelInstruction + "\n\n" + prompt
-}
-
-// ParseModelReply returns the title in a `claude -p --output-format json`
-// result, or "" unless the result succeeded and is a short, clean, one-line
-// title. It never returns error text.
-func ParseModelReply(out []byte) string {
-	var res struct {
-		IsError *bool  `json:"is_error"`
-		Subtype string `json:"subtype"`
-		Result  string `json:"result"`
-	}
-	if json.Unmarshal(out, &res) != nil || res.IsError == nil || *res.IsError || res.Subtype != "success" {
-		return ""
-	}
-	if strings.ContainsAny(strings.TrimSpace(res.Result), "\r\n") {
-		return ""
-	}
-	t := Sanitize(res.Result)
-	t = strings.TrimSpace(strings.Trim(t, "\"'`"))
-	if t == "" || len([]rune(t)) > maxModelRunes || len(strings.Fields(t)) > maxModelWords ||
-		strings.HasPrefix(t, "API Error") || strings.HasPrefix(t, "Give a 3 to 6 word") || strings.Contains(t, modelInstruction) {
-		return ""
-	}
-	return t
 }

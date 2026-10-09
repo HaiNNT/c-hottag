@@ -43,6 +43,8 @@ func authStepLabel(auth string) string {
 		return "swapped"
 	case "Bearer fresh-token":
 		return "fresh"
+	case "Bearer fresh2-token":
+		return "fresh2"
 	case "Bearer original-token":
 		return "original"
 	default:
@@ -156,5 +158,115 @@ func TestSafetyNetDoesNotResendAfterClientGone(t *testing.T) {
 	wantAuthSteps(t, tr.auths, []string{"swapped", "fresh"})
 	if got := drift.Load(); got != 0 {
 		t.Fatalf("drift = %d, want 0 (no resend happened)", got)
+	}
+}
+
+// rejectedChooser answers RefreshRejected from a script and records the
+// token each call was told was refused.
+type rejectedChooser struct {
+	fakeChooser
+	script   []string // tokens to return, "" meaning no newer token
+	rejected []string
+}
+
+func (c *rejectedChooser) RefreshRejected(_ context.Context, _, rejected string) (string, bool) {
+	c.rejected = append(c.rejected, rejected)
+	if len(c.script) == 0 {
+		return "", false
+	}
+	tok := c.script[0]
+	c.script = c.script[1:]
+	return tok, tok != ""
+}
+
+// R176: the retry's token was refused because a renewal made a newer one in
+// the meantime: it is tried too, and the request succeeds without a Home
+// resend or a refusal.
+func TestSafetyNetRetriesAgainWithANewerRenewedToken(t *testing.T) {
+	tr := &scriptedTransport{steps: []scriptedStep{
+		{resp: statusResp(http.StatusUnauthorized)},
+		{resp: statusResp(http.StatusUnauthorized)},
+		{resp: statusResp(http.StatusOK)},
+	}}
+	var drift atomic.Uint64
+	refusals := 0
+	ch := &rejectedChooser{script: []string{"fresh-token", "fresh2-token"}}
+	sn := &safetyNet{
+		base: tr, chooser: ch, account: "acct", original: "Bearer original-token",
+		drift: &drift, serving: true,
+		onServingRefusal: func(string, int, string, bool) { refusals++ },
+	}
+	resp, err := sn.RoundTrip(newSafetyNetTestRequest(context.Background()))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("RoundTrip = %v, %v; want 200", resp, err)
+	}
+	wantAuthSteps(t, tr.auths, []string{"swapped", "fresh", "fresh2"})
+	if want := []string{"swapped-token", "fresh-token"}; len(ch.rejected) != 2 || ch.rejected[0] != want[0] || ch.rejected[1] != want[1] {
+		t.Fatalf("the chooser was told %v was refused, want %v", ch.rejected, want)
+	}
+	if refusals != 0 || drift.Load() != 0 {
+		t.Fatalf("refusals = %d, drift = %d, want none: a renewal explains the 401", refusals, drift.Load())
+	}
+}
+
+// R176: the renewed token is refused too and no newer one exists: still the
+// account's refusal, resent on the client's own login and reported.
+func TestSafetyNetStillResendsWhenTheRenewedTokenIsRefused(t *testing.T) {
+	tr := &scriptedTransport{steps: []scriptedStep{
+		{resp: statusResp(http.StatusUnauthorized)},
+		{resp: statusResp(http.StatusUnauthorized)},
+		{resp: statusResp(http.StatusOK)},
+	}}
+	var drift atomic.Uint64
+	var got []bool
+	ch := &rejectedChooser{script: []string{"fresh-token"}}
+	sn := &safetyNet{
+		base: tr, chooser: ch, account: "acct", original: "Bearer original-token",
+		drift: &drift, serving: true,
+		onServingRefusal: func(_ string, _ int, _ string, resent bool) { got = append(got, resent) },
+	}
+	resp, err := sn.RoundTrip(newSafetyNetTestRequest(context.Background()))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("RoundTrip = %v, %v; want 200", resp, err)
+	}
+	wantAuthSteps(t, tr.auths, []string{"swapped", "fresh", "original"})
+	if len(got) != 1 || !got[0] {
+		t.Fatalf("serving refusals = %v, want one resent", got)
+	}
+}
+
+// R176: no renewal to wait for (no newer token): the pre-existing path, one
+// retry at most, then the resend.
+func TestSafetyNetWithNoRenewalResendsAsBefore(t *testing.T) {
+	tr := &scriptedTransport{steps: []scriptedStep{
+		{resp: statusResp(http.StatusUnauthorized)},
+		{resp: statusResp(http.StatusOK)},
+	}}
+	var drift atomic.Uint64
+	ch := &rejectedChooser{}
+	sn := &safetyNet{
+		base: tr, chooser: ch, account: "acct", original: "Bearer original-token",
+		drift: &drift, serving: true,
+	}
+	if _, err := sn.RoundTrip(newSafetyNetTestRequest(context.Background())); err != nil {
+		t.Fatal(err)
+	}
+	wantAuthSteps(t, tr.auths, []string{"swapped", "original"})
+}
+
+// After the wall retry moved the request to another account, a refusal asks
+// the chooser about the token that account was sent, not the old one.
+func TestSafetyNetRefusalAfterWallRetryNamesTheBearerSent(t *testing.T) {
+	tr := &scriptedTransport{steps: []scriptedStep{
+		{resp: statusResp(http.StatusUnauthorized)},
+	}}
+	ch := &rejectedChooser{}
+	sn := &safetyNet{base: tr, chooser: ch, account: "acct", original: "Bearer original-token", drift: &atomic.Uint64{},
+		sentBearer: "moved-token", noOriginal: true}
+	if _, err := sn.RoundTrip(newSafetyNetTestRequest(context.Background())); err != nil {
+		t.Fatal(err)
+	}
+	if len(ch.rejected) != 1 || ch.rejected[0] != "moved-token" {
+		t.Fatalf("the chooser was told %v was refused, want [moved-token]", ch.rejected)
 	}
 }

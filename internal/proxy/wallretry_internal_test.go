@@ -454,7 +454,7 @@ func TestTransportForArmsOnlyUnownedServing(t *testing.T) {
 		{router.Decision{Class: router.Remote}, false},
 	}
 	for _, c := range cases {
-		sn, ok := s.transportFor("A", "", "", c.d, "", false, false, false, nil, nil).(*safetyNet)
+		sn, ok := s.transportFor("A", "", "", c.d, "", false, false, false, nil, nil, nil).(*safetyNet)
 		if !ok {
 			t.Fatalf("%+v: not a safety net", c.d)
 		}
@@ -462,7 +462,7 @@ func TestTransportForArmsOnlyUnownedServing(t *testing.T) {
 			t.Errorf("%+v: armed %v (maxBody %d), want %v", c.d, armed, sn.maxBody, c.want)
 		}
 	}
-	if sn := New(Config{Choose: &wallChooser{}}).transportFor("A", "", "", router.Decision{Class: router.Serving}, "", false, false, false, nil, nil).(*safetyNet); sn.wallRetry != nil || sn.maxBody != 0 {
+	if sn := New(Config{Choose: &wallChooser{}}).transportFor("A", "", "", router.Decision{Class: router.Serving}, "", false, false, false, nil, nil, nil).(*safetyNet); sn.wallRetry != nil || sn.maxBody != 0 {
 		t.Fatal("armed without Config.WallRetry")
 	}
 }

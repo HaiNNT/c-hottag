@@ -103,11 +103,6 @@ func TestMain(m *testing.M) {
 		os.Setenv("CLAUDE_CONFIG_DIR", d)
 		testClaudeConfigDir = d
 	}
-	// nameSessionModelRun (name_session.go) runs the real Claude Code for a
-	// model title (R172); a test that reaches it must stub it.
-	nameSessionModelRun = func(context.Context, string, []string, []string, string) ([]byte, error) {
-		panic("cli.nameSessionModelRun reached: stub it in the test")
-	}
 	// journalAlive (journal_tick.go) probes real pids; a test that reaches
 	// it must stub it.
 	journalAlive = func(int) bool { panic("cli.journalAlive reached: stub it in the test") }

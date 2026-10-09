@@ -206,9 +206,6 @@ var goSpawnAllowlist = map[string][]allowEntry{
 	"internal/cli/doctor.go#runClaudeVersion": {
 		{kindExternalTool, ""}, // claude
 	},
-	"internal/cli/name_session.go#defaultNameSessionModelRun": {
-		{kindExternalTool, ""}, // claude, for the opt-in model title (R172), behind nameSessionModelRun
-	},
 	"internal/cli/login.go#runClaudeAuth": {
 		{kindExternalTool, ""}, // claude
 	},

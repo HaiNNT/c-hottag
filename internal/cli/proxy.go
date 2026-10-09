@@ -2155,6 +2155,13 @@ func (c *chooser) OwnerCandidates(ctx context.Context, tried string) []proxy.Can
 // Token: a bearer that still assesses ok/expiring locally can already be
 // rejected upstream (revoked, org changed, clock skew).
 func (c *chooser) Refresh(ctx context.Context, account string) (string, bool) {
+	return c.RefreshRejected(ctx, account, "")
+}
+
+// RefreshRejected is Refresh for a request refused on the access token
+// rejected (R176): it never answers with that token, and waits for a
+// renewal in flight (proxy.RejectedRefresher).
+func (c *chooser) RefreshRejected(ctx context.Context, account, rejected string) (string, bool) {
 	st, err := c.state()
 	if err != nil {
 		return "", false
@@ -2175,7 +2182,7 @@ func (c *chooser) Refresh(ctx context.Context, account string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return c.tm.ForceRefresh(ctx, a.Dir)
+	return c.tm.ForceRefreshFrom(ctx, a.Dir, rejected)
 }
 
 // findExact resolves name to a registered account by exact name only,

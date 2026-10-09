@@ -86,7 +86,7 @@ lines only, never the proxy secret or a token.
 session's transcript, but only its `ai-title` and `custom-title` records (the
 session's name). Nothing else in a transcript is read. A title is never
 logged or stored by chottag; per session it keeps only a sha256 of the name it
-set, in `sessions/names/`. `chottag names off` turns the hook off. With `chottag names model`, the title helper runs Claude Code with no tools and no MCP servers, so it can only reply with text; the prompt goes to it alone and is never logged or stored.
+set, in `sessions/names/`. `chottag names off` turns the hook off. chottag never runs a model or `claude -p` for a name, and never reads a prompt.
 
 ## Limits
 

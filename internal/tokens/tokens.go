@@ -345,6 +345,18 @@ func (m *Manager) Await(ctx context.Context, slotDir string) (string, creds.Stat
 // renewal that finished within recentRenewal: no second refresh, the cached
 // token is returned. A refresh that renewed nothing returns ok=false.
 func (m *Manager) ForceRefresh(ctx context.Context, slotDir string) (string, bool) {
+	return m.ForceRefreshFrom(ctx, slotDir, "")
+}
+
+// ForceRefreshFrom is ForceRefresh for a request the upstream refused
+// while it carried the access token rejected (R176). It never hands back
+// that token: a renewal in flight is waited for and a renewal that just
+// finished is used only when its token differs; a cached token that differs
+// is returned as it is; when the cache still holds the rejected token (a
+// renewal then rotated again behind the cache, say) the recent-renewal
+// shortcut is skipped and the refresh is forced, which re-reads the slot.
+// rejected == "" is ForceRefresh.
+func (m *Manager) ForceRefreshFrom(ctx context.Context, slotDir, rejected string) (string, bool) {
 	s := m.slotFor(slotDir)
 	s.mu.Lock()
 	now := m.cfg.Now()
@@ -359,11 +371,18 @@ func (m *Manager) ForceRefresh(ctx context.Context, slotDir string) (string, boo
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.renewals > gen {
-			return s.renewedToken()
+			if tok, ok := s.renewedToken(); ok && tok != rejected {
+				return tok, true
+			}
 		}
 		return "", false
 	}
-	if !s.renewedAt.IsZero() && now.Sub(s.renewedAt) < recentRenewal {
+	if rejected != "" {
+		if tok, ok := s.renewedToken(); ok && tok != rejected {
+			s.mu.Unlock()
+			return tok, true
+		}
+	} else if !s.renewedAt.IsZero() && now.Sub(s.renewedAt) < recentRenewal {
 		defer s.mu.Unlock()
 		return s.renewedToken()
 	}

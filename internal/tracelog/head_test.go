@@ -37,7 +37,7 @@ func fullRecord() tracelog.Record {
 		T: time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC), Kind: "req", ID: "0a1b2c3d", SID: "01234567",
 		Form: "mitm", Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
 		PathIDs: []string{"cse_1234abcd"}, QueryKeys: []string{"beta=true"},
-		Class: "serving", Auth: "oauth-access", Swapped: true, Account: "B", Drift: true, Refused: 401,
+		Class: "serving", Auth: "oauth-access", Swapped: true, Account: "B", Drift: true, Refused: 401, RefusedType: "authentication_error", ErrType: "not_found_error",
 		Unreplayable: true, UnreplayableBytes: 99, OwnerRefused: true, Passed404: true, UnknownOwner: true, Discovered: true,
 		Status: 429, Millis: 1234, ReqType: "application/json", RespType: "text/event-stream",
 		Upgrade: "websocket", ReqShape: map[string]any{"model": "string"}, RespShape: "string",
@@ -72,7 +72,7 @@ func TestHeadOfClassifiesEveryRecordField(t *testing.T) {
 		"PathIDs": true, "QueryKeys": true, "Class": true, "Auth": true, "Swapped": true,
 		"Account": true, "Drift": true, "Refused": true, "Status": true, "ReqType": true, "RespType": true,
 		"RespHeaderNames": true, "RespLimitHeaders": true, "RespErrorType": true, "RespResetAt": true,
-		"Unreplayable": false, "UnreplayableBytes": false, "Millis": false, "Upgrade": false,
+		"RefusedType": false, "ErrType": false, "Unreplayable": false, "UnreplayableBytes": false, "Millis": false, "Upgrade": false,
 		"ReqShape": false, "RespShape": false, "Mark": false, "Err": false, "OwnerRefused": false, "Passed404": false, "UnknownOwner": false, "Discovered": false,
 	}
 	head := reflect.ValueOf(tracelog.HeadOf(fullRecord()))

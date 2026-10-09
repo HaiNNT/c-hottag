@@ -295,14 +295,14 @@ func TestSafetyNetRefreshesThenResendsTheOriginal(t *testing.T) {
 	if got := body.Load(); got != int64(3*len(`{"m":"hi"}`)) {
 		t.Fatalf("upstream read %d body bytes, want the body replayed each time", got)
 	}
-	// R158: a refused serving request is the account's login being
-	// refused, not route drift: no count, but the record keeps drift (the
-	// resend happened) and names the first refused status.
+	// R158/R177: a refused serving request is the account's login being
+	// refused, not route drift: no count, no drift on the record, which
+	// names the first refused status.
 	if got := h.Server.RouteDrift(); got != 0 {
 		t.Fatalf("RouteDrift = %d, want 0 for a serving route", got)
 	}
-	if r := h.Records(t, "req", 1)[0]; !r.Drift || !r.Swapped || r.Refused != 401 {
-		t.Fatalf("record = %+v, want drift, swapped and refused 401", r)
+	if r := h.Records(t, "req", 1)[0]; r.Drift || !r.Swapped || r.Refused != 401 {
+		t.Fatalf("record = %+v, want swapped, refused 401 and no drift", r)
 	}
 }
 
@@ -347,7 +347,7 @@ func TestSafetyNetServingRefusalIsReportedNotCountedAsDrift(t *testing.T) {
 			var got []servingRefusal
 			h := proxytest.Start(t, up, proxytest.Options{
 				Choose: &refusingChooser{},
-				OnServingRefusal: func(account string, status int, resent bool, method, path string) {
+				OnServingRefusal: func(account string, status int, errType string, resent bool, method, path string) {
 					mu.Lock()
 					defer mu.Unlock()
 					got = append(got, servingRefusal{account, status, resent, method, path})
@@ -389,7 +389,7 @@ func TestSafetyNetServingRefusalWithNoOriginalIsNotResent(t *testing.T) {
 	var got []servingRefusal
 	h := proxytest.Start(t, up, proxytest.Options{
 		Choose: &guardChooser{guarded: true},
-		OnServingRefusal: func(account string, status int, resent bool, method, path string) {
+		OnServingRefusal: func(account string, status int, errType string, resent bool, method, path string) {
 			mu.Lock()
 			defer mu.Unlock()
 			got = append(got, servingRefusal{account, status, resent, method, path})
@@ -606,7 +606,7 @@ func TestSafetyNetPassesServingMessages404(t *testing.T) {
 	var refusals atomic.Int32
 	h := proxytest.Start(t, up, proxytest.Options{
 		Choose:           ch,
-		OnServingRefusal: func(string, int, bool, string, string) { refusals.Add(1) },
+		OnServingRefusal: func(string, int, string, bool, string, string) { refusals.Add(1) },
 	})
 	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
@@ -665,5 +665,58 @@ func TestSafetyNetObject404StillDrifts(t *testing.T) {
 	}
 	if r := h.Records(t, "req", 1)[0]; r.Passed404 || r.UnknownOwner || !r.Drift {
 		t.Fatalf("record = %+v, want drift (owner-mapped), not passed404 or unknown-owner", r)
+	}
+}
+
+// R177: the prod case. C answers 401, the refreshed token is refused too, and
+// the resend on Home's login answers 404. A serving login refusal is never
+// route drift, whatever the resend answers; the error types are recorded and
+// the client still gets the resend's exact body.
+func TestSafetyNetServingRefusalWithAHome404IsNotDriftAndRecordsTheErrorTypes(t *testing.T) {
+	const homeBody = `{"type":"error","error":{"type":"not_found_error","message":"private text"}}`
+	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer sk-ant-oat01-home" {
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, homeBody)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"type":"error","error":{"type":"authentication_error","message":"private text"}}`)
+	})
+	var mu sync.Mutex
+	var got []servingRefusal
+	var types []string
+	h := proxytest.Start(t, up, proxytest.Options{
+		Choose: &refusingChooser{},
+		OnServingRefusal: func(account string, status int, errType string, resent bool, method, path string) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, servingRefusal{account, status, resent, method, path})
+			types = append(types, errType)
+		},
+	})
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 404 || string(body) != homeBody {
+		t.Fatalf("client saw %d %q, want the resend's 404 and its exact body", resp.StatusCode, body)
+	}
+	if d := h.Server.RouteDrift(); d != 0 {
+		t.Fatalf("RouteDrift = %d, want 0", d)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0].status != 401 || !got[0].resent || types[0] != "authentication_error" {
+		t.Fatalf("serving refusals = %+v types %v, want one resent 401 authentication_error", got, types)
+	}
+	r := h.Records(t, "req", 1)[0]
+	if r.Drift || r.Refused != 401 || r.RefusedType != "authentication_error" || r.Status != 404 || r.ErrType != "not_found_error" {
+		t.Fatalf("record = %+v, want no drift, refused 401 authentication_error, status 404 not_found_error", r)
 	}
 }

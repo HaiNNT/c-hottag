@@ -249,6 +249,8 @@ func TestGuardHomeKeepsProdChottagOffLimits(t *testing.T) {
 		deny bool
 	}{
 		{"tag", "chottag tag B", true},
+		{"names on sets the mode", "chottag names on", true},
+		{"names off --json sets the mode", "chottag names off --json", true},
 		{"absolute path daemon stop", "~/.chottag/bin/chottag daemon stop", true},
 		{"relative path plan", "./chottag plan C max20x", true},
 		{"go run next", "go run ./cmd/chottag next", true},
@@ -307,6 +309,8 @@ func TestGuardHomeKeepsProdChottagOffLimits(t *testing.T) {
 		{"update --version vX.Y.Z --json (R123)", "chottag update --version v0.5.0 --json", false},
 		{"daemon logs", "chottag daemon logs -n 50", false},
 		{"trace summarize", "chottag trace summarize", false},
+		{"names (show)", "chottag names", false},
+		{"names --json (show)", "chottag names --json", false},
 		{"CHOTTAG_HOME= a dev sandbox", "CHOTTAG_HOME=/tmp/devx chottag tag B", false},
 		{"scripts/dev-env run", "scripts/dev-env run tag B", false},
 		{"scripts/release status", "scripts/release status", false},

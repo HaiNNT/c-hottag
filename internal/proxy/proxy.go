@@ -39,6 +39,16 @@ type Chooser interface {
 	Refresh(ctx context.Context, account string) (token string, ok bool)
 }
 
+// RejectedRefresher is optionally implemented by a Chooser (R176). Refresh
+// that knows the bearer the upstream just refused never answers with that
+// token: it waits for a login renewal in flight, uses one that just finished
+// when its token differs, and otherwise forces a refresh. ok=false when no
+// newer token exists. Without it the safety net calls Refresh and retries
+// once.
+type RejectedRefresher interface {
+	RefreshRejected(ctx context.Context, account, rejected string) (token string, ok bool)
+}
+
 // Candidate is an account OwnerCandidates offers for owner discovery, with a
 // usable token for it.
 type Candidate struct{ Account, Token string }
@@ -155,11 +165,12 @@ type Config struct {
 	// OnServingRefusal, when set, is called when a swapped request on a plain
 	// serving route (not an object or remote route) stays refused after the
 	// safety net's refresh-and-retry: account is the swapped account, status
-	// the first refusal's, resent whether the request then went out on the
+	// the first refusal's, errType its upstream error.type (an allowlisted
+	// value, "other", or "" when the body had none), resent whether the request then went out on the
 	// client's own login, and method and path the request's (the path is
 	// templated, never a query or a body). It is not route drift and is not
 	// counted as such. Called on the request goroutine: it must not block.
-	OnServingRefusal func(account string, status int, resent bool, method, path string)
+	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)
 
 	// OnUnknownOwner, when set, is called when a swapped request for an
 	// object whose owner chottag does not know, sent to the pool's remote

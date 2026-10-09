@@ -178,7 +178,7 @@ func TestSkillFrontmatter(t *testing.T) {
 			t.Errorf("description lacks %q: it is what makes the skill model-invocable", w)
 		}
 	}
-	want := "Bash(chottag status:*), Bash(chottag doctor --json), Bash(chottag update --check --json), Bash(chottag version:*), Bash(chottag tag:*), Bash(chottag next:*), Bash(chottag remote:*), Bash(chottag rotate:*), Bash(chottag auto:*), Bash(chottag notify:*), Bash(chottag plan:*)"
+	want := "Bash(chottag status:*), Bash(chottag doctor --json), Bash(chottag update --check --json), Bash(chottag version:*), Bash(chottag tag:*), Bash(chottag next:*), Bash(chottag remote:*), Bash(chottag rotate:*), Bash(chottag auto:*), Bash(chottag notify:*), Bash(chottag plan:*), Bash(chottag sessions:*), Bash(chottag names), Bash(chottag names --json)"
 	if f["allowed-tools"] != want {
 		t.Errorf("allowed-tools = %q, want %q", f["allowed-tools"], want)
 	}

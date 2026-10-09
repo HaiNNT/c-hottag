@@ -23,6 +23,11 @@ type Record struct {
 	// Refused is the status of the first refusal (401, 403 or 404) of a swap
 	// that stayed refused after the refresh-and-retry, set beside Drift.
 	Refused int `json:"refused,omitempty"`
+	// RefusedType and ErrType are the upstream error.type (an allowlisted
+	// value or "other", never a message) of the first refusal and of the
+	// final response when it was a 400 or more (R177).
+	RefusedType string `json:"refusedType,omitempty"`
+	ErrType     string `json:"errType,omitempty"`
 	// Unreplayable marks the one known gap in the safety net (spec §4.5,
 	// deferred pending real-world frequency data): a swapped request whose
 	// body was too large to buffer for a possible retry/resend, AND whose

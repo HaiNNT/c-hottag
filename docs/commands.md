@@ -1171,13 +1171,13 @@ including the ok ones) and `problems` (the problem count) travel under
 ### `chottag names`
 
 ```sh
-chottag names [on|model|off]
+chottag names [on|off]
 ```
 
 Shows or sets session naming (see [`chottag name-session`](#chottag-name-session)).
 `on`, the default, names a session after its branch, then Claude Code's title.
-`model` also asks Claude Code (Haiku) for a short topic at the first prompt of
-a session with no branch. `off` names nothing. With no value it prints the
+`off` names nothing. `names model`, from 0.10.1, was removed in 0.10.2 and
+exits 2 without changing anything; a saved `model` reads as `on`. With no value it prints the
 mode, in one line (`names: on (branch, then Claude's title)`). It is stored in
 `state.json` and read on each prompt, so a change needs no restart. `chottag
 status` shows a `names:` line when the mode is not `on`. A bad value exits 2.
@@ -1449,19 +1449,11 @@ which Claude Code applies like `/rename`.
   cannot see, and it never overwrites a name you chose.
 - Names have control
   characters stripped and are capped at 80 characters.
-- The mode comes from [`chottag names`](#chottag-names): `on`, `model` or
+- The mode comes from [`chottag names`](#chottag-names): `on` or
   `off`. `CHOTTAG_NAME_SESSIONS` in the environment overrides it when set:
-  `0` is off and `model` is model; any other value is ignored.
-- `model` adds a topic to a session that has no branch.
-  At its first prompt only, when the name would be `<folder> HH:MM` and Claude
-  Code has made no title yet, chottag runs the real Claude Code once
-  (`claude -p --model haiku`, no session saved, hooks off, no tools, no MCP servers, 4 second limit)
-  with one plain instruction and the first 1000 characters of the prompt, for
-  example "Add a retry to the upload client". A short one-line reply becomes
-  `<folder> · <title>`. On any error, a long or multi-line reply, or a
-  timeout, the name stays `<folder> HH:MM`. The prompt goes only to that
-  process and is never logged or stored. The later upgrade keeps the folder:
-  `<folder> · <generated title>`.
+  `0` is off; any other value, including the removed `model`, is ignored.
+- chottag never runs a model for a name: the topic option `names model`
+  (0.10.1) was removed in 0.10.2.
 
 Without the plugin, add the two hooks to `~/.claude/settings.json` yourself;
 the snippet is in [Session names](resume.md#session-names).
@@ -1930,7 +1922,7 @@ session counts as a chottag session when `HTTPS_PROXY`'s user name is
 | `/ct next` | `chottag next` (with `--pool P` in a session of pool `P`) | its text |
 | `/ct tag NAME` | `chottag tag NAME` (with `--pool P` likewise) | its text |
 | `/ct pool` | `chottag pool` | its text |
-| `/ct names [on|model|off]` | `chottag names [on|model|off]` | its text |
+| `/ct names [on|off]` | `chottag names [on|off]` | its text |
 | `/ct help`, or anything else | nothing | this list |
 
 `NAME` must be a valid account name, `[A-Za-z0-9][A-Za-z0-9._-]{0,31}` (so it

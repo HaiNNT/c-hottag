@@ -37,7 +37,7 @@ commands:
   own KIND ID [ACCOUNT]         re-attribute one claude.ai object, or print its owner
   rotate NAME [on|off]          include or exclude NAME from next rotation
   rename OLD NEW                rename an account (display name only; the slot and its login stay)
-  names [on|model|off]          show or set session names (on by default)
+  names [on|off]                show or set session names (on by default)
   notify [on|off]               show or set desktop notifications (macOS; on by default)
   auto [VERB]                   show auto-switch (on by default); VERB: on, off, mode M, set KEY VALUE, reset
   plan NAME TIER [--units N]    set NAME's plan tier for auto-switch: pro, max5x, max20x or team

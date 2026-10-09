@@ -144,6 +144,10 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 		return
 	}
 
+	// viaHome: the safety net sent the request again on the client's own
+	// login, so the response is not the swapped account's. A serving login
+	// refusal does not set rec.Drift (R177), so this says it instead.
+	var viaHome bool
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = r.URL.Scheme
@@ -155,12 +159,13 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			// spec §4a): the response, its usage headers included, is that
 			// account's. Same goroutine as ModifyResponse, so no lock.
 			account, rec.Account = to, to
-		}),
+		}, func() { viaHome = true }),
 		FlushInterval: -1,
 		ErrorLog:      log.New(io.Discard, "", 0),
 		ModifyResponse: func(resp *http.Response) error {
 			rec.Status = resp.StatusCode
 			rec.RespType = resp.Header.Get("Content-Type")
+			rec.ErrType = errTypeOf(resp)
 			success := rec.Status >= 200 && rec.Status < 300
 			respIsJSON := isJSON(rec.RespType)
 
@@ -170,7 +175,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			// Same hazard the owner-recording block below guards against
 			// (F26): `account` says who chottag meant to be, only !Drift
 			// says who actually answered.
-			if s.cfg.OnUsage != nil && account != "" && !rec.Drift {
+			if s.cfg.OnUsage != nil && account != "" && !rec.Drift && !viaHome {
 				s.notifyUsage(account, resp.StatusCode, resp.Header)
 			}
 
@@ -193,7 +198,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			// client chose them, so recording them doesn't need the response
 			// body at all.
 			//
-			// !rec.Drift matters as much as success here: the safety net may
+			// !rec.Drift && !viaHome matters as much as success here: the safety net may
 			// have already abandoned the swapped account and resent the
 			// ORIGINAL request on the client's own login, returning a
 			// genuine 2xx from an account that never actually made this
@@ -205,12 +210,12 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			// account that refused it — and every later request for that
 			// object would then be swapped there, refused, force-refreshed
 			// and drifted again, corrupting owners.json persistently.
-			if recordOwners && success && !rec.Drift && len(bodyIDs) > 0 {
+			if recordOwners && success && !rec.Drift && !viaHome && len(bodyIDs) > 0 {
 				s.cfg.Choose.Record(d.Records, bodyIDs, account)
 			}
 
 			switch {
-			case recordOwners && success && !rec.Drift && respIsJSON:
+			case recordOwners && success && !rec.Drift && !viaHome && respIsJSON:
 				// Response-derived ids need the response body itself (e.g. a
 				// session create only learns its id from the response). Read
 				// it here, fully, and record before returning — i.e. before
@@ -436,7 +441,7 @@ func writePoolRefusal(w http.ResponseWriter, msg string) {
 // serving-class request with no object owner is also armed for the wall
 // retry when Config.WallRetry is set (M4 spec §4a: never remote, never an
 // owner-routed request).
-func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d router.Decision, bodyID string, ownerAnswer, neverHome, ownerKnown bool, rec *tracelog.Record, onRetarget func(string)) http.RoundTripper {
+func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d router.Decision, bodyID string, ownerAnswer, neverHome, ownerKnown bool, rec *tracelog.Record, onRetarget func(string), onResent func()) http.RoundTripper {
 	if account == "" || s.cfg.Choose == nil {
 		return s.transport
 	}
@@ -446,10 +451,11 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 		ownerAnswer: ownerAnswer,
 		onDrift:     func() { rec.Drift = true },
 		serving:     d.Class == router.Serving && d.Object == "" && !d.Fallback,
-		onRefused:   func(status int) { rec.Refused = status },
-		onServingRefusal: func(acct string, status int, resent bool) {
+		onRefused:   func(status int, errType string) { rec.Refused, rec.RefusedType = status, errType },
+		onResent:    onResent,
+		onServingRefusal: func(acct string, status int, errType string, resent bool) {
 			if s.cfg.OnServingRefusal != nil {
-				s.cfg.OnServingRefusal(acct, status, resent, rec.Method, rec.Path)
+				s.cfg.OnServingRefusal(acct, status, errType, resent, rec.Method, rec.Path)
 			}
 		},
 		onOwnerAnswer: func() { rec.OwnerRefused = true },

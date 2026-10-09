@@ -125,10 +125,7 @@ adds Claude Code's generated title at a later prompt, once it exists. Claude
 Code's running-session listing shows only a name set from a prompt hook, so
 there is no name before the first prompt. The transcript's format is internal to Claude Code, so a change there
 leaves the title empty and the name as the branch. A session you named yourself
-is never renamed. A forked session that carries the name chottag gave its parent is treated as named by you, so it keeps that name and is not upgraded. With `chottag names model`, the first prompt of a session that has no
-branch waits up to about 4 seconds while Claude Code makes a topic. On any
-error, long or multi-line reply, or timeout, the name falls back to
-`<folder> HH:MM`. See [resume.md](resume.md#session-names).
+is never renamed. A forked session that carries the name chottag gave its parent is treated as named by you, so it keeps that name and is not upgraded. A session with no branch is named `<folder> HH:MM`, then `<folder> · <title>` once Claude Code has made its title. See [resume.md](resume.md#session-names).
 
 ## Tools that ignore HTTPS_PROXY
 
