@@ -7,6 +7,26 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.0] - 2026-10-09
+
+### Added
+
+- `chottag sessions` lists the Claude Code sessions lost together when cmux quit or the Mac crashed, and `chottag resume` relaunches them, each in its own directory, pool and cmux tab (`--pick` chooses, `--print` only prints). The shim now journals each session it launches, for 7 days, with no tokens.
+- `chottag name-session`, the plugin's `UserPromptSubmit` hook, names each session from its first prompt after its branch (or `<folder> HH:MM`), then adds Claude Code's generated title; `chottag sessions` and `resume --pick` gain a `TITLE` column and `--json` a `title`. Only `ai-title` and `custom-title` records are read, and no title is logged or stored. `chottag names [on|model|off]` shows or sets it (stored in `state.json`, shown by `chottag status`, `names` in `status --json`; `CHOTTAG_NAME_SESSIONS` overrides); `chottag names model` adds a Haiku-made topic (`<folder> · <topic>`) at the first prompt of a session with no branch, falling back to `<folder> HH:MM` on any error, and the plugin hook timeout is now 10 seconds.
+- `chottag status` shows `N sessions were lost at 18:01: chottag resume` while a batch from the last 24 hours is waiting, and `lostSessions` in `--json`.
+- `chottag resume` only acts on sessions lost in the last 24 hours (`sessions --all` lists older ones), never types into a busy tab, prints and marks nothing when cmux is installed but not answering, and refuses a second run at the same time (`resume_busy`). Sessions from before a reboot always count as lost.
+- Owner discovery: a `GET` or `HEAD` for an object whose owner chottag does not know, refused by the `remote` account with a 403 or 404, is tried on the pool's other accounts (up to 8) and the first account that opens it is recorded as the owner.
+
+### Changed
+
+- `chottag status` shows a reading's age only once it is older than the account's poll interval plus 15 minutes, shows the `↻` reset as time left only under 5 hours (then `23:59`, `Thu 08:00` or `Oct 9 18:00`), and never prints `-` as STATE: it reads `ok`, `stale` or `no reading`. `--json` and the status line are unchanged.
+
+### Fixed
+
+- A refused request for an object whose owner chottag does not know is no longer counted as route drift. It gets its own `an artifact's owner is unknown` notice, at most once an hour per account, and the route-drift notice text no longer says the request was "resent unchanged".
+
+  See [release notes](docs/release-notes/v0.10.0.md).
+
 ## [0.9.4] - 2026-10-06
 
 ### Changed
@@ -389,6 +409,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.0]: docs/release-notes/v0.10.0.md
 [0.9.4]: docs/release-notes/v0.9.4.md
 [0.9.3]: docs/release-notes/v0.9.3.md
 [0.9.2]: docs/release-notes/v0.9.2.md

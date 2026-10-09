@@ -74,6 +74,11 @@ type safetyNet struct {
 	// returns the swapped account's refusal instead of the resend below.
 	noOriginal bool
 
+	// probe is set for a request naming an object whose owner is unknown
+	// (M12/R168): its refusal is not route drift, and a refused GET or HEAD
+	// starts owner discovery.
+	probe *objectProbe
+
 	// maxBody caps bufferBody: maxReplayBody, or maxWallRetryBody when the
 	// wall retry is armed. 0 means maxReplayBody.
 	maxBody int64
@@ -112,6 +117,10 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp, err = s.retryAtWall(req, body, resp)
 	}
 	if err != nil || !refused(resp.StatusCode) {
+		if err == nil && s.probe != nil && resp.StatusCode < 400 {
+			// An account opened the object after all: forget "nobody can".
+			s.probe.cache.clear(s.probe.key())
+		}
 		s.finishWall(false, resp, err)
 		return resp, err
 	}
@@ -133,6 +142,20 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		s.finishWall(false, resp, err)
 		return resp, err
 	}
+	if s.probe != nil && s.probe.prober != nil && replayable && probeMethod(req.Method) &&
+		(firstRefused == http.StatusForbidden || firstRefused == http.StatusNotFound) {
+		// A 403 or 404 for an object nobody here is known to own is not a
+		// stale token: no refresh. Try the pool's other accounts instead.
+		if !s.probe.cache.has(s.probe.key()) {
+			if found, ok := s.discover(req, body, resp); ok {
+				s.finishWall(false, found, nil)
+				return found, nil
+			}
+		}
+		s.probe.onUnknown(firstRefused)
+		s.finishWall(false, resp, err)
+		return resp, err
+	}
 	if !replayable {
 		// The body was too large to buffer for a possible retry/resend, and
 		// the swapped attempt was refused: this is the one case neither the
@@ -142,6 +165,9 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 		// trace log how often this actually fires in practice.
 		if s.onUnreplayableRefusal != nil {
 			s.onUnreplayableRefusal(req.ContentLength)
+		}
+		if s.probe != nil {
+			s.probe.onUnknown(firstRefused)
 		}
 		s.finishWall(false, resp, err)
 		return resp, err
@@ -203,6 +229,16 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 // account's login being refused instead (R158). resent
 // says the request was then sent again on the client's own login.
 func (s *safetyNet) countRefusal(status int, resent bool) {
+	if s.probe != nil {
+		// An object whose owner chottag does not know: reported as that
+		// (M12/R168), never as route drift. A resend on the client's own
+		// login still marks the record, which says who answered.
+		if resent && s.onDrift != nil {
+			s.onDrift()
+		}
+		s.probe.onUnknown(status)
+		return
+	}
 	if s.onDrift != nil {
 		s.onDrift()
 	}

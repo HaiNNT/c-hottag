@@ -86,6 +86,11 @@ Threads continue a thread only the account that created it holds, and Claude Cod
 sends the turn again as a create when it gets a 404, so the daemon returns that
 404 unchanged (no refresh, retry, Home resend, drift count or notice) and marks
 the `proxy.jsonl` record `passed404`.
+An object whose owner chottag does not know, routed to the remote account, is
+another exception: a `GET` or `HEAD` it refuses with a 403 or 404 skips the
+refresh and is tried on the pool's other accounts, and no refusal of it is
+route drift (see [The owner map](#the-owner-map)). Connector calls and serving
+routes such as `/v1/sessions/{id}` keep the refresh and the checks above.
 For a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` it is the account's login being refused
 instead: the daemon log gets a line, the
 notice names the account and the status (at most once an hour per account),
@@ -135,6 +140,17 @@ artifact or connector owns it. chottag records that in `owners.json`, and
 every later request about that object goes to its owner, not to whichever
 account happens to be `remote` at the time.
 `chottag own <kind> <id> [<account>]` shows or moves an object's owner.
+
+When chottag does not know an object's owner (an artifact made on claude.ai,
+say), a `GET` or `HEAD` for it goes to the `remote` account first. If that
+account is refused with a 403 or 404, chottag tries the other accounts of the
+session's pool once, up to 8, and sends back the first answer that is not a
+refusal. It records that account as the owner, only when its answer succeeds
+(a 429 or a 5xx is sent back but not recorded), so later requests go straight
+there. If no account can open the object, the client gets the first refusal,
+chottag does not try again for an hour, and you get one
+`chottag: an artifact's owner is unknown` notice per account per hour. That is
+not route drift.
 
 ## Usage and auto-switch
 

@@ -22,6 +22,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/store"
 	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 	usagehdr "github.com/HaiNNT/c-hottag/internal/usage"
+	"github.com/HaiNNT/c-hottag/internal/usagepoll"
 )
 
 // statusProbe reports whether a daemon answers on port and its health
@@ -184,6 +185,8 @@ func runStatus(home string, args []string, r *reporter) int {
 		f.Daemon.LiveSessions = 0
 	}
 
+	lost, lostAt := lostSessions(home, now)
+
 	if r.JSON() {
 		if f.Accounts == nil {
 			// encoding/json renders a nil slice as null, not []: an empty
@@ -228,7 +231,7 @@ func runStatus(home string, args []string, r *reporter) int {
 			u.Available = availableUpdate(f) != ""
 			f.Update = &u
 		}
-		doc := statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st), Pools: poolStatuses(st, f, rows)}
+		doc := statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st), Pools: poolStatuses(st, f, rows), LostSessions: lost, Names: st.NamesMode()}
 		if st.PolicySpread() {
 			doc.Policy, doc.Pin = store.PolicySpread, st.Pin
 		}
@@ -242,6 +245,16 @@ func runStatus(home string, args []string, r *reporter) int {
 	fmt.Fprintln(r.Stdout(), autoStatusLine(st, f, now))
 	if line := policyStatusLine(st, f, now); line != "" {
 		fmt.Fprintln(r.Stdout(), line)
+	}
+	if m := st.NamesMode(); m != store.NamesOn {
+		fmt.Fprintln(r.Stdout(), "names: "+m)
+	}
+	if lost > 0 {
+		noun, verb := "sessions", "were"
+		if lost == 1 {
+			noun, verb = "session", "was"
+		}
+		fmt.Fprintf(r.Stdout(), "%d %s %s lost at %s: chottag resume\n", lost, noun, verb, lostAt.Local().Format("15:04"))
 	}
 	if v := availableUpdate(f); v != "" {
 		fmt.Fprintf(r.Stdout(), "update: %s available (run: chottag update)\n", v)
@@ -375,25 +388,31 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 	}
 	for _, a := range f.Accounts {
 		fresh := f.Fresh(a.Name, now)
+		hasReading := a.Usage != nil && !a.Usage.UpdatedAt.IsZero()
+		var age time.Duration
+		if hasReading {
+			age = now.Sub(a.Usage.UpdatedAt)
+		}
+		// R169: a reading's age is shown, and STATE says stale, only once
+		// it is older than the account's poll interval plus a margin.
+		old := hasReading && age > readingWindow(a.Rotate)
 		five, seven := "unknown", "unknown"
 		switch {
 		case fresh:
 			five = pctOrUnknown(a.Usage.FiveHourPct)
 			seven = pctOrUnknown(a.Usage.SevenDayPct)
-		case a.Usage != nil && !a.Usage.UpdatedAt.IsZero():
-			// Older data still says something (F268): show it with its age
-			// instead of hiding it behind "unknown". A window that has reset
-			// since the reading was taken is refilled (the planner counts it
-			// as 0%), so its old number is not shown at all.
-			age := now.Sub(a.Usage.UpdatedAt)
-			five = pctWithAge(a.Usage.FiveHourPct, a.Usage.FiveHourResetsAt, now, age)
-			seven = pctWithAge(a.Usage.SevenDayPct, a.Usage.SevenDayResetsAt, now, age)
+		case hasReading:
+			// Older data still says something (F268). A window that has
+			// reset since the reading was taken is refilled (the planner
+			// counts it as 0%), so its old number is not shown at all.
+			five = pctWithAge(a.Usage.FiveHourPct, a.Usage.FiveHourResetsAt, now, age, old)
+			seven = pctWithAge(a.Usage.SevenDayPct, a.Usage.SevenDayResetsAt, now, age, old)
 		}
 		if a.Usage != nil {
 			five = withReset(five, a.Usage.FiveHourResetsAt, now)
 			seven = withReset(seven, a.Usage.SevenDayResetsAt, now)
 		}
-		state := "-"
+		state := "no reading"
 		switch {
 		case a.Passthrough != "":
 			// Requests for this account are actually going out on Home's
@@ -416,7 +435,9 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 			default:
 				state = "limited until " + a.LimitedUntil.Local().Format("Jan 2 15:04")
 			}
-		case fresh:
+		case old:
+			state = "stale"
+		case hasReading:
 			state = "ok"
 		}
 		if pooled {
@@ -470,10 +491,15 @@ type statusDocument struct {
 	// spread, so a serial document is unchanged. Pin only when one is set.
 	Policy string `json:"policy,omitempty"`
 	Pin    string `json:"pin,omitempty"`
+	// Names is the session-naming mode (R174), always present.
+	Names string `json:"names"`
 	// Pools is one entry per pool, present only while the install has more
 	// than one (M8): the top-level serving, remote, policy, pin and auto are
 	// the default pool's, in place.
 	Pools []poolStatus `json:"pools,omitempty"`
+	// LostSessions counts the sessions lost together at the last crash or cmux
+	// quit that `chottag resume` would relaunch (M11); omitted when none.
+	LostSessions int `json:"lostSessions,omitempty"`
 }
 
 // poolStatus is one pool in `status --json`'s pools array.
@@ -681,15 +707,29 @@ func pctOrUnknown(p *float64) string {
 	return fmt.Sprintf("%.0f%%", *p)
 }
 
-// pctWithAge renders a reading that is no longer fresh: "45% (2h ago)".
-// Without a percentage it is "unknown", and so it is, with a note, once the
-// window has reset since the reading.
-func pctWithAge(p *float64, resetsAt, now time.Time, age time.Duration) string {
+// readingWindow is how old an account's usage reading may get before the
+// table shows its age and calls the account stale: its poll interval plus
+// 15 minutes (R169). rotates is the account's rotation setting.
+func readingWindow(rotates bool) time.Duration {
+	if rotates {
+		return usagepoll.IdleEvery + 15*time.Minute
+	}
+	return usagepoll.OffEvery + 15*time.Minute
+}
+
+// pctWithAge renders a reading that is past status.StaleAfter: "45%", or
+// "45% (2h ago)" when showAge. The caller decides showAge: the age shows
+// only past the account's readingWindow. Without a percentage it is "unknown", and so
+// it is, with a note, once the window has reset since the reading.
+func pctWithAge(p *float64, resetsAt, now time.Time, age time.Duration, showAge bool) string {
 	if p == nil {
 		return "unknown"
 	}
 	if !resetsAt.IsZero() && !resetsAt.After(now) {
 		return "unknown (reset since)"
+	}
+	if !showAge {
+		return fmt.Sprintf("%.0f%%", *p)
 	}
 	return fmt.Sprintf("%.0f%% (%s ago)", *p, ageWords(age))
 }
@@ -701,7 +741,30 @@ func withReset(cell string, resetsAt, now time.Time) string {
 	if strings.HasPrefix(cell, "unknown") || !resetsAt.After(now) {
 		return cell
 	}
-	return cell + " \u21bb " + shortReset(resetsAt, now)
+	return cell + " \u21bb " + tableReset(resetsAt, now)
+}
+
+// tableReset is when a window resets, for the status table (R169): the time
+// left under 5 h (shortReset's form), then a clock time in now's zone:
+// "23:59" later the same day, "Thu 08:00" within 6 days, "Oct 9 18:00"
+// beyond (calendar days apart in now's zone).
+func tableReset(at, now time.Time) string {
+	at = at.In(now.Location())
+	d := at.Sub(now)
+	// Calendar days in now's zone, so a DST change inside the span cannot
+	// move a reset across the weekday/date boundary.
+	y1, m1, d1 := at.Date()
+	y2, m2, d2 := now.Date()
+	days := int(time.Date(y1, m1, d1, 0, 0, 0, 0, time.UTC).Sub(time.Date(y2, m2, d2, 0, 0, 0, 0, time.UTC)) / (24 * time.Hour))
+	switch {
+	case d < 5*time.Hour:
+		return shortReset(at, now)
+	case days == 0:
+		return at.Format("15:04")
+	case days <= 6:
+		return at.Format("Mon 15:04")
+	}
+	return at.Format("Jan 2 15:04")
 }
 
 // ageWords is a coarse age: "35m", "2h", "3d".

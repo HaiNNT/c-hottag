@@ -266,6 +266,31 @@ func servingRefusalHook(log io.Writer, dn *daemonNotify) func(account string, st
 	}
 }
 
+// unknownOwnerHook is proxy.Config.OnUnknownOwner (R168): a claude.ai object
+// that account's login could not open and whose owner chottag does not know
+// (the pool's other accounts were tried only for a GET or HEAD refused 403 or
+// 404 on the remote fallback). Every one gets a daemon.log line
+// (the id only as its hash); the notice is limited to one per account per hour
+// inside notify.Events. dn may be nil.
+func unknownOwnerHook(log io.Writer, dn *daemonNotify) func(account, kind, idHash string, status int) {
+	return func(account, kind, idHash string, status int) {
+		fmt.Fprintf(log, "chottag: %s refused %s %s (%d); chottag doesn't know its owner\n",
+			cleanLogField(account), cleanLogField(kind), cleanLogField(idHash), status)
+		if dn != nil {
+			dn.events.UnknownOwner(account, kind)
+		}
+	}
+}
+
+// ownerFoundHook is proxy.Config.OnOwnerFound (R168): owner discovery found
+// the account that owns an object. It logs one line; the id is its hash.
+func ownerFoundHook(log io.Writer) func(kind, idHash, found, tried string, status int) {
+	return func(kind, idHash, found, tried string, status int) {
+		fmt.Fprintf(log, "chottag: owner of %s %s found: %s (%s answered %d)\n",
+			cleanLogField(kind), cleanLogField(idHash), cleanLogField(found), cleanLogField(tried), status)
+	}
+}
+
 // cleanLogField makes a request-derived value safe for a one-line log entry:
 // a control character becomes "?".
 func cleanLogField(s string) string {

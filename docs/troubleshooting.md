@@ -52,7 +52,9 @@ daemon stops polling it until you log it in again.
 
 ## An account shows an old reading, `45% (2h ago)`
 
-`chottag status` shows a reading older than 10 minutes with its age. The
+`chottag status` shows a reading with its age once it is older than the
+account's poll interval plus 15 minutes (45 minutes, or 2 hours 15 minutes for
+a rotation-off account), and its STATE reads `stale`. The
 daemon polls an idle account about every 30 minutes, so a reading hours old
 means the polls are failing: look for `usage poll NAME idle 429` lines in the
 daemon log (it then waits the server's `Retry-After`, else 60 and 120
@@ -224,6 +226,19 @@ nothing is needed: since 0.9.1 a request refused while C's refresh is running
 waits for it and retries with the new token. If it repeats, run `chottag login
 C`.
 
+## An object's owner is unknown
+
+A desktop notice `chottag: an artifact's owner is unknown` means a claude.ai
+object was refused for the account chottag sent it as, and chottag has no
+record of which account made it. It is not route drift. For a `GET` or `HEAD`
+refused with a 403 or 404, chottag first tries the session's pool's other
+accounts, and does not try the object again within the hour. Other requests
+(a `POST`, say) are not tried on other accounts. The daemon log has a line for
+each one, with the object's id hashed. Log in the account that made the object
+and add it to the pool, or use the object from a terminal outside chottag
+(`CHOTTAG_BYPASS=1 claude` inside a chottag session still goes through chottag).
+The notice comes at most once an hour per account. See [known limitations](known-limitations.md).
+
 ## Route drift after a Claude Code update
 
 `chottag doctor`'s `route-drift` row and the desktop notice
@@ -234,7 +249,8 @@ route chottag's table does not list (what a new Claude Code route looks
 like), and a 404 other than on `POST /v1/messages` (since 0.9.3 that one is
 Claude Code's own thread-continue answer and is passed through, marked
 `passed404` in `proxy.jsonl`). A 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is the notice above
-instead. Run
+instead. A request for an object whose owner chottag does not know is never
+counted: see [An object's owner is unknown](#an-objects-owner-is-unknown). Run
 `chottag trace on`, reproduce the drifted request, then `chottag trace
 summarize`, and open an issue with that output — it holds route shapes,
 never tokens. (A claude.ai connector's own 401/403/404 from the account

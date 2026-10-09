@@ -29,7 +29,7 @@ This skill covers what a Claude Code session needs day to day.
   remote.
 
 `chottag status` then lists every account in a table with columns NAME, PLAN,
-ORG, 5h, 7d and STATE (each 5h and 7d cell ends with `↻ <when>`, the time to that window's next reset, when known), and ends with an `auto:` line: the mode, why it's
+ORG, 5h, 7d and STATE (each 5h and 7d cell ends with `↻ <when>`, the next reset when known: time left under 5 h, else a clock time such as `23:59`, `Thu 08:00`, `Oct 9 18:00`; a reading older than its poll interval plus 15 min also shows its age and STATE `stale`, and `no reading` means never read), and ends with an `auto:` line: the mode, why it's
 holding (if it is) and the last switch, e.g. `auto: balanced · holding A (5h
 96%, resets in 9m) · last C→A 09:12 (limit)`, or `auto: off` when auto-switch
 is off.
@@ -78,6 +78,7 @@ Without arguments, work out what the user wants and use "Common tasks".
    prompt**: `status`, `doctor --json`, `update --check --json`, `version`,
    `tag`, `next`, `remote`, `rotate`, `auto`, `notify`, `plan`. Everything
    else (`login`, `logout`, `doctor --fix`, `update`, `rename`, `uninstall`,
+   `sessions`, `resume`,
    `policy`, `pool add`, `pool join`, `pool leave`, `pool rm`)
    asks the user first. That is deliberate; don't work around it.
 
@@ -200,6 +201,8 @@ the `pool add`). Once a pool exists the shim also refuses every session,
 | several accounts show one email (legitimate when one login is in several orgs; before 0.8.3 a login, before 0.8.4 a refresh could also write the serving account's email into another account's slot; `doctor` lists them as an info `identities` row; `adopt` does not warn about a wrong email that was already recorded) | for the accounts that are wrong only: upgrade with `chottag update` (ask first), `chottag daemon restart` (tell the user first), then `chottag login <name>` for each affected account (the user does the browser step) |
 | remove an account | `chottag logout <name> --json` (ask first; see below) |
 | check or repair the install | `chottag doctor --json`, then `chottag doctor --fix --json` if the user agrees |
+| the user lost their Claude Code sessions after a crash or quitting cmux | run `chottag sessions --json` first and show the user the list (`sessions[]`: `dir`, `pool`, `title` when it has one, `command`); then, if they agree, `chottag resume --json` relaunches them in their cmux tabs and directories (`placement` is `tab`, `new-tab`, `new-workspace`, `print` or `failed`; `resume_failed` means some could not be, and they stay in the list; `resume_busy` means another resume is running). The list holds only sessions lost in the last 24 hours. `chottag resume --print --json` only prints the commands and marks nothing; `--pick` is for a human at a terminal. Both ask first: they are not pre-approved. `chottag sessions --all --json` lists every recorded session. `chottag name-session` is the plugin's own `UserPromptSubmit` hook, which names each session after its branch and Claude Code's generated title; never run it by hand, and `chottag names off` turns it off, and `chottag names model` adds a short Haiku-made topic to the name of a session with no branch (up to about 4 s at its first prompt) |
+| session names (on, model: also a Haiku topic for a session with no branch, off) | `chottag names model --json` / `chottag names on --json` / `chottag names off --json`; `chottag names --json` shows it |
 | desktop notifications | `chottag notify on --json` / `chottag notify off --json` |
 | automatic switching near a limit (on by default) | `chottag auto --json`; `chottag auto off --json` / `chottag auto on --json` |
 | auto-switch mode | `chottag auto mode balanced --json` or `chottag auto mode cache-optimize --json` |
@@ -319,6 +322,7 @@ commands the user types themselves:
 - `/ct next`: `chottag next` (with `--pool P` in a session of pool `P`)
 - `/ct tag NAME`: `chottag tag NAME` (with `--pool P` likewise)
 - `/ct pool`: `chottag pool`
+- `/ct names [on|model|off]`: `chottag names [on|model|off]`
 - `/ct help`: the list
 
 In a chottag session it also stops `/login` and `/logout`: "`/login` here would

@@ -229,7 +229,7 @@ func TestRenderStatusNeverPrintsZeroForUnknown(t *testing.T) {
 				Usage: &status.Usage{
 					FiveHourPct: floatPtr(90),
 					SevenDayPct: floatPtr(10),
-					UpdatedAt:   now.Add(-2 * status.StaleAfter), // stale
+					UpdatedAt:   now.Add(-3 * time.Hour), // past the 2h15m rotation-off window
 				},
 			},
 			{
@@ -270,7 +270,7 @@ func TestRenderStatusNeverPrintsZeroForUnknown(t *testing.T) {
 	}
 	// F268: an older observation keeps its numbers, marked with their age,
 	// so it can never be read as a live one.
-	if strings.Count(bLine, "(20m ago)") != 2 || !strings.Contains(bLine, "90% (20m ago)") || !strings.Contains(bLine, "10% (20m ago)") {
+	if strings.Count(bLine, "(3h ago)") != 2 || !strings.Contains(bLine, "90% (3h ago)") || !strings.Contains(bLine, "10% (3h ago)") {
 		t.Fatalf("B row = %q, want both windows shown with their age, not as live numbers", bLine)
 	}
 	if strings.Contains(bLine, " ok") {
@@ -812,6 +812,12 @@ func TestRenderStatusShowsResetsInCells(t *testing.T) {
 		{"old with passed reset", status.Usage{FiveHourPct: &p99, SevenDayPct: &p10, UpdatedAt: old,
 			FiveHourResetsAt: old.Add(time.Hour), SevenDayResetsAt: old.Add(2 * time.Hour)},
 			[]string{"unknown (reset since)"}, "↻"},
+		{"fresh 5h reset in 14h41m is a weekday clock time", status.Usage{FiveHourPct: &p28, SevenDayPct: &p10, UpdatedAt: now,
+			FiveHourResetsAt: now.Add(14*time.Hour + 41*time.Minute), SevenDayResetsAt: now.Add(48 * time.Hour)},
+			[]string{"28% ↻ Wed 02:41"}, "14h41m"},
+		{"fresh reset in 6h is a same-day clock time", status.Usage{FiveHourPct: &p28, SevenDayPct: &p10, UpdatedAt: now,
+			FiveHourResetsAt: now.Add(6 * time.Hour), SevenDayResetsAt: now.Add(48 * time.Hour)},
+			[]string{"28% ↻ 18:00"}, "6h"},
 		{"nil pct", status.Usage{UpdatedAt: now, FiveHourResetsAt: now.Add(time.Hour), SevenDayResetsAt: now.Add(time.Hour)},
 			[]string{"unknown"}, "↻"},
 	}
@@ -832,5 +838,153 @@ func TestRenderStatusShowsResetsInCells(t *testing.T) {
 				t.Errorf("output %q must not contain %q", out, c.not)
 			}
 		})
+	}
+}
+
+// R169 (a) and (c): a reading's age and the STATE word follow the account's
+// poll interval plus 15 minutes.
+func TestRenderStatusAgeAndStateFollowThePollWindow(t *testing.T) {
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	p45 := 45.0
+	cases := []struct {
+		name    string
+		rotate  bool
+		age     time.Duration
+		noRead  bool
+		want    string
+		wantNot string
+	}{
+		{"rotating at 45m: plain", true, 45 * time.Minute, false, "45%   ok", "ago"},
+		{"rotating just past 45m: age", true, 45*time.Minute + time.Second, false, "45% (45m ago)", " ok"},
+		{"rotating past 45m is stale", true, 50 * time.Minute, false, "stale", " ok"},
+		{"rotating fresh", true, time.Minute, false, "45%   ok", "ago"},
+		{"rotation off at 2h15m: plain", false, 2*time.Hour + 15*time.Minute, false, "45%   ok", "ago"},
+		{"rotation off just past 2h15m: age", false, 2*time.Hour + 15*time.Minute + time.Second, false, "45% (2h ago)", " ok"},
+		{"rotation off at 1h: plain", false, time.Hour, false, "ok", "ago"},
+		{"never read", true, 0, true, "no reading", "ago"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := status.Account{Name: "Acme", Rotate: c.rotate}
+			if !c.noRead {
+				a.Usage = &status.Usage{FiveHourPct: &p45, SevenDayPct: &p45, UpdatedAt: now.Add(-c.age)}
+			}
+			var buf bytes.Buffer
+			renderStatus(&buf, status.File{Accounts: []status.Account{a}}, now)
+			out := buf.String()
+			if !strings.Contains(out, c.want) {
+				t.Errorf("output %q lacks %q", out, c.want)
+			}
+			if strings.Contains(out, c.wantNot) {
+				t.Errorf("output %q must not contain %q", out, c.wantNot)
+			}
+			rows := strings.Split(strings.TrimSpace(out), "\n")
+			if f := strings.Fields(rows[len(rows)-1]); f[len(f)-1] == "-" {
+				t.Errorf("output %q must never print - as STATE", out)
+			}
+		})
+	}
+}
+
+func TestRenderStatusLimitedAndPassthroughKeepPrecedence(t *testing.T) {
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	p := 45.0
+	old := &status.Usage{FiveHourPct: &p, SevenDayPct: &p, UpdatedAt: now.Add(-5 * time.Hour)}
+	f := status.File{Accounts: []status.Account{
+		{Name: "L", Rotate: true, Usage: old, Limited: true, LimitedUntil: now.Add(time.Hour)},
+		{Name: "P", Rotate: true, Usage: old, Passthrough: "token stale"},
+		{Name: "N", Rotate: true, Limited: true},
+	}}
+	var buf bytes.Buffer
+	renderStatus(&buf, f, now)
+	out := buf.String()
+	for _, w := range []string{"limited until " + now.Add(time.Hour).Local().Format("Jan 2 15:04"), "passthrough: token stale", "limited (reset time unknown)"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output %q lacks %q", out, w)
+		}
+	}
+	if strings.Contains(out, "   stale") || strings.Contains(out, "no reading") {
+		t.Errorf("output %q: limited/passthrough must win over stale/no reading", out)
+	}
+}
+
+// R169 (b): the table's reset shows time left under 5 h, then a clock time.
+func TestTableReset(t *testing.T) {
+	zone := time.FixedZone("T", 7*3600)
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, zone) // a Tuesday
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Second, "<1m"},
+		{42 * time.Minute, "42m"},
+		{2*time.Hour + 41*time.Minute, "2h41m"},
+		{3 * time.Hour, "3h"},
+		{4*time.Hour + 59*time.Minute, "4h59m"},
+		{5 * time.Hour, "17:00"},
+		{11*time.Hour + 59*time.Minute, "23:59"},
+		{12 * time.Hour, "Wed 00:00"}, // tomorrow: weekday form
+		{20 * time.Hour, "Wed 08:00"},
+		{6*24*time.Hour - time.Minute, "Mon 11:59"},
+		{6 * 24 * time.Hour, "Mon 12:00"},
+		{7 * 24 * time.Hour, "Oct 13 12:00"},
+		{9*24*time.Hour + 6*time.Hour, "Oct 15 18:00"},
+	}
+	for _, c := range cases {
+		if got := tableReset(now.Add(c.d), now); got != c.want {
+			t.Errorf("tableReset(+%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+	// The instant is converted into now's zone, whatever zone it came in.
+	if got := tableReset(now.Add(6*time.Hour).UTC(), now); got != "18:00" {
+		t.Errorf("UTC input = %q, want 18:00 in now's zone", got)
+	}
+}
+
+func TestReadingWindowMatchesThePollIntervals(t *testing.T) {
+	if got := readingWindow(true); got != 45*time.Minute {
+		t.Errorf("rotating window = %v, want 45m", got)
+	}
+	if got := readingWindow(false); got != 2*time.Hour+15*time.Minute {
+		t.Errorf("rotation-off window = %v, want 2h15m", got)
+	}
+}
+
+// A usage object with no reading time says nothing: unknown cells, no reading.
+func TestRenderStatusZeroUpdatedAtIsNoReading(t *testing.T) {
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	p := 45.0
+	f := status.File{Accounts: []status.Account{{Name: "Acme", Rotate: true, Usage: &status.Usage{FiveHourPct: &p, SevenDayPct: &p}}}}
+	var buf bytes.Buffer
+	renderStatus(&buf, f, now)
+	rows := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	row := rows[len(rows)-1]
+	if strings.Count(row, "unknown") != 2 || !strings.HasSuffix(row, "no reading") || strings.Contains(row, "45%") {
+		t.Errorf("row = %q, want both cells unknown and STATE no reading", row)
+	}
+}
+
+// DST: the weekday form is chosen by calendar days in now's zone, so a
+// spring-forward inside the span does not change it.
+func TestTableResetAcrossSpringForward(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	// Sun Mar 8 2026 is the spring-forward day; now is Mon Mar 2 00:30.
+	now := time.Date(2026, 3, 2, 0, 30, 0, 0, ny)
+	cases := []struct {
+		at   time.Time
+		want string
+	}{
+		// Sun Mar 8 23:00 is 6 calendar days ahead but 6d22h30m (< 144h) of elapsed time.
+		{time.Date(2026, 3, 8, 23, 0, 0, 0, ny), "Sun 23:00"},
+		// Mon Mar 9 00:10 is 7 calendar days ahead, 6d22h40m elapsed (< 144h).
+		{time.Date(2026, 3, 9, 0, 10, 0, 0, ny), "Mar 9 00:10"},
+	}
+	for _, c := range cases {
+		if got := tableReset(c.at, now); got != c.want {
+			t.Errorf("tableReset(%v) = %q, want %q", c.at, got, c.want)
+		}
 	}
 }

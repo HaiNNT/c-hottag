@@ -278,7 +278,50 @@ do_env() {
 do_shell() {
 	[ -d "$dev_home/bin" ] || die "no dev sandbox yet at $dev_home; run: scripts/dev-env build"
 	say "starting a dev-env subshell: CHOTTAG_HOME=$dev_home, PATH gains $dev_home/bin (prod's bin dir dropped); type 'exit' or ctrl-d to leave"
-	CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" CHOTTAG_DEV=1 exec "${SHELL:-/bin/sh}"
+	user_shell=${SHELL:-/bin/sh}
+	# R170: an interactive shell re-reads the user's rc file, which puts prod's
+	# bin dir first on PATH again. Start zsh and bash from a startup file under
+	# the sandbox root that sources the user's real one and then re-applies
+	# `env` (dev bin first, everything under $HOME/.chottag dropped). The real
+	# HOME's files are only read, never written.
+	rc_dir="$root/shellrc"
+	self="$repo_root/scripts/dev-env"
+	case "${user_shell##*/}" in
+	zsh)
+		mkdir -p "$rc_dir/zsh"
+		cat >"$rc_dir/zsh/.zshenv" <<'EOF'
+# dev-env (R170): generated; the user's own .zshenv, read from where it lives.
+_chottag_dev_zd=${CHOTTAG_DEV_ORIG_ZDOTDIR:-$HOME}
+[ -f "$_chottag_dev_zd/.zshenv" ] && source "$_chottag_dev_zd/.zshenv"
+unset _chottag_dev_zd
+EOF
+		cat >"$rc_dir/zsh/.zshrc" <<'EOF'
+# dev-env (R170): generated; the user's own .zshrc, then the dev PATH again.
+if [ -n "${CHOTTAG_DEV_ORIG_ZDOTDIR:-}" ]; then
+	ZDOTDIR=$CHOTTAG_DEV_ORIG_ZDOTDIR
+else
+	unset ZDOTDIR
+fi
+[ -f "${ZDOTDIR:-$HOME}/.zshrc" ] && source "${ZDOTDIR:-$HOME}/.zshrc"
+eval "$("$CHOTTAG_DEV_SELF" env)"
+EOF
+		CHOTTAG_DEV_ORIG_ZDOTDIR="${ZDOTDIR:-}" CHOTTAG_DEV_SELF="$self" CHOTTAG_DEV_ROOT="$root" \
+			ZDOTDIR="$rc_dir/zsh" CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" CHOTTAG_DEV=1 exec "$user_shell"
+		;;
+	bash)
+		mkdir -p "$rc_dir"
+		cat >"$rc_dir/bashrc" <<'EOF'
+# dev-env (R170): generated; the user's own ~/.bashrc, then the dev PATH again.
+[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"
+eval "$("$CHOTTAG_DEV_SELF" env)"
+EOF
+		CHOTTAG_DEV_SELF="$self" CHOTTAG_DEV_ROOT="$root" \
+			CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" CHOTTAG_DEV=1 exec "$user_shell" --rcfile "$rc_dir/bashrc" -i
+		;;
+	*)
+		CHOTTAG_HOME="$dev_home" PATH="$(dev_path)" CHOTTAG_DEV=1 exec "$user_shell"
+		;;
+	esac
 }
 
 do_run() {

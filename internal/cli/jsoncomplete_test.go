@@ -77,7 +77,7 @@ func TestEveryDispatchableCommandHasJSONCases(t *testing.T) {
 		t.Fatalf("found only %d dispatch labels (%v): the AST walk is broken", len(labels), labels)
 	}
 	refusing := map[string]bool{"proxy": true, "help": true, "-h": true, "--help": true, "daemon run": true, "daemon logs": true,
-		"trace run": true, "trace env": true, "trace mark": true, "trace summarize": true}
+		"trace run": true, "trace env": true, "trace mark": true, "trace summarize": true, "name-session": true}
 	oneRow := map[string]bool{"version": true, "ls": true, "rc": true, "remote-control": true}
 
 	byCommand := map[string][]jsonCase{}

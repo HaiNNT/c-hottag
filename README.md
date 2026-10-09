@@ -61,8 +61,11 @@ chottag status         # usage and limits per account; `chottag statusline` for 
 chottag next           # serving -> the next account that is not limited
 chottag policy spread  # or: spread new sessions over accounts (`chottag tag NAME` pins)
 chottag pool add work  # a separate pool of accounts: `chottag login C --pool work`, `CHOTTAG_POOL=work claude`
+chottag resume         # after cmux quits or the Mac crashes: relaunch the lost sessions (`chottag sessions` lists them)
 chottag doctor         # check the install; --fix repairs what it safely can
 ```
+
+After cmux quits or the Mac crashes, `chottag resume` relaunches the sessions that were open, in their tabs and directories. With the plugin, `chottag name-session` names each session after its branch and Claude Code's generated title, and `chottag sessions` shows it; `chottag names` turns naming on, off or adds a model-made topic.
 
 What *serving*, *remote* and a *slot* are: [How it works](docs/how-it-works.md). Every command, flag and exit code: [Command reference](docs/commands.md).
 

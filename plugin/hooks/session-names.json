@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=$(command -v chottag) || b=\"${CHOTTAG_HOME:-$HOME/.chottag}/bin/chottag\"; if [ -x \"$b\" ] && o=$(\"$b\" name-session 2>/dev/null) && [ -n \"$o\" ]; then printf '%s\\n' \"$o\"; fi; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

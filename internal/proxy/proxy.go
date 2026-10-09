@@ -39,6 +39,22 @@ type Chooser interface {
 	Refresh(ctx context.Context, account string) (token string, ok bool)
 }
 
+// Candidate is an account OwnerCandidates offers for owner discovery, with a
+// usable token for it.
+type Candidate struct{ Account, Token string }
+
+// OwnerProber is optionally implemented by a Chooser (M12/R168). When an
+// object's owner is unknown and the account it was routed to (the remote
+// fallback) refused a GET or HEAD with 403 or 404, the safety net tries the
+// accounts OwnerCandidates lists, once each, and records whichever answers as
+// the owner.
+type OwnerProber interface {
+	// OwnerCandidates lists the accounts to try for an unknown object of
+	// this request's pool, other than tried, each with a usable token, in
+	// the pool's member order. At most MaxOwnerProbes.
+	OwnerCandidates(ctx context.Context, tried string) []Candidate
+}
+
 // PoolGuard is optionally implemented by a Chooser that enforces the pool
 // boundary (M8). With more than one pool, a request that no account of the
 // session's pool can serve must not go out on the client's own login (Home's,
@@ -145,6 +161,25 @@ type Config struct {
 	// counted as such. Called on the request goroutine: it must not block.
 	OnServingRefusal func(account string, status int, resent bool, method, path string)
 
+	// OnUnknownOwner, when set, is called when a swapped request for an
+	// object whose owner chottag does not know, sent to the pool's remote
+	// account (never a connector call or a serving route), stayed refused
+	// (M12/R168):
+	// account is the account it was routed to, kind the object's kind and
+	// idHash its tracelog.HashID (the raw id is never passed) and status the
+	// first refusal's. It is not route drift and is not counted
+	// as such. Called on the request goroutine: it must not block.
+	OnUnknownOwner func(account, kind, idHash string, status int)
+
+	// OnOwnerFound, when set, is called when owner discovery found the owner
+	// of an unknown object: found is the account that answered, tried the
+	// one that refused first with status, and idHash the object's
+	// tracelog.HashID (the raw id is never passed). Same goroutine rules.
+	OnOwnerFound func(kind, idHash, found, tried string, status int)
+
+	// Now is the clock for the unknown-owner cache; nil means time.Now.
+	Now func() time.Time
+
 	// UpstreamProxy routes chottag's own upstream traffic through another
 	// proxy — the one the user already had in HTTPS_PROXY before the shim
 	// replaced it (spec §4.3, §6). nil means dial directly.
@@ -199,6 +234,7 @@ type Server struct {
 	netDialer *net.Dialer // nil when cfg.DialContext was supplied
 	transport *http.Transport
 	drift     atomic.Uint64
+	unowned   *unknownOwners // M12: objects no account here could open
 	// inflight counts requests being served; lastStart is the Unix-nano
 	// time the latest one began (construction time before any). Both feed Idle.
 	inflight  atomic.Int64
@@ -219,6 +255,7 @@ type Server struct {
 
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
+	s.unowned = newUnknownOwners(cfg.Now)
 	s.lastStart.Store(time.Now().UnixNano())
 	if cfg.DialContext != nil {
 		s.dial = cfg.DialContext
@@ -489,7 +526,7 @@ func (s *Server) serveHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write(append(b, '\n'))
 }
 
-// RouteDrift counts swapped requests that had to be resent unchanged: a sign
+// RouteDrift counts swapped requests that had to be refused even after a retry: a sign
 // the route table no longer matches this Claude Code version.
 func (s *Server) RouteDrift() uint64 { return s.drift.Load() }
 

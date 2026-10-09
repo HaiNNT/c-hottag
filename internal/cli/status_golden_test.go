@@ -198,7 +198,8 @@ func TestStatusJSONGoldenOutput(t *testing.T) {
 		"    \"check\": true,\n" +
 		"    \"auto\": false,\n" +
 		"    \"restart\": true\n" +
-		"  }\n" +
+		"  },\n" +
+		"  \"names\": \"on\"\n" +
 		"}\n"
 
 	if out != want {

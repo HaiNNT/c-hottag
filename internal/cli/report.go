@@ -67,6 +67,8 @@ const (
 	codeNotInPool                 errCode = "not_in_pool"
 	codePoolAmbiguous             errCode = "pool_ambiguous"
 	codePoolsBlockRollback        errCode = "pools_block_rollback"
+	codeResumeFailed              errCode = "resume_failed"
+	codeResumeBusy                errCode = "resume_busy"
 )
 
 // errCodes is the closed list. TestCodeConstantsMatchTheClosedLists keeps
@@ -88,6 +90,7 @@ var errCodes = []errCode{
 	codeSpreadNext,
 	codeNoPool, codeBadPool, codePoolExists, codePoolNotEmpty, codePoolDefault,
 	codeLastPool, codeDaemonPredatesPools, codeNotInPool, codePoolAmbiguous, codePoolsBlockRollback,
+	codeResumeFailed, codeResumeBusy,
 }
 
 // warnCode is a warnings[].code: a line that reports something beyond the

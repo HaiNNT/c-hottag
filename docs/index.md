@@ -14,6 +14,7 @@ c-hottag is an independent project: not affiliated with or endorsed by Anthropic
 - [Install and manage chottag for a user (for AI agents)](for-claude-code.md): the entry point for a Claude Code session installing or managing chottag on someone's behalf.
 - [How it works](how-it-works.md): slots, the shim, the proxy, which account a request uses.
 - [Auto-switch](auto-switch.md): modes, switch points, settings.
+- [Getting sessions back after a crash](resume.md): `chottag sessions` and `chottag resume`.
 
 ## Reference
 

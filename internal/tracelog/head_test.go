@@ -38,7 +38,7 @@ func fullRecord() tracelog.Record {
 		Form: "mitm", Method: "POST", Host: "api.anthropic.com", Path: "/v1/messages",
 		PathIDs: []string{"cse_1234abcd"}, QueryKeys: []string{"beta=true"},
 		Class: "serving", Auth: "oauth-access", Swapped: true, Account: "B", Drift: true, Refused: 401,
-		Unreplayable: true, UnreplayableBytes: 99, OwnerRefused: true, Passed404: true,
+		Unreplayable: true, UnreplayableBytes: 99, OwnerRefused: true, Passed404: true, UnknownOwner: true, Discovered: true,
 		Status: 429, Millis: 1234, ReqType: "application/json", RespType: "text/event-stream",
 		Upgrade: "websocket", ReqShape: map[string]any{"model": "string"}, RespShape: "string",
 		RespHeaderNames: []string{"Retry-After"}, RespLimitHeaders: map[string]string{"retry-after": "30"},
@@ -73,7 +73,7 @@ func TestHeadOfClassifiesEveryRecordField(t *testing.T) {
 		"Account": true, "Drift": true, "Refused": true, "Status": true, "ReqType": true, "RespType": true,
 		"RespHeaderNames": true, "RespLimitHeaders": true, "RespErrorType": true, "RespResetAt": true,
 		"Unreplayable": false, "UnreplayableBytes": false, "Millis": false, "Upgrade": false,
-		"ReqShape": false, "RespShape": false, "Mark": false, "Err": false, "OwnerRefused": false, "Passed404": false,
+		"ReqShape": false, "RespShape": false, "Mark": false, "Err": false, "OwnerRefused": false, "Passed404": false, "UnknownOwner": false, "Discovered": false,
 	}
 	head := reflect.ValueOf(tracelog.HeadOf(fullRecord()))
 	typ := head.Type()

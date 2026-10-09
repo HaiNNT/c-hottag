@@ -36,6 +36,7 @@ var docsResultTypes = map[string]any{
 	"own":            ownResult{},
 	"rotate":         rotateResult{},
 	"rename":         renameResult{},
+	"names":          namesResult{},
 	"notify":         notifyResult{},
 	"policy":         policyResult{},
 	"pool":           poolListResult{},
@@ -45,6 +46,8 @@ var docsResultTypes = map[string]any{
 	"pool rm":        poolNameResult{},
 	"auto":           autoResult{},
 	"plan":           planResult{},
+	"sessions":       sessionsResult{},
+	"resume":         resumeResult{},
 	"status":         statusDocument{},
 	"statusline":     statuslineResult{},
 	"doctor":         doctorResult{},
@@ -60,7 +63,7 @@ var docsResultTypes = map[string]any{
 // each says "does not support `--json`" and shows no JSON block.
 var docsNoJSON = map[string]bool{
 	"proxy run": true, "daemon run": true, "daemon logs": true,
-	"trace run": true, "trace env": true, "trace mark": true, "trace summarize": true,
+	"trace run": true, "trace env": true, "trace mark": true, "trace summarize": true, "name-session": true,
 }
 
 // docsHidden are fields a command never outputs, so its example must not

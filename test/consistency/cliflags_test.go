@@ -37,7 +37,9 @@ var cmdWord = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 func usagePaths(t *testing.T) map[string]map[string]bool {
 	t.Helper()
 	out := map[string]map[string]bool{}
-	flagTok := regexp.MustCompile(`--?[a-z][a-z-]*`)
+	// A flag starts a word: the "-session" inside the command name
+	// name-session is not one.
+	flagTok := regexp.MustCompile(`(?:^|[\s\[|(])(--?[a-z][a-z-]*)`)
 	for _, l := range strings.Split(usageText(t), "\n") {
 		rest, ok := strings.CutPrefix(l, "  ")
 		if !ok {
@@ -58,8 +60,8 @@ func usagePaths(t *testing.T) map[string]map[string]bool {
 		if out[path] == nil {
 			out[path] = map[string]bool{}
 		}
-		for _, f := range flagTok.FindAllString(syn, -1) {
-			out[path][strings.TrimLeft(f, "-")] = true
+		for _, m := range flagTok.FindAllStringSubmatch(syn, -1) {
+			out[path][strings.TrimLeft(m[1], "-")] = true
 		}
 	}
 	return out

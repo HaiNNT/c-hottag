@@ -158,6 +158,9 @@ var goSpawnAllowlist = map[string][]allowEntry{
 	"test/installsh/harness_test.go#exec": {
 		{kindExternalTool, ""}, // (*sandbox).exec: runs install.sh under a shell with only fake tools on PATH
 	},
+	"test/devenv/shell_test.go#TestShellKeepsDevBinFirst": {
+		{kindExternalTool, ""}, // runs scripts/dev-env under a temp HOME and a temp sandbox root
+	},
 	"internal/cli/proxy_run_test.go#TestRunProxyExitsWithCode130OnASecondSignal": {
 		{kindSelfExec, "CHOTTAG_T8_HELPER"},
 	},
@@ -197,8 +200,14 @@ var goSpawnAllowlist = map[string][]allowEntry{
 	"internal/cli/restartloop.go#spawnDetached": {
 		{kindExternalTool, ""}, // the installed chottag, running `daemon restart --force --json` detached (R126)
 	},
+	"internal/cli/resume.go#realCmuxRun": {
+		{kindExternalTool, ""}, // cmux, behind the cmuxRun seam (M11)
+	},
 	"internal/cli/doctor.go#runClaudeVersion": {
 		{kindExternalTool, ""}, // claude
+	},
+	"internal/cli/name_session.go#defaultNameSessionModelRun": {
+		{kindExternalTool, ""}, // claude, for the opt-in model title (R172), behind nameSessionModelRun
 	},
 	"internal/cli/login.go#runClaudeAuth": {
 		{kindExternalTool, ""}, // claude

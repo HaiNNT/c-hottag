@@ -9,14 +9,15 @@
 
 // MOD_VERSION is this plugin's version, set by `scripts/release bump` and tested
 // against plugin.json. A chottag newer than it means the plugin is behind.
-export const MOD_VERSION = '0.9.4'
+export const MOD_VERSION = '0.10.0'
 const VERSION_CHECK_MS = 600000
 const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]*)?/
 const CLEAN_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,64}$/
 // A describe suffix (a build after a release: -3-gabc1234, -dirty) is not a pre-release.
 const DESCRIBE = /^-(\d+-g[0-9a-f]+(-dirty)?|dirty)$/
 
-const CT_VERBS = ['status', 'next', 'tag', 'pool', 'help']
+const CT_VERBS = ['status', 'next', 'tag', 'pool', 'names', 'help']
+const NAMES_MODES = ['on', 'model', 'off']
 // The store's own account-name rule: it must start with a letter or digit, so a
 // NAME can never read as an option (--unpin).
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/
@@ -53,6 +54,7 @@ export const CT_HELP = [
   '  /ct next          serve the next account in rotation',
   '  /ct tag NAME      serve the account NAME',
   '  /ct pool          list the pools',
+  '  /ct names [on|model|off]  show or set session names',
   '  /ct help          this list',
 ].join('\n')
 
@@ -110,7 +112,9 @@ export function displayWidth(s) {
 export function parseCt(args) {
   const parts = String(args || '').trim().split(/\s+/).filter(Boolean)
   const verb = parts.length === 0 ? 'status' : parts[0]
-  if (CT_VERBS.includes(verb) && verb !== 'tag' && parts.length <= 1) return { verb }
+  if (CT_VERBS.includes(verb) && verb !== 'tag' && verb !== 'names' && parts.length <= 1) return { verb }
+  if (verb === 'names' && parts.length === 1) return { verb }
+  if (verb === 'names' && parts.length === 2 && NAMES_MODES.includes(parts[1])) return { verb, name: parts[1] }
   if (verb === 'tag' && parts.length === 2 && NAME.test(parts[1])) return { verb, name: parts[1] }
   return { verb: 'help' }
 }
@@ -515,7 +519,7 @@ export function register(on) {
     $.clock.every(REFRESH_MS, () => refresh($).catch(failed))
     try {
       // Registered last: a refused name throws. (/chottag is the skill's.)
-      await $.command.register({ name: 'ct', description: 'chottag: status, next, tag NAME, pool', argumentHint: '[status|next|tag NAME|pool|help]' })
+      await $.command.register({ name: 'ct', description: 'chottag: status, next, tag NAME, pool, names', argumentHint: '[status|next|tag NAME|pool|names [on|model|off]|help]' })
     } catch (err) {
       await $.ui.log('chottag: could not register /ct: ' + err)
     }
@@ -533,7 +537,7 @@ export function register(on) {
     if (cmd.name) argv.push(cmd.name)
     const pool = state.last && state.last.pool
     if ((cmd.verb === 'next' || cmd.verb === 'tag') && pool && pool !== 'default') argv.push('--pool', pool)
-    const mutating = cmd.verb === 'next' || cmd.verb === 'tag'
+    const mutating = cmd.verb === 'next' || cmd.verb === 'tag' || (cmd.verb === 'names' && !!cmd.name)
     const r = await runChottag($, argv, mutating)
     if (!r) return { text: 'chottag was not found, on PATH or in its install directory.' }
     if (r.error !== undefined) {

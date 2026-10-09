@@ -46,7 +46,18 @@ func availableMessage(account string) (title, body string) {
 
 func routeDriftMessage() (title, body string) {
 	return "chottag: route drift",
-		"The daemon resent a swapped request unchanged; the route table may not match this Claude Code version. Run: chottag trace on"
+		"A swapped request was refused even after a retry; the route table may not match this Claude Code version. Run: chottag trace on"
+}
+
+// unknownOwnerMessage is the notice for a claude.ai object that no account of
+// the pool could open, whose owner chottag does not know (R168).
+func unknownOwnerMessage(account, kind string) (title, body string) {
+	article := "a"
+	if kind != "" && strings.ContainsRune("aeiouAEIOU", rune(kind[0])) {
+		article = "an"
+	}
+	return fmt.Sprintf("chottag: %s %s's owner is unknown", article, kind),
+		account + " could not open it, and chottag doesn't know which account made it. This is not route drift."
 }
 
 // servingRefusedMessage is the notice for a swapped serving request that the

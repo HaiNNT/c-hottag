@@ -144,8 +144,9 @@ func TestSafetyNetPassesThroughAConnectorOwnersRefusal(t *testing.T) {
 // TestSafetyNetUnknownOwnerConnectorCallStillDrifts covers R96's other
 // half: a connector id the owner map does NOT know (the account came from
 // the remote pin, not the owner map) keeps the safety net's refresh and
-// counts as drift. Since R147 it is never resent on the client's own login
-// (Home's): a remote request must not go out as the wrong account.
+// counts as drift; connectors are never probed (M12). Since R147 it is never
+// resent on the client's own login (Home's): a remote request must not go out
+// as the wrong account.
 func TestSafetyNetUnknownOwnerConnectorCallStillDrifts(t *testing.T) {
 	var seen []string
 	var mu sync.Mutex
@@ -179,6 +180,9 @@ func TestSafetyNetUnknownOwnerConnectorCallStillDrifts(t *testing.T) {
 	mu.Unlock()
 	if got := h.Server.RouteDrift(); got != 1 {
 		t.Fatalf("RouteDrift = %d, want 1 (an unrecorded connector id is a routing error, not the owner's own answer)", got)
+	}
+	if r := h.Records(t, "req", 1)[0]; r.UnknownOwner {
+		t.Fatalf("record = %+v, want no UnknownOwner (connectors are never probed)", r)
 	}
 }
 
@@ -326,7 +330,8 @@ func TestSafetyNetServingRefusalIsReportedNotCountedAsDrift(t *testing.T) {
 		{"other serving path 404 stays drift", "POST", "https://api.anthropic.com/v1/messages/count_tokens", 404, 1, 0},
 		{"unlisted route stays drift", "GET", "https://api.anthropic.com/some/new/route", 401, 1, 0},
 		{"serving object stays drift", "POST", "https://api.anthropic.com/v1/sessions/sess-1/events", 401, 1, 0},
-		{"object", "GET", "https://api.anthropic.com/api/frame/read/artifact-1", 401, 1, 0},
+		// A remote object whose owner is unknown is reported as that, not drift (M12).
+		{"object, unknown owner, no drift", "GET", "https://api.anthropic.com/api/frame/read/artifact-1", 401, 0, 0},
 		{"remote", "POST", "https://api.anthropic.com/api/frame/deploy/prepare", 401, 1, 0},
 	}
 	for _, c := range cases {
@@ -409,13 +414,14 @@ func TestSafetyNetServingRefusalWithNoOriginalIsNotResent(t *testing.T) {
 
 // TestSafetyNetRouteDriftCountsConcurrentSwaps drives RouteDrift's counter
 // concurrently under -race: a plain uint64++ would both race and undercount.
-// It uses an object route: a refused serving route is not drift (R158).
+// It uses an owner-mapped object route: a refused serving route is not drift
+// (R158), and neither is an unknown-owner object (M12).
 func TestSafetyNetRouteDriftCountsConcurrentSwaps(t *testing.T) {
 	const n = 20
 	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound) // refused on every login
 	})
-	ch := &refusingChooser{}
+	ch := &ownerMappedChooser{account: "owner-acct"}
 	h := proxytest.Start(t, up, proxytest.Options{Choose: ch})
 
 	var wg sync.WaitGroup
@@ -642,7 +648,7 @@ func TestSafetyNetObject404StillDrifts(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNotFound)
 	})
-	ch := &refusingChooser{}
+	ch := &ownerMappedChooser{account: "owner-acct"}
 	h := proxytest.Start(t, up, proxytest.Options{Choose: ch})
 	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/frame/read/artifact-1", nil)
 	req.Header.Set("Authorization", "Bearer sk-ant-oat01-home")
@@ -654,10 +660,10 @@ func TestSafetyNetObject404StillDrifts(t *testing.T) {
 	if d := h.Server.RouteDrift(); d != 1 {
 		t.Fatalf("RouteDrift = %d, want 1", d)
 	}
-	if ch.refreshes != 1 {
-		t.Fatalf("refreshes = %d, want 1", ch.refreshes)
+	if n := ch.refreshCount(); n != 1 {
+		t.Fatalf("refreshes = %d, want 1", n)
 	}
-	if r := h.Records(t, "req", 1)[0]; r.Passed404 || !r.Drift {
-		t.Fatalf("record = %+v, want drift and not passed404", r)
+	if r := h.Records(t, "req", 1)[0]; r.Passed404 || r.UnknownOwner || !r.Drift {
+		t.Fatalf("record = %+v, want drift (owner-mapped), not passed404 or unknown-owner", r)
 	}
 }

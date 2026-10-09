@@ -633,19 +633,31 @@ daemon is currently passing requests through on Home's login instead of
 the account you chose. Also `chottag ls`. It takes no flags. With more than
 one pool it adds a `POOLS` column and a line per pool (see below).
 
-A reading older than 10 minutes is shown with its age instead of as a live
-number: `45% (2h ago)`. The daemon polls an idle account about every 30
-minutes (the remote and other rotation-off accounts every 2 hours), so an
-age beyond that points to an account the poll cannot reach (`needs-login`,
-or a poll that keeps failing). `unknown` means chottag has never read the
-account's usage. In `--json` such an account has `stale: true` and the
-reading's time in `usage.updatedAt`. A window that has reset since an old reading shows `unknown (reset since)`.
+A cell shows its reading's age (`45% (2h ago)`) only when the reading is
+older than the account's poll interval plus 15 minutes: 45 minutes for a
+rotating account, 2 hours 15 minutes for a rotation-off one (the daemon polls
+an idle account about every 30 minutes, the remote and other rotation-off
+accounts every 2 hours). A younger reading shows the plain number, so an
+age points to an account the poll cannot reach (`needs-login`, or a poll that
+keeps failing). A window that has reset since an old reading shows
+`unknown (reset since)`. `unknown` means chottag has never read the account's
+usage. In `--json` an account whose reading is older than 10 minutes, or never read, has
+`stale: true` and the reading's time in `usage.updatedAt`; that contract does
+not change.
+
+`STATE` is `ok` when the account is not limited, not passing through and its
+reading is within that window, `stale` when the reading is older (its cells
+show the age), and `no reading` when chottag has never read the account's
+usage. `limited ...` and `passthrough: ...` take precedence.
 
 Each 5h and 7d cell ends with `↻` and the window's next reset when it is
-known and still ahead, in your local time and the same short form as the
-status line: `28% ↻ 3h20m`, `99% (16h ago) ↻ Fri 18:00`. A cell that is
-`unknown`, or whose reset time is unknown or already past, has no `↻`.
-`--json` already carries the times as `fiveHourResetsAt` and `sevenDayResetsAt`.
+known and still ahead. Under 5 hours it is the time left (`<1m`, `42m`,
+`2h41m`, `3h` on the hour); beyond that it is a clock time in your local
+time: `23:59` later the same day, `Thu 08:00` within 6 days, `Oct 9 18:00`
+after that: `28% ↻ 3h20m`, `99% (16h ago) ↻ Fri 18:00`. The status line keeps
+its compact time-left form. A cell that is `unknown`, or whose reset time is
+unknown or already past, has no `↻`. `--json` already carries the times as
+`fiveHourResetsAt` and `sevenDayResetsAt`.
 
 ```json
 {
@@ -767,6 +779,8 @@ status line: `28% ↻ 3h20m`, `99% (16h ago) ↻ Fri 18:00`. A cell that is
   },
   "policy": "spread",
   "pin": "work",
+  "names": "on",
+  "lostSessions": 2,
   "pools": [
     {
       "name": "default",
@@ -823,6 +837,14 @@ two fields, and `userChosen`, for each pool other than `default`. An account's `
 lists the pools it is in, and `shared` is `true` when that is more than one:
 they then share its usage limit. A session's `pool` (in `sessions`) says which
 pool it runs in.
+
+`names` is always present (`on`, `model` or `off`); the text form prints a
+`names:` line only when it is not `on`.
+
+`lostSessions` is how many sessions were lost together at the last crash or
+cmux quit and wait for [`chottag resume`](#chottag-resume); it is omitted when
+there are none, and the text form prints one line for it (`2 sessions were lost
+at 18:01: chottag resume`).
 
 The text form adds a `POOLS` column after `NAME` (`personal,work`), and
 after the table one line per pool:
@@ -1087,7 +1109,7 @@ Its checks, in the order they run:
 | `daemon-identity` | a running daemon proved it holds this install's proxy secret | `chottag daemon restart` |
 | `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
 | `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
-| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted | `chottag trace on` |
+| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a request for an object whose owner chottag does not know is not counted (it gets its own notice, `chottag: an artifact's owner is unknown`, at most once an hour per account); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted | `chottag trace on` |
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |
@@ -1143,6 +1165,31 @@ including the ok ones) and `problems` (the problem count) travel under
     ],
     "problems": 1
   }
+}
+```
+
+### `chottag names`
+
+```sh
+chottag names [on|model|off]
+```
+
+Shows or sets session naming (see [`chottag name-session`](#chottag-name-session)).
+`on`, the default, names a session after its branch, then Claude Code's title.
+`model` also asks Claude Code (Haiku) for a short topic at the first prompt of
+a session with no branch. `off` names nothing. With no value it prints the
+mode, in one line (`names: on (branch, then Claude's title)`). It is stored in
+`state.json` and read on each prompt, so a change needs no restart. `chottag
+status` shows a `names:` line when the mode is not `on`. A bad value exits 2.
+`CHOTTAG_NAME_SESSIONS` overrides it when set; see
+[`chottag name-session`](#chottag-name-session).
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "names": "model"
 }
 ```
 
@@ -1209,6 +1256,215 @@ a daemon from before 0.7.0 ignores the policy and, the next time it writes
 takes effect. The warning does not refuse the change, and `tag NAME` under
 spread gives it too. No daemon, or one at the same or a newer version, gives
 none.
+
+## Sessions
+
+After cmux quits or the Mac crashes, every open Claude Code session dies. The
+shim writes one journal entry per session it launches (under
+`$CHOTTAG_HOME/sessions/`), the daemon records each session's Claude Code id
+and when it ended, and these two commands read it. Only sessions launched
+through chottag's `claude` shim are known. The guide is [Getting sessions back
+after a crash](resume.md). `chottag sessions` and `chottag
+resume` end the entries whose process is gone themselves, so neither needs the
+daemon.
+
+The *lost batch* is the set of sessions that died together at the last crash
+or cmux quit: they ended with their shell (not by `/exit`), within two minutes
+of the newest one, are not already running again, and have been seen sending a
+request (so there is a Claude Code id to resume), one per id. Only a session
+that ended within the last 24 hours counts for the default batch of `sessions`
+and `resume` and for the `status` hint (an older loss is most likely a tab you
+closed on purpose); `sessions --all` lists everything. A session that started
+before the machine last booted is always treated as lost, since its process id
+may belong to another process now.
+
+### `chottag sessions`
+
+```sh
+chottag sessions [--all] [--json]
+```
+
+Lists the lost batch (sessions lost in the last 24 hours), each with the command `chottag resume` would run. With
+`--all` it lists every recorded session instead, newest first: its `STATE` is
+`running`, `exited` (it ended with its shell alive), `lost` or `resumed`. It
+takes no arguments.
+
+| Flag | Meaning |
+|---|---|
+| `--all` | every recorded session, not only the lost batch |
+
+```text
+DIR                    POOL      STATE   ENDED             TITLE           COMMAND
+/Users/alice/acme-api  default   lost    2026-10-06 18:01  Fix Acme login  cd '/Users/alice/acme-api' && claude --resume 1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed
+```
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "sessions": [
+    {
+      "pid": 4242,
+      "dir": "/Users/alice/acme-api",
+      "pool": "default",
+      "native": "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+      "started": "2026-10-06T16:10:00Z",
+      "ended": "2026-10-06T18:01:00Z",
+      "outcome": "lost",
+      "resumed": "2026-10-06T18:05:00Z",
+      "cmuxWorkspace": "E72B0882-62C2-44E3-9566-AAFA22CE3974",
+      "cmuxSurface": "E983EC5D-2601-4C14-894B-05EDB2CC3ADD",
+      "command": "cd '/Users/alice/acme-api' && claude --resume 1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+      "title": "Fix Acme login"
+    }
+  ]
+}
+```
+
+The example shows every field at once (the docs tests require it): a row has `resumed` only after it was resumed (then `--all` only, and it has no `command`). `sessions` is `[]` when there is nothing to list (the text form says `no lost
+sessions`). `pool`, `native`, `ended`, `outcome`, `resumed`, `cmuxWorkspace` and
+`cmuxSurface` are omitted when unknown (a running session has no `ended`). The
+`command` is set only for the sessions in the lost batch (also under `--all`).
+
+`title` (and the `TITLE` column, `-` when empty) is the session's name in Claude
+Code, read live from its transcript and never stored: the last `custom-title`
+(a `/rename`, or the name `chottag name-session` set) if there is one, else the
+last `ai-title` (the title Claude Code generates after the first prompt). It
+is omitted when the transcript has neither or cannot be found. chottag reads
+only those two record types, under `CLAUDE_CONFIG_DIR` or `~/.claude`. Control
+characters are stripped.
+
+### `chottag resume`
+
+```sh
+chottag resume [--pick] [--print] [--json]
+```
+
+Relaunches the lost batch, each session in its own directory and pool
+(`cd '<dir>' && claude --resume <id>`, with `CHOTTAG_POOL=<pool>` before
+`claude` outside `default`). cmux's tabs survive a relaunch, so each session
+goes back where it was and never types into a busy tab:
+
+1. its old cmux tab is still there and idle (only shells running in it):
+   `tab`, the command is sent into it;
+2. the tab is gone or busy but its workspace is there: `new-tab`, one new tab
+   in that workspace;
+3. the workspace is gone too: `new-workspace`, one new workspace per old
+   workspace (named after the first session's directory), then a `new-tab`
+   in it for each other session from it;
+4. no cmux (or `--print`, or no tab was recorded): `print`, the command is
+   printed for you to run.
+
+Each relaunched session is marked resumed, so a second `chottag resume` does
+nothing, and a session that is already running again is never started twice. A
+`cmux` error fails that one session (`failed`, not marked, so it shows up
+again) and the rest go on. The `print` placement without `--print` is marked
+only when there is no cmux at all, since its command was shown to be run. When
+cmux exists but `cmux top` fails, the commands are printed (with a warning on
+stderr) and nothing is marked, like `--print`, so the next run still offers
+them. The tab `chottag resume` itself runs in counts as idle: cmux types the
+command there and the shell reads it once `chottag` exits. A second `chottag
+resume` started while one runs fails at once (`resume_busy`; the lock is
+`sessions/resume.lock`). With nothing to resume it
+prints `chottag: no lost sessions to resume` and exits 0.
+
+| Flag | Meaning |
+|---|---|
+| `--pick` | list the sessions numbered and read a choice from stdin: numbers separated by spaces or commas, `all`, or an empty line to cancel (refused with `--json`) |
+| `--print` | only print each command, and mark nothing |
+
+The text form is one line per session: `resumed /Users/alice/acme-api in its
+tab` (or `in a new tab`, `in a new workspace`), the bare command for `print`,
+or `failed <dir>: <error>`.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "sessions": [
+    {
+      "dir": "/Users/alice/acme-api",
+      "pool": "default",
+      "native": "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+      "ended": "2026-10-06T18:01:00Z",
+      "placement": "tab",
+      "command": "cd '/Users/alice/acme-api' && claude --resume 1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+      "title": "Fix Acme login",
+      "error": ""
+    }
+  ]
+}
+```
+
+The example shows every field (the docs tests require it). `placement` is `tab`, `new-tab`, `new-workspace`, `print` or `failed`; `error`
+is present only for `failed`. `title` is as in `chottag sessions` and is omitted when empty; `--pick` shows it after each directory. If any session failed, the command exits 1 with
+the error code `resume_failed` and the rows under `error.sessions`. `--pick`
+with `--json`, a choice that is not a listed number or `all`, and any argument
+are exit 2, code `usage`. `chottag status` shows `N sessions were lost at
+18:01: chottag resume` while a batch is waiting, and `lostSessions` in its
+JSON.
+
+### `chottag name-session`
+
+```sh
+chottag name-session
+```
+
+The Claude Code hook that names a session automatically. It is not run
+by hand: the chottag plugin registers it for `UserPromptSubmit`, and it reads the hook's
+JSON on stdin (`hook_event_name`, `session_id`, `transcript_path`, `cwd`,
+`source`, `session_title`). It does not support `--json` (it is a hook, not a
+JSON command) and takes no arguments; run as a hook it always exits 0, and
+only an argument or `--json` makes it exit 2. It prints either nothing or one line,
+`{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","sessionTitle":"NAME"}}`,
+which Claude Code applies like `/rename`.
+
+- The name is the checkout's branch at `cwd`, last path segment only
+  (`feat/m12-owner-discovery` gives `m12-owner-discovery`), read from the
+  `.git` files (a directory, or a worktree's `gitdir:` file) without running
+  git. On `main`, `master`, a detached HEAD or outside git it is `<folder>
+  HH:MM` in local time, from the session's first naming.
+- Once Claude Code has written the session's generated title (`ai-title`) into
+  its transcript, the name becomes `<name> · <title>` and chottag stops
+  reading. It reads only the first 4 MiB and the last 1 MiB of the
+  transcript, and only `ai-title` and `custom-title` records (it uses the
+  `ai-title` for the name), and only when `transcript_path` lies under
+  `projects/` of `CLAUDE_CONFIG_DIR` (else `~/.claude`). It names nothing when
+  `cwd` is empty or not an absolute path.
+- It acts only on `UserPromptSubmit`: a name set at `SessionStart` reaches the
+  transcript but not Claude Code's running-session listing (agent view and
+  prompt bar), and the same name sent again does not update it. So a new
+  session is named from its first prompt, and a resumed session that has no
+  name from its next prompt. A later prompt sends the name again only when it
+  changed (the upgrade with the generated title). A `SessionStart` input, from
+  a hook you wired yourself, prints nothing.
+- A session whose name chottag did not set (`-n`, `/rename`, a plan accept) is
+  left alone for good. chottag keeps, per session id, only a sha256 of the last
+  name it set and a done flag, in `$CHOTTAG_HOME/sessions/names/<id>`. It never
+  logs or stores a title.
+- If chottag has set a name for the session but the hook input carries no
+  `session_title`, it does nothing: the name may have been changed in a way it
+  cannot see, and it never overwrites a name you chose.
+- Names have control
+  characters stripped and are capped at 80 characters.
+- The mode comes from [`chottag names`](#chottag-names): `on`, `model` or
+  `off`. `CHOTTAG_NAME_SESSIONS` in the environment overrides it when set:
+  `0` is off and `model` is model; any other value is ignored.
+- `model` adds a topic to a session that has no branch.
+  At its first prompt only, when the name would be `<folder> HH:MM` and Claude
+  Code has made no title yet, chottag runs the real Claude Code once
+  (`claude -p --model haiku`, no session saved, hooks off, no tools, no MCP servers, 4 second limit)
+  with one plain instruction and the first 1000 characters of the prompt, for
+  example "Add a retry to the upload client". A short one-line reply becomes
+  `<folder> · <title>`. On any error, a long or multi-line reply, or a
+  timeout, the name stays `<folder> HH:MM`. The prompt goes only to that
+  process and is never logged or stored. The later upgrade keeps the folder:
+  `<folder> · <generated title>`.
+
+Without the plugin, add the two hooks to `~/.claude/settings.json` yourself;
+the snippet is in [Session names](resume.md#session-names).
 
 ## Pools
 
@@ -1674,6 +1930,7 @@ session counts as a chottag session when `HTTPS_PROXY`'s user name is
 | `/ct next` | `chottag next` (with `--pool P` in a session of pool `P`) | its text |
 | `/ct tag NAME` | `chottag tag NAME` (with `--pool P` likewise) | its text |
 | `/ct pool` | `chottag pool` | its text |
+| `/ct names [on|model|off]` | `chottag names [on|model|off]` | its text |
 | `/ct help`, or anything else | nothing | this list |
 
 `NAME` must be a valid account name, `[A-Za-z0-9][A-Za-z0-9._-]{0,31}` (so it
@@ -1830,6 +2087,8 @@ result is not text, the same line is a toast.
 | `not_in_pool` | 2 | the account is not in the pool named (`--pool`, `pool leave`) |
 | `pool_ambiguous` | 2 | `tag NAME` or `remote NAME` for an account in several pools, without `--pool` |
 | `pools_block_rollback` | 2 | `update --version` below 0.8.0 while pools beyond `default` exist: `chottag pool rm` them first |
+| `resume_busy` | 1 | another `chottag resume` is running (it holds `sessions/resume.lock`) |
+| `resume_failed` | 1 | `chottag resume` could not relaunch one or more sessions (a `cmux` error); `error.sessions` has every row, and a failed one stays in the batch |
 | `spread_next` | 2 | `next` (or a bare `tag`) under `chottag policy spread`: chottag places sessions itself; pin with `chottag tag NAME`, or `chottag policy serial` |
 
 ## Warning codes

@@ -114,3 +114,17 @@ func (t *Tracker) Forget(keep func(sid string) bool, now time.Time, grace time.D
 		}
 	}
 }
+
+// Natives returns each session id's latest native id, only for those that
+// have one.
+func (t *Tracker) Natives() map[string]string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := map[string]string{}
+	for sid, e := range t.m {
+		if e.native != "" {
+			out[sid] = e.native
+		}
+	}
+	return out
+}

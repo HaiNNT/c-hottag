@@ -388,3 +388,45 @@ func TestStatusShowsOldUsageWithItsAge(t *testing.T) {
 		}
 	}
 }
+
+// R169: the age and STATE window follow the account's rotation, through the
+// state.json overlay in runStatus.
+func TestStatusWindowFollowsRotation(t *testing.T) {
+	home := t.TempDir()
+	s := seedState(t, home, "D", "A")
+	if _, err := s.Update(func(st *store.State) error {
+		for i := range st.Accounts {
+			if st.Accounts[i].Name == "A" {
+				st.Accounts[i].NoRotate = true
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var f status.File
+	at := time.Now().Add(-time.Hour)
+	f.Observe("A", knownSnapshot(0.45, 0.45, at), noVerdict())
+	f.Observe("D", knownSnapshot(0.45, 0.45, at), noVerdict())
+	saveStatus(t, home, f)
+	_, out, errb := runHome(t, home, "status")
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		switch f[0] {
+		case "A":
+			if strings.Contains(line, "ago") || f[len(f)-1] != "ok" || !strings.Contains(line, "45%") {
+				t.Errorf("rotation-off row = %q, want plain 45%% and ok", line)
+			}
+		case "D":
+			if !strings.Contains(line, "45% (1h ago)") || f[len(f)-1] != "stale" {
+				t.Errorf("rotating row = %q, want (1h ago) and stale", line)
+			}
+		}
+	}
+	if t.Failed() {
+		t.Logf("output %q stderr %q", out, errb)
+	}
+}

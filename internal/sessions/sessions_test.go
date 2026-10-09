@@ -196,3 +196,15 @@ func TestAccountIsTheLastInferenceAccount(t *testing.T) {
 		t.Fatalf("Account = %q, want B", got)
 	}
 }
+
+func TestNativesLatestPerSID(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+	tr.Seen("s1", "p", "a", true, "N1", now)
+	tr.Seen("s1", "p", "a", true, "N2", now)
+	tr.Seen("s2", "p", "a", true, "", now)
+	got := tr.Natives()
+	if len(got) != 1 || got["s1"] != "N2" {
+		t.Fatalf("Natives = %v", got)
+	}
+}

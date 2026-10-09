@@ -265,6 +265,17 @@ the chat):
 3. **From another terminal.** `chottag status` shows `live sessions: N`,
    which goes up by one when a session starts through chottag.
 
+## Lost sessions
+
+If `chottag status` says `N sessions were lost at HH:MM`, cmux quit or the Mac
+crashed. Run `chottag sessions` to list them and tell the user. Run `chottag
+resume` only when they say yes: it types a `claude --resume` command into
+their terminal tabs. `chottag resume --print` only prints. Each listed
+session has a `title` when its transcript holds one. The plugin also runs
+`chottag name-session` as a Claude Code hook, to name sessions after their
+branch and generated title; it needs no action from you, and
+`chottag names off` turns it off, and `chottag names model` adds a short model-made topic to the name of a session with no branch. See [resume.md](resume.md).
+
 ## Managing chottag afterwards
 
 Once installed, drive chottag through its plugin skill

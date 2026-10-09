@@ -43,6 +43,10 @@ type Options struct {
 	OnUsageError     func(error)
 	// OnServingRefusal is Config.OnServingRefusal (R158).
 	OnServingRefusal func(account string, status int, resent bool, method, path string)
+	// OnUnknownOwner, OnOwnerFound and Now are Config's (M12/R168).
+	OnUnknownOwner func(account, kind, idHash string, status int)
+	OnOwnerFound   func(kind, idHash, found, tried string, status int)
+	Now            func() time.Time
 	// WallRetry is Config.WallRetry (M4 §4a).
 	WallRetry     func(ctx context.Context, account string, h http.Header) (bool, func(string, int))
 	UpstreamProxy *url.URL
@@ -155,6 +159,9 @@ func Start(t *testing.T, upstream http.Handler, opts Options) *Harness {
 		OnUsageError:     opts.OnUsageError,
 		WallRetry:        opts.WallRetry,
 		OnServingRefusal: opts.OnServingRefusal,
+		OnUnknownOwner:   opts.OnUnknownOwner,
+		OnOwnerFound:     opts.OnOwnerFound,
+		Now:              opts.Now,
 		UpstreamProxy:    opts.UpstreamProxy,
 		Version:          opts.Version,
 		ProxyAuth:        opts.ProxyAuth,

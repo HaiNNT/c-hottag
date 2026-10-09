@@ -552,8 +552,10 @@ test('/ct parsing: the verbs, a valid NAME, and help for anything else', () => {
   expect(parseCt('  next ')).toEqual({ verb: 'next' })
   expect(parseCt('pool')).toEqual({ verb: 'pool' })
   expect(parseCt('help')).toEqual({ verb: 'help' })
+  expect(parseCt('names')).toEqual({ verb: 'names' })
+  expect(parseCt('names model')).toEqual({ verb: 'names', name: 'model' })
   expect(parseCt('tag work-2.a_b')).toEqual({ verb: 'tag', name: 'work-2.a_b' })
-  for (const bad of ['tag --unpin', 'tag --json', 'tag -x', 'tag .hidden', 'tag _x', 'tag', 'tag a b', 'tag a;b', 'tag $(id)', 'tag ../x', 'tag ' + 'x'.repeat(33), 'status extra', 'next --force', 'pool add x', 'login', 'Status']) {
+  for (const bad of ['tag --unpin', 'tag --json', 'tag -x', 'tag .hidden', 'tag _x', 'tag', 'tag a b', 'tag a;b', 'tag $(id)', 'tag ../x', 'tag ' + 'x'.repeat(33), 'status extra', 'next --force', 'pool add x', 'names maybe', 'names on off', 'names --json', 'login', 'Status']) {
     expect(parseCt(bad)).toEqual({ verb: 'help' })
   }
 })
@@ -575,6 +577,17 @@ test('/ct runs the CLI with an argument list, strips colour, and adds the sessio
   expect(h.out.runs.filter((a: string[]) => a[1] === 'tag').at(-1)).toEqual(['chottag', 'tag', 'B', '--pool', 'work'])
   await run('pool')
   expect(h.out.runs.filter((a: string[]) => a[1] === 'pool').at(-1)).toEqual(['chottag', 'pool'])
+})
+
+test('/ct names runs chottag names with the mode and shows its text', async () => {
+  const h = harness({
+    run: (argv) => (argv[1] === 'statusline' ? { exitCode: 0, stdout: JSON.stringify(doc({ pool: 'work' })), stderr: '' } : { exitCode: 0, stdout: 'names: ' + (argv[2] || 'on') + '\n', stderr: '' }),
+  })
+  await h.start()
+  expect((await h.fire('command.run', { command: 'ct', args: 'names model' })).text).toBe('names: model')
+  expect(h.out.runs.filter((a: string[]) => a[1] === 'names').at(-1)).toEqual(['chottag', 'names', 'model'])
+  await h.fire('command.run', { command: 'ct', args: 'names' })
+  expect(h.out.runs.filter((a: string[]) => a[1] === 'names').at(-1)).toEqual(['chottag', 'names'])
 })
 
 test('/ct in the default pool adds no --pool, and help runs nothing', async () => {

@@ -1,11 +1,12 @@
 {
   "name": "chottag",
   "description": "Drive chottag (c-hottag) from Claude Code: switch the serving account, set the remote account, log accounts in, check limits and the install. On Claude Code 2.1.287+ a mod adds a status card, notices, /ct commands and a /login guard.",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "author": {
     "name": "HaiNNT"
   },
   "homepage": "https://github.com/HaiNNT/c-hottag",
   "repository": "https://github.com/HaiNNT/c-hottag",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "hooks": "./hooks/session-names.json"
 }

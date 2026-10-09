@@ -37,10 +37,14 @@ commands:
   own KIND ID [ACCOUNT]         re-attribute one claude.ai object, or print its owner
   rotate NAME [on|off]          include or exclude NAME from next rotation
   rename OLD NEW                rename an account (display name only; the slot and its login stay)
+  names [on|model|off]          show or set session names (on by default)
   notify [on|off]               show or set desktop notifications (macOS; on by default)
   auto [VERB]                   show auto-switch (on by default); VERB: on, off, mode M, set KEY VALUE, reset
   plan NAME TIER [--units N]    set NAME's plan tier for auto-switch: pro, max5x, max20x or team
   status [--json] (alias ls)    print each account's usage and limit state, and the live sessions
+  sessions [--all] [--json]     list the sessions lost together at the last crash or cmux quit; --all lists every recorded session
+  resume [--pick] [--print]     relaunch the lost sessions in their cmux tabs and directories; --pick chooses, --print only prints the commands
+  name-session                  the Claude Code hook that names a session after its branch and its generated title (reads the hook JSON on stdin)
   statusline [--json] [--cmux]  one line for Claude Code's status line: whether this session goes through chottag, and its account
   doctor [--fix]                check the install; --fix repairs what it safely can
   proxy run [flags]             run the routing proxy in the foreground
@@ -247,6 +251,8 @@ func dispatch(args []string, r *reporter) int {
 		return runRotate(args[1:], r)
 	case "rename":
 		return runRename(args[1:], r)
+	case "names":
+		return runNames(args[1:], r)
 	case "notify":
 		return runNotify(args[1:], r)
 	case "auto":
@@ -259,6 +265,12 @@ func dispatch(args []string, r *reporter) int {
 			return r.FailErr(err)
 		}
 		return runStatus(h, args[1:], r)
+	case "sessions":
+		return runSessions(args[1:], r)
+	case "resume":
+		return runResume(args[1:], os.Stdin, r)
+	case "name-session":
+		return runNameSession(args[1:], os.Stdin, r)
 	case "statusline":
 		return runStatusline(args[1:], r)
 	case "own":

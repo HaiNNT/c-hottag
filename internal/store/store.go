@@ -130,6 +130,9 @@ type State struct {
 	// explicit JSON null decodes to, is on. `chottag notify off` writes
 	// false, and `notify on` writes true.
 	Notify *bool `json:"notify,omitempty"`
+	// Names is the session-naming mode (R174): "on", "model" or "off". Absent
+	// is on; read it through NamesMode.
+	Names string `json:"names,omitempty"`
 	// Trace is the trace-mode window (M2c). nil (also what an explicit JSON
 	// null decodes to) is off. A pointer so a state that never traced
 	// writes no key.
@@ -209,6 +212,30 @@ func (s State) ResolvedPort() int {
 
 // NotifyOn reports whether desktop notifications are on. Absent is on (D12).
 func (s State) NotifyOn() bool { return s.Notify == nil || *s.Notify }
+
+// Session-naming modes (R174).
+const (
+	NamesOn    = "on"
+	NamesModel = "model"
+	NamesOff   = "off"
+)
+
+// NamesMode is the effective session-naming mode: absent or unknown is on.
+func (s State) NamesMode() string {
+	switch s.Names {
+	case NamesModel, NamesOff:
+		return s.Names
+	}
+	return NamesOn
+}
+
+// SetNames records the mode; "on" is stored as absent.
+func (st *State) SetNames(mode string) {
+	if mode == NamesOn {
+		mode = ""
+	}
+	st.Names = mode
+}
 
 // SetNotify records the switch explicitly. It stores a fresh pointer, so a
 // copy of the State taken before the call never sees the change.

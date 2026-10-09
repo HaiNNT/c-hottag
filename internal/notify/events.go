@@ -73,6 +73,9 @@ type Events struct {
 	// attempted (lowercased name), for the hourly limit.
 	refusedAt    map[string]time.Time
 	refusedCount atomic.Int32 // len(refusedAt), for AccountOK's lock-free fast path
+	// unknownAt is when each account's last unknown-owner notice was
+	// attempted (lowercased name), for the hourly limit (R168).
+	unknownAt map[string]time.Time
 	// noCandSent holds the pools whose no-candidate episode's notice was
 	// attempted (M4); one episode per pool, "" for a single-pool install (M8).
 	noCandSent map[string]bool
@@ -89,7 +92,7 @@ func NewEvents(cfg Config) *Events {
 	if cfg.Location == nil {
 		cfg.Location = time.Local
 	}
-	return &Events{cfg: cfg, needsLogin: map[string]bool{}, noCandSent: map[string]bool{}, refusedAt: map[string]time.Time{}}
+	return &Events{cfg: cfg, needsLogin: map[string]bool{}, noCandSent: map[string]bool{}, refusedAt: map[string]time.Time{}, unknownAt: map[string]time.Time{}}
 }
 
 // NeedsLogin reports that the selector found account's token needs a
@@ -181,6 +184,30 @@ func (e *Events) ServingRefused(account string, status int, resent bool) {
 	e.refusedAt[key] = now
 	e.mu.Unlock()
 	e.fire(servingRefusedMessage(account, status, resent))
+}
+
+// UnknownOwnerEvery is the least time between two unknown-owner notices for
+// one account.
+const UnknownOwnerEvery = time.Hour
+
+// UnknownOwner reports that account could not open a claude.ai object of kind
+// and that chottag does not know which account made it (R168); other accounts
+// of the pool may or may not have been tried. It is not route drift. It
+// fires at most once per account per UnknownOwnerEvery.
+func (e *Events) UnknownOwner(account, kind string) {
+	if account == "" {
+		return
+	}
+	key := strings.ToLower(account)
+	now := e.cfg.Now()
+	e.mu.Lock()
+	if at, ok := e.unknownAt[key]; ok && now.Sub(at) < UnknownOwnerEvery {
+		e.mu.Unlock()
+		return
+	}
+	e.unknownAt[key] = now
+	e.mu.Unlock()
+	e.fire(unknownOwnerMessage(account, kind))
 }
 
 // Limits reports the roll-up.

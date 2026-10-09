@@ -49,6 +49,16 @@ notice; a later `/v1/mcp_servers` listing on another account doesn't fix
 it (`owners.json` is first-writer-wins) — `chottag own <kind> <id>
 <account>` reassigns it.
 
+## An object no account here can open
+
+For an object whose owner chottag does not know, chottag tries the pool's
+other accounts, but only for a `GET` or `HEAD`: a `POST` is never repeated on
+another account. An object that no account of the pool can open is reported
+once an hour per account (`chottag: an artifact's owner is unknown`) and is not
+tried again for an hour. It is not route drift. If it is yours, log in the account that made it, or use it from
+a terminal outside chottag (`CHOTTAG_BYPASS=1 claude` inside a chottag session
+still goes through chottag, because it inherits `HTTPS_PROXY`).
+
 ## Remote Control can still disconnect when a session's account is lost
 
 chottag keeps a session's validate answer on one account (see
@@ -73,6 +83,9 @@ the wrong account). Run `chottag remote <account>` for an account that can see
 it, or use it from a `CHOTTAG_BYPASS=1 claude` session. See
 [troubleshooting.md](troubleshooting.md).
 
+When the remote account's own login was stale (a 401), the first load
+refreshes it and may still fail; the next load discovers the owner.
+
 ## Linux
 
 Linux builds and passes CI, but has not been used for real yet.
@@ -93,6 +106,29 @@ cannot change where cmux's own setting points. Point it at chottag's own
 
 In a shell without cmux's claude function, chottag still runs (proxied),
 and cmux's hooks are what is lost.
+
+## Resuming sessions
+
+`chottag resume` only knows sessions launched through chottag's `claude`. A
+session you moved with `/cd` comes back in the directory it was launched in. A
+reused process id can hide one session until that process exits. Outside cmux
+it prints the command instead of running it. A session started with
+`claude --continue` names no id, so the id chottag captured may not be
+resumable. See
+[resume.md](resume.md).
+
+## Session names
+
+`chottag name-session` names a session by its branch (or folder and time) at
+its first prompt (a resumed session with no name, at its next prompt), and
+adds Claude Code's generated title at a later prompt, once it exists. Claude
+Code's running-session listing shows only a name set from a prompt hook, so
+there is no name before the first prompt. The transcript's format is internal to Claude Code, so a change there
+leaves the title empty and the name as the branch. A session you named yourself
+is never renamed. A forked session that carries the name chottag gave its parent is treated as named by you, so it keeps that name and is not upgraded. With `chottag names model`, the first prompt of a session that has no
+branch waits up to about 4 seconds while Claude Code makes a topic. On any
+error, long or multi-line reply, or timeout, the name falls back to
+`<folder> HH:MM`. See [resume.md](resume.md#session-names).
 
 ## Tools that ignore HTTPS_PROXY
 

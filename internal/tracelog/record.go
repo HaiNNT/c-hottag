@@ -45,14 +45,21 @@ type Record struct {
 	// answered 404, returned to Claude Code unchanged (F270): a Message
 	// Threads continue for a thread that account does not hold, which
 	// Claude Code retries as a create itself. Never set together with Drift.
-	Passed404 bool   `json:"passed404,omitempty"`
-	Status    int    `json:"status,omitempty"`
-	Millis    int64  `json:"ms,omitempty"`
-	ReqType   string `json:"reqType,omitempty"`
-	RespType  string `json:"respType,omitempty"`
-	Upgrade   string `json:"upgrade,omitempty"`
-	ReqShape  any    `json:"reqShape,omitempty"`
-	RespShape any    `json:"respShape,omitempty"`
+	Passed404 bool `json:"passed404,omitempty"`
+	// UnknownOwner marks a refused request for a claude.ai object whose
+	// owner chottag does not know (routed to the remote account as a
+	// fallback): not route drift (M12/R168). Refused holds the first status.
+	UnknownOwner bool `json:"unknownOwner,omitempty"`
+	// Discovered marks a request whose owner was found by trying the pool's
+	// other accounts; Account is the owner that answered (M12/R168).
+	Discovered bool   `json:"discovered,omitempty"`
+	Status     int    `json:"status,omitempty"`
+	Millis     int64  `json:"ms,omitempty"`
+	ReqType    string `json:"reqType,omitempty"`
+	RespType   string `json:"respType,omitempty"`
+	Upgrade    string `json:"upgrade,omitempty"`
+	ReqShape   any    `json:"reqShape,omitempty"`
+	RespShape  any    `json:"respShape,omitempty"`
 	// RespHeaderNames, RespLimitHeaders, RespErrorType and RespResetAt hold
 	// `trace run --limit-fingerprint`'s redacted usage-limit fingerprint
 	// (gate G6, spec §6.2): only they, never error.message or any other

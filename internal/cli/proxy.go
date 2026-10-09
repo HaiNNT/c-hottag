@@ -290,6 +290,8 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, autoUsageHook(as, newUsageHook(cache.State, sink, dn)), upstreamURL)
 	cfg.WallRetry = as.wallRetry
 	cfg.OnServingRefusal = servingRefusalHook(stderr, dn)
+	cfg.OnUnknownOwner = unknownOwnerHook(stderr, dn)
+	cfg.OnOwnerFound = ownerFoundHook(stderr)
 	// Test hooks only (proxy.Config's own doc comment: nil = the real
 	// net.Dialer and the system roots). Both are nil in every production
 	// build; a wiring test sets them to redirect every upstream dial to a
@@ -361,6 +363,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Update:     ul,
 			Restart:    rl,
 			Session:    newSessionWatcher(h, stderr),
+			Journal:    &journalPass{home: h, log: stderr},
 			Warm: &remoteWarmer{state: cache.State, warm: tm.Warm, probe: tm.LockedOut, sticky: stickyAccounts, log: stderr, now: timeNow,
 				needsLogin: func(account string) { recordNeedsLogin(sink, dn, account) },
 				wakeWarm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
@@ -857,6 +860,10 @@ type daemonDeps struct {
 	// and joins it for a bounded time (warmStopBound) before the owner map
 	// closes. nil (every test literal) warms nothing.
 	Warm *remoteWarmer
+	// Journal, if non-nil, records each session's Claude Code id and its end
+	// in the session journal on the roster tick (M11). nil (every test
+	// literal) records nothing.
+	Journal *journalPass
 }
 
 // rosterTickInterval is how often the roster watcher ticks in production.
@@ -1019,6 +1026,13 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		// only when the snapshot changed.
 		if d.Chooser != nil && d.Chooser.tracker != nil && d.Sink != nil {
 			stampSessions(d.Sink, d.Chooser.tracker, d.Home, now)
+		}
+		if d.Journal != nil {
+			var tr *sessions.Tracker
+			if d.Chooser != nil {
+				tr = d.Chooser.tracker
+			}
+			d.Journal.tick(tr, now)
 		}
 		if d.Spread != nil {
 			d.Spread.prune(liveKeep(d.Home), now)
@@ -2097,6 +2111,43 @@ func (c *chooser) Record(kind router.Kind, ids []string, account string) {
 
 // OwnerWriteDrops reports how many owner writes this chooser has discarded.
 func (c *chooser) OwnerWriteDrops() uint64 { return c.ownerWriteDrops.Load() }
+
+// OwnerCandidates is proxy.OwnerProber (M12, R168): the accounts to try for
+// an object whose owner is unknown, other than tried. They are the members of
+// the caller's own pool, in member order, each with a usable token from
+// ChooseNamed (which also keeps a rotation-off account out of a non-default
+// pool, R90), at most proxy.MaxOwnerProbes. An account of another pool is
+// never a candidate.
+func (c *chooser) OwnerCandidates(ctx context.Context, tried string) []proxy.Candidate {
+	if c.state == nil {
+		return nil
+	}
+	st, err := c.state()
+	if err != nil {
+		return nil
+	}
+	pool := store.DefaultPool
+	if id, ok := proxy.IdentityFrom(ctx); ok {
+		pool = c.poolFor(st, id.Caller.Pool)
+	}
+	var out []proxy.Candidate
+	for _, a := range st.Members(pool) {
+		// The caller's ctx carries one overall budget: once it is spent,
+		// the accounts not yet ready are dropped.
+		if len(out) >= proxy.MaxOwnerProbes || ctx.Err() != nil {
+			break
+		}
+		if strings.EqualFold(a.Name, tried) {
+			continue
+		}
+		ch, _ := c.sel.ChooseNamed(ctx, pool, a.Name)
+		if ch.Account == "" || ch.Token == "" {
+			continue
+		}
+		out = append(out, proxy.Candidate{Account: ch.Account, Token: ch.Token})
+	}
+	return out
+}
 
 // Refresh forces a refresh of that account's token after a swapped request
 // was refused, and reports the new token. It must not hand back the same

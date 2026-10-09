@@ -203,7 +203,7 @@ func TestRouteDriftFiresOncePerGeneration(t *testing.T) {
 	ev.RouteDrift(0)
 	ev.RouteDrift(1)
 	ev.RouteDrift(7)
-	want := [][2]string{{"chottag: route drift", "The daemon resent a swapped request unchanged; the route table may not match this Claude Code version. Run: chottag trace on"}}
+	want := [][2]string{{"chottag: route drift", "A swapped request was refused even after a retry; the route table may not match this Claude Code version. Run: chottag trace on"}}
 	if got := em.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("notices = %q\nwant %q", got, want)
 	}
@@ -504,5 +504,53 @@ func TestServingRefusedLimitIsClearedWhenTheAccountAnswersOK(t *testing.T) {
 	ev.ServingRefused("C", 401, true)
 	if got := em.all(); len(got) != 3 {
 		t.Fatalf("notices = %q, want 3", got)
+	}
+}
+
+// R168: an object nobody here can open has its own notice, at most once per
+// account per hour; the texts are held exactly and it is not route drift.
+func TestUnknownOwnerFiresOncePerAccountPerHour(t *testing.T) {
+	ev, em, now, _ := newTestEvents()
+	ev.UnknownOwner("C", "artifact")
+	ev.UnknownOwner("c", "environment") // same account, any case and kind
+	ev.UnknownOwner("D", "environment")
+	want := [][2]string{
+		{"chottag: an artifact's owner is unknown", "C could not open it, and chottag doesn't know which account made it. This is not route drift."},
+		{"chottag: an environment's owner is unknown", "D could not open it, and chottag doesn't know which account made it. This is not route drift."},
+	}
+	if got := em.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %q\nwant %q", got, want)
+	}
+	*now = now.Add(UnknownOwnerEvery - time.Second)
+	ev.UnknownOwner("C", "artifact")
+	if got := em.all(); len(got) != 2 {
+		t.Fatalf("a notice fired inside the hour: %q", got)
+	}
+	*now = now.Add(time.Second)
+	ev.UnknownOwner("C", "artifact")
+	if got := em.all(); len(got) != 3 {
+		t.Fatalf("notices = %q, want a third after the hour", got)
+	}
+	ev.UnknownOwner("", "artifact")
+	if got := em.all(); len(got) != 3 {
+		t.Fatalf("an empty account fired a notice: %q", got)
+	}
+}
+
+// The title's article follows the kind's first letter.
+func TestUnknownOwnerTitleArticle(t *testing.T) {
+	want := map[string]string{
+		"session":     "chottag: a session's owner is unknown",
+		"connector":   "chottag: a connector's owner is unknown",
+		"artifact":    "chottag: an artifact's owner is unknown",
+		"environment": "chottag: an environment's owner is unknown",
+	}
+	for kind, title := range want {
+		ev, em, _, _ := newTestEvents()
+		ev.UnknownOwner("A", kind)
+		got := em.all()
+		if len(got) != 1 || got[0][0] != title {
+			t.Errorf("%s: notices = %q, want title %q", kind, got, title)
+		}
 	}
 }

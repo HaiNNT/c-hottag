@@ -16,6 +16,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/daemonlock"
 	"github.com/HaiNNT/c-hottag/internal/exit"
 	"github.com/HaiNNT/c-hottag/internal/fsutil"
+	"github.com/HaiNNT/c-hottag/internal/journal"
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/redact"
 	"github.com/HaiNNT/c-hottag/internal/session"
@@ -523,6 +524,14 @@ func Run(args []string, home string, env []string, version string, stdout, stder
 			fmt.Fprintln(stderr, "chottag: could not open the session registry:", err)
 		} else if err := reg.Put(entry); err != nil {
 			fmt.Fprintln(stderr, "chottag: could not register the session:", err)
+		}
+		if j, err := journal.Open(filepath.Join(home, "sessions")); err != nil {
+			fmt.Fprintln(stderr, "chottag: could not record the session:", err)
+		} else {
+			dir, _ := os.Getwd()
+			if err := j.Put(journalEntry(entry.PID, os.Getppid(), entry.Started, sid, pool, dir, env, args)); err != nil {
+				fmt.Fprintln(stderr, "chottag: could not record the session:", err)
+			}
 		}
 	}
 

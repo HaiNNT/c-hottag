@@ -64,6 +64,8 @@ import (
 // below except invariant 1 and 5's rc/tree assertions) opts back in by
 // calling shim.SetSeamsForTest itself and restoring on cleanup, exactly the
 // way internal/shim's own tests opt in with swapExec/swapSpawn.
+var testClaudeConfigDir string
+
 func TestMain(m *testing.M) {
 	shim.SetSeamsForTest(
 		func(bin string, args, env []string) error {
@@ -94,6 +96,29 @@ func TestMain(m *testing.M) {
 			"must stub it with SetCredsDeleteForTest. The real one deletes from " +
 			"the user's Keychain on darwin.")
 	})
+	// sessions and resume read a transcript's title (R171) from Claude's
+	// config dir; default it to an empty directory so no test reads the
+	// real ~/.claude. A test that wants transcripts sets its own.
+	if d, err := os.MkdirTemp("", "chottag-test-claude-config"); err == nil {
+		os.Setenv("CLAUDE_CONFIG_DIR", d)
+		testClaudeConfigDir = d
+	}
+	// nameSessionModelRun (name_session.go) runs the real Claude Code for a
+	// model title (R172); a test that reaches it must stub it.
+	nameSessionModelRun = func(context.Context, string, []string, []string, string) ([]byte, error) {
+		panic("cli.nameSessionModelRun reached: stub it in the test")
+	}
+	// journalAlive (journal_tick.go) probes real pids; a test that reaches
+	// it must stub it.
+	journalAlive = func(int) bool { panic("cli.journalAlive reached: stub it in the test") }
+	// journalBootTime (boottime.go) reads the machine's real boot time. Every
+	// daemon test reaches it through the journal pass, so the default is the
+	// deterministic "unknown" (zero), not a panic; a test of the boot rule
+	// stubs it.
+	journalBootTime = func() time.Time { return time.Time{} }
+	// cmuxRun and cmuxFind (resume.go) run and locate the real cmux.
+	cmuxRun = func(string, []string, []string) ([]byte, error) { panic("cli.cmuxRun reached: stub it in the test") }
+	cmuxFind = func() string { panic("cli.cmuxFind reached: stub it in the test") }
 	// daemonChdir (daemon.go) is `daemon run`'s chdir to its home (L5). A
 	// safe no-op, not a panic: many daemon tests reach it, and a real chdir
 	// would move this whole test binary's cwd. TestDaemonRunChdirsToItsHome
@@ -341,6 +366,9 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(fakeClaudeDir)
 	os.RemoveAll(safeHome)
+	if testClaudeConfigDir != "" {
+		os.RemoveAll(testClaudeConfigDir)
+	}
 	os.Exit(code)
 }
 
