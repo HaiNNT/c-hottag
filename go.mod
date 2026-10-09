@@ -1,3 +1,3 @@
 module github.com/HaiNNT/c-hottag
 
-go 1.27.1
+go 1.27.2

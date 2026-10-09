@@ -9,7 +9,7 @@
 
 // MOD_VERSION is this plugin's version, set by `scripts/release bump` and tested
 // against plugin.json. A chottag newer than it means the plugin is behind.
-export const MOD_VERSION = '0.10.0'
+export const MOD_VERSION = '0.10.1'
 const VERSION_CHECK_MS = 600000
 const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]*)?/
 const CLEAN_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,64}$/

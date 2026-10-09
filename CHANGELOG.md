@@ -7,6 +7,14 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.1] - 2026-10-09
+
+### Security
+
+- Built with Go 1.27.2, which fixes the `net/http` advisories GO-2026-6611, GO-2026-6612, GO-2026-6613 and GO-2026-6617 in v0.10.0's binaries.
+
+  See [release notes](docs/release-notes/v0.10.1.md).
+
 ## [0.10.0] - 2026-10-09
 
 ### Added
@@ -409,6 +417,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.1]: docs/release-notes/v0.10.1.md
 [0.10.0]: docs/release-notes/v0.10.0.md
 [0.9.4]: docs/release-notes/v0.9.4.md
 [0.9.3]: docs/release-notes/v0.9.3.md
