@@ -607,6 +607,12 @@ Re-attributes one already-created claude.ai object to `ACCOUNT`, or with no
 `ACCOUNT` prints its current owner. `KIND` is one of `session`,
 `environment`, `artifact` or `connector`. It takes no flags.
 
+A connector may be listed by several accounts. The query form then also
+prints `listed by:` those accounts (`listers` in the JSON); a call goes to
+the session pool's remote account when it listed the id, else to the printed
+owner. Setting an `ACCOUNT` on a connector pins it: the pin wins over the
+remote account.
+
 ```json
 {
   "version": 1,
@@ -615,9 +621,13 @@ Re-attributes one already-created claude.ai object to `ACCOUNT`, or with no
   "kind": "session",
   "id": "s_123",
   "account": "work",
-  "reassigned": true
+  "reassigned": true,
+  "listers": ["work", "home"]
 }
 ```
+
+`listers` appears only in the query form for a connector: the accounts that
+listed the id.
 
 ## Status and health
 

@@ -36,6 +36,11 @@ type ownResult struct {
 	ID         string `json:"id"`
 	Account    string `json:"account"`
 	Reassigned bool   `json:"reassigned"`
+	// Listers is set by the query form for a connector (R179): every account
+	// that listed the id. A call goes to the session pool's remote account
+	// when it is among them, else to Account (the first-wins owner, or the
+	// pin set by `own`).
+	Listers []string `json:"listers,omitempty"`
 }
 
 // ownRecoveredLine is the warning both forms print when owners.json had to
@@ -100,8 +105,15 @@ func runOwn(home string, args []string, r *reporter) int {
 		if !ok {
 			return r.Fail(exit.Error, codeNotFound, fmt.Sprintf("%s %s has no recorded owner", args[0], id), notFound)
 		}
+		res := ownResult{Kind: args[0], ID: id, Account: acct}
+		if kind == router.KindConnector {
+			res.Listers = own.Listers(kind, id)
+		}
 		r.Text("%s %s: %s\n", args[0], id, acct)
-		return r.OK(ownResult{Kind: args[0], ID: id, Account: acct})
+		if len(res.Listers) > 0 {
+			r.Text("listed by: %s\ncalls go to the session pool's remote account when it listed the id, else to %s\n", strings.Join(res.Listers, ", "), acct)
+		}
+		return r.OK(res)
 	}
 
 	s := store.Store{Dir: home}

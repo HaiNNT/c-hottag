@@ -33,7 +33,7 @@ func (t *Tx) Lookup(kind router.Kind, id string) (string, bool) {
 // Reassign sets an owner unconditionally, mirroring Map.Reassign: an
 // explicit owner change is intent, not observation.
 func (t *Tx) Reassign(kind router.Kind, id, account string, now time.Time) {
-	t.m[Key(kind, id)] = entry{Account: account, At: now}
+	t.m[Key(kind, id)] = entry{Account: account, At: now, Pinned: kind == router.KindConnector}
 }
 
 // RenameAccount rewrites every entry whose account is from
@@ -46,6 +46,10 @@ func (t *Tx) RenameAccount(from, to string) int {
 	for k, e := range t.m {
 		if strings.EqualFold(e.Account, from) && e.Account != to {
 			e.Account = to
+			if isListerKey(k) {
+				delete(t.m, k)
+				k = rekeyLister(k, to)
+			}
 			t.m[k] = e
 			n++
 		}

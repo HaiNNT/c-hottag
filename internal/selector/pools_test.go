@@ -2,8 +2,11 @@ package selector_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/owners"
 	"github.com/HaiNNT/c-hottag/internal/router"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/store"
@@ -41,7 +44,7 @@ func poolState(t *testing.T) store.State {
 	return st
 }
 
-func poolSelector(st store.State, owners fakeOwners) *selector.Selector {
+func poolSelector(st store.State, owners selector.Owners) *selector.Selector {
 	return selector.New(selector.Config{
 		State:  func() (store.State, error) { return st, nil },
 		Tokens: fakeTokens{"/slots/A": "tA", "/slots/B": "tB", "/slots/C": "tC", "/slots/D": "tD"},
@@ -181,5 +184,62 @@ func TestChooseInAnUnknownPoolIsDefault(t *testing.T) {
 	want := sel.Choose(context.Background(), router.Decision{Class: router.Serving}, "").Account
 	if got != want {
 		t.Fatalf("an unknown pool gave %q, Choose gave %q", got, want)
+	}
+}
+
+func TestChooseInAConnectorGoesToThePoolsRemoteWhenItListedTheID(t *testing.T) {
+	own, err := owners.Open(filepath.Join(t.TempDir(), "owners.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	now := time.Now()
+	c := router.KindConnector
+	// D's list was read first; A's (work's remote) came later.
+	for _, a := range []string{"D", "A"} {
+		if err := own.Record(c, []string{"mcpsrv_test1"}, a, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := own.Record(c, []string{"mcpsrv_only_d"}, "D", now); err != nil {
+		t.Fatal(err)
+	}
+	sel := poolSelector(poolState(t), own)
+	d := router.Decision{Class: router.Remote, Object: c, ObjectID: "mcpsrv_test1"}
+	if ch := sel.ChooseIn(context.Background(), d, "", "work", ""); ch.Account != "A" {
+		t.Fatalf("work (remote A) connector call went to %q, want A", ch.Account)
+	}
+	if ch := sel.ChooseIn(context.Background(), d, "", "personal", ""); ch.Account != "D" {
+		t.Fatalf("personal (remote D) connector call went to %q, want D", ch.Account)
+	}
+	d.ObjectID = "mcpsrv_only_d"
+	if ch := sel.ChooseIn(context.Background(), d, "", "work", ""); ch.Account != "D" {
+		t.Fatalf("only-D connector call went to %q, want D", ch.Account)
+	}
+}
+
+// R147 with R179: the remote listed the connector but has no usable login, so
+// the call is refused as the owner role, not sent to the other lister.
+func TestChooseInAConnectorWhoseRemoteNeedsLoginIsRefused(t *testing.T) {
+	own, err := owners.Open(filepath.Join(t.TempDir(), "owners.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	for _, a := range []string{"D", "A"} {
+		if err := own.Record(router.KindConnector, []string{"mcpsrv_test1"}, a, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := poolState(t)
+	sel := selector.New(selector.Config{
+		State:  func() (store.State, error) { return st, nil },
+		Tokens: fakeTokens{"/slots/D": "tD"}, // A has no login
+		Owners: own,
+	})
+	d := router.Decision{Class: router.Remote, Object: router.KindConnector, ObjectID: "mcpsrv_test1"}
+	got := sel.ChooseIn(context.Background(), d, "", "work", "")
+	if got.Account != "" || got.Refused == "" || got.RefusedAccount != "A" || got.RefusedRole != selector.RoleOwner {
+		t.Fatalf("choice = %+v, want a refusal naming A", got)
 	}
 }

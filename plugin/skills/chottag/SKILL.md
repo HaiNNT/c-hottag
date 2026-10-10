@@ -24,7 +24,7 @@ This skill covers what a Claude Code session needs day to day.
   `serving:` on `chottag status`'s first line (`serving: X   remote: Y`).
 - **remote**: the account that owns new claude.ai objects — the name after
   `remote:` on that same line: remote-control sessions, artifacts,
-  connectors. Existing objects stay with the account that created them.
+  connectors. Existing objects stay with the account that created them (a connector listed by several accounts goes to the pool's remote account when it listed it, unless `chottag own` pinned it).
   Routines are the exception: they always follow whichever account is
   remote.
 

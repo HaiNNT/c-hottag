@@ -36,6 +36,12 @@ type Owners interface {
 	Lookup(kind router.Kind, id string) (string, bool)
 }
 
+// preferringOwners is an Owners that can prefer an account when several
+// recorded it (R179: a connector id listed by more than one account).
+type preferringOwners interface {
+	LookupPreferring(kind router.Kind, id, prefer string) (string, bool)
+}
+
 // Event reports why a request was not sent as the account it should have
 // been. The daemon logs these; nothing here contains a token.
 type Event struct {
@@ -156,7 +162,7 @@ func (s *Selector) choose(ctx context.Context, d router.Decision, bodyID, pool s
 		st.Serving = *serving
 	}
 	name, role := s.byClass(&st, d)
-	if owner, ok := s.owner(d, bodyID); ok {
+	if owner, ok := s.owner(d, bodyID, st.Remote); ok {
 		if _, ok := findExact(&st, owner); ok {
 			name, role = owner, RoleOwner
 		} else {
@@ -312,7 +318,10 @@ func (s *Selector) byClass(st *store.State, d router.Decision) (name, role strin
 }
 
 // owner returns the account that created the object this request names.
-func (s *Selector) owner(d router.Decision, bodyID string) (string, bool) {
+//
+// remote is the session pool's remote account: a connector id that account
+// listed goes to it, however many accounts listed the id (R179).
+func (s *Selector) owner(d router.Decision, bodyID, remote string) (string, bool) {
 	if d.Object == "" {
 		return "", false
 	}
@@ -322,6 +331,9 @@ func (s *Selector) owner(d router.Decision, bodyID string) (string, bool) {
 	}
 	if id == "" {
 		return "", false
+	}
+	if p, ok := s.cfg.Owners.(preferringOwners); ok {
+		return p.LookupPreferring(d.Object, id, remote)
 	}
 	return s.cfg.Owners.Lookup(d.Object, id)
 }

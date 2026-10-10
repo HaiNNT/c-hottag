@@ -7,6 +7,12 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.3] - 2026-10-10
+
+### Fixed
+
+- A connector shared by several accounts (a first-party connector has the same id in each) now goes to the session pool's remote account when that account listed it, not always to the first account that did. An old `owners.json` entry heals on the remote account's next connector listing. `chottag own connector ID ACCOUNT` still pins an account, and the pin wins. `chottag own connector ID` also lists the accounts that listed the id (`listers` in `--json`).
+
 ## [0.10.2] - 2026-10-09
 
 ### Changed
@@ -435,6 +441,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.3]: docs/release-notes/v0.10.3.md
 [0.10.2]: docs/release-notes/v0.10.2.md
 [0.10.1]: docs/release-notes/v0.10.1.md
 [0.10.0]: docs/release-notes/v0.10.0.md

@@ -30,7 +30,10 @@ func CountByAccount(path string) (map[string]int, error) {
 		return nil, ErrCorrupt
 	}
 	counts := make(map[string]int)
-	for _, e := range m {
+	for k, e := range m {
+		if isListerKey(k) {
+			continue // a connector lister row, not an object
+		}
 		counts[e.Account]++
 	}
 	return counts, nil

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,34 @@ var ErrClosed = errors.New("owners: closed")
 type entry struct {
 	Account string    `json:"account"`
 	At      time.Time `json:"at"`
+	// Pinned is set by Reassign on a connector (`chottag own connector ID
+	// ACCOUNT`, R179): a pinned connector goes to Account even when the
+	// session pool's remote account listed it too. Absent in files older
+	// than R179, which reads as false.
+	Pinned bool `json:"pinned,omitempty"`
+}
+
+// listerKey is the key of one account's "I listed this connector" entry
+// (R179). A first-party connector has the same id in several accounts, and
+// "connector:ID" is first-wins, so it alone cannot say whether the pool's
+// remote account also listed the id. The extra keys have the same entry
+// shape (and so the same persistence, merge, eviction, Forget and
+// RenameAccount) and cannot collide with Key: their kind part holds an '@'.
+func listerKey(kind router.Kind, id, account string) string {
+	return string(kind) + "@" + strings.ToLower(account) + ":" + id
+}
+
+// rekeyLister is the key of lister row k after its account is renamed to to.
+func rekeyLister(k, to string) string {
+	kind, id, _ := strings.Cut(k, ":")
+	base, _, _ := strings.Cut(kind, "@")
+	return base + "@" + strings.ToLower(to) + ":" + id
+}
+
+// isListerKey reports whether k is a listerKey rather than an object key.
+func isListerKey(k string) bool {
+	kind, _, _ := strings.Cut(k, ":")
+	return strings.Contains(kind, "@")
 }
 
 type Map struct {
@@ -256,6 +285,42 @@ func (m *Map) Lookup(kind router.Kind, id string) (string, bool) {
 	return e.Account, ok
 }
 
+// Listers returns, sorted, the accounts that listed the connector id (R179),
+// as stored. Empty for other kinds and for ids recorded before R179.
+func (m *Map) Listers(kind router.Kind, id string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for k, e := range m.m {
+		if k == listerKey(kind, id, e.Account) {
+			out = append(out, e.Account)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// LookupPreferring is Lookup for a request routed by an object id, with the
+// session pool's remote account prefer (R179). For a connector it returns
+// prefer when that account listed the id, unless `chottag own` pinned the
+// connector to an account: a pin is an explicit decision and wins over the
+// remote account. Otherwise, and for every other kind, it is Lookup: the
+// first recorded owner.
+func (m *Map) LookupPreferring(kind router.Kind, id, prefer string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.m[Key(kind, id)]
+	if kind != router.KindConnector || prefer == "" || (ok && e.Pinned) {
+		return e.Account, ok
+	}
+	// EqualFold is belt and braces: a row whose key names prefer but whose
+	// account is another (a stale rename) must not route there.
+	if l, listed := m.m[listerKey(kind, id, prefer)]; listed && strings.EqualFold(l.Account, prefer) {
+		return l.Account, true
+	}
+	return e.Account, ok
+}
+
 // Record claims ownership of ids for account, for ids that have no owner
 // yet. It writes the file only if an id was new.
 //
@@ -274,6 +339,12 @@ func (m *Map) Lookup(kind router.Kind, id string) (string, bool) {
 // id it already knows (the skip happens before At would be touched), so an
 // entry's age always reflects when it was first created, never when it was
 // last seen.
+//
+// Connectors are the one exception to "one owner per id" (R179): a
+// first-party connector has the same id in every account, so each lister is
+// also remembered under its own listerKey, and LookupPreferring uses that to
+// route to the pool's remote account. The first-wins "connector:ID" entry
+// still exists and is what Lookup returns.
 func (m *Map) Record(kind router.Kind, ids []string, account string, now time.Time) error {
 	if account == "" {
 		return errors.New("owners: Record: account is empty")
@@ -286,13 +357,21 @@ func (m *Map) Record(kind router.Kind, ids []string, account string, now time.Ti
 	changed := false
 	for _, id := range ids {
 		k := Key(kind, id)
-		if _, exists := m.m[k]; exists {
-			continue
+		if _, exists := m.m[k]; !exists {
+			e := entry{Account: account, At: now}
+			m.m[k] = e
+			m.d.record(k, e)
+			changed = true
 		}
-		e := entry{Account: account, At: now}
-		m.m[k] = e
-		m.d.record(k, e)
-		changed = true
+		if kind == router.KindConnector {
+			lk := listerKey(kind, id, account)
+			if l, exists := m.m[lk]; !exists || !strings.EqualFold(l.Account, account) {
+				e := entry{Account: account, At: now}
+				m.m[lk] = e
+				m.d.record(lk, e)
+				changed = true
+			}
+		}
 	}
 	if !changed {
 		m.mu.Unlock()
@@ -323,7 +402,7 @@ func (m *Map) Reassign(kind router.Kind, id, account string, now time.Time) erro
 	}
 	m.mu.Lock()
 	k := Key(kind, id)
-	e := entry{Account: account, At: now}
+	e := entry{Account: account, At: now, Pinned: kind == router.KindConnector}
 	m.m[k] = e
 	m.d.force(k, e)
 	m.evict()
@@ -378,6 +457,13 @@ func (m *Map) RenameAccount(from, to string) (int, error) {
 	for k, e := range m.m {
 		if strings.EqualFold(e.Account, from) && e.Account != to {
 			e.Account = to
+			if isListerKey(k) {
+				// The key embeds the account name: re-key the row, or it
+				// would keep naming the old spelling (R179).
+				delete(m.m, k)
+				m.d.forget(k, from)
+				k = rekeyLister(k, to)
+			}
 			m.m[k] = e
 			m.d.force(k, e)
 			n++

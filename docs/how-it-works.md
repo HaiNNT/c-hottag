@@ -147,6 +147,17 @@ every later request about that object goes to its owner, not to whichever
 account happens to be `remote` at the time.
 `chottag own <kind> <id> [<account>]` shows or moves an object's owner.
 
+A connector is the exception: a first-party connector has the same id in
+several accounts, so chottag remembers every account that listed it. A
+connector call goes to the session pool's `remote` account when that
+account listed the id, and otherwise to the account that listed it first.
+An old entry that points at another account heals the next time the remote
+account lists its connectors. `chottag own connector <id> <account>` pins
+the connector to that account, and a pin wins over the remote account.
+A pin is lost when its account logs out (the daemon forgets that account's
+objects) or when the oldest entries are evicted; routing then falls back to
+the remote account's preference above.
+
 When chottag does not know an object's owner (an artifact made on claude.ai,
 say), a `GET` or `HEAD` for it goes to the `remote` account first. If that
 account is refused with a 403 or 404, chottag tries the other accounts of the

@@ -73,25 +73,25 @@ func TestSessionIDPrefixesShareAKey(t *testing.T) {
 func TestRecordSkipsNoOpsAndNeverOverwrites(t *testing.T) {
 	m, _ := owners.Open(filepath.Join(t.TempDir(), "owners.json"))
 	defer m.Close()
-	m.Record(router.KindConnector, []string{"a", "b"}, "B", t0)
+	m.Record(router.KindArtifact, []string{"a", "b"}, "B", t0)
 	w := owners.Writes(m)
-	m.Record(router.KindConnector, []string{"a", "b"}, "B", t0.Add(time.Hour))
+	m.Record(router.KindArtifact, []string{"a", "b"}, "B", t0.Add(time.Hour))
 	if owners.Writes(m) != w {
 		t.Fatal("unchanged Record rewrote the file")
 	}
 	// F19: a different account Record-ing an already-owned id must not move
 	// ownership, and must not write.
-	m.Record(router.KindConnector, []string{"a"}, "C", t0.Add(time.Hour))
-	if a, _ := m.Lookup(router.KindConnector, "a"); a != "B" {
+	m.Record(router.KindArtifact, []string{"a"}, "C", t0.Add(time.Hour))
+	if a, _ := m.Lookup(router.KindArtifact, "a"); a != "B" {
 		t.Fatalf("owner = %s, want B — Record must not overwrite a known owner (F19)", a)
 	}
 	if owners.Writes(m) != w {
 		t.Fatal("Record on an already-owned id wrote the file")
 	}
-	if err := m.Reassign(router.KindConnector, "a", "C", t0.Add(time.Hour)); err != nil {
+	if err := m.Reassign(router.KindArtifact, "a", "C", t0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if a, _ := m.Lookup(router.KindConnector, "a"); a != "C" {
+	if a, _ := m.Lookup(router.KindArtifact, "a"); a != "C" {
 		t.Fatalf("owner after Reassign = %s, want C", a)
 	}
 	if owners.Writes(m) != w+1 {
