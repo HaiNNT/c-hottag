@@ -105,7 +105,8 @@ func TestNameSessionModePrecedence(t *testing.T) {
 				t.Fatalf("names: %d %q", code, errs)
 			}
 			t.Setenv("CHOTTAG_NAME_SESSIONS", c.env)
-			out := e.hookPrompt(t, "Add a retry to the upload client")
+			e.hookPrompt(t, "Add a retry to the upload client") // the first prompt only waits
+			out := e.hookPrompt(t, "Then add a test")
 			if c.wantSilent != (out == "") {
 				t.Fatalf("out %q, silent want %v", out, c.wantSilent)
 			}
@@ -119,7 +120,8 @@ func TestNameSessionStoredModelReadsAsOn(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.home, "state.json"), []byte(`{"names":"model"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out := e.hookPrompt(t, "Add a retry"); !strings.Contains(out, `"sessionTitle":"Acme 09:07"`) {
+	e.hookPrompt(t, "Add a retry")
+	if out := e.hookPrompt(t, "Add a test"); !strings.Contains(out, `"sessionTitle":"Acme 09:07"`) {
 		t.Fatalf("out %q, want the fallback name", out)
 	}
 }
@@ -129,7 +131,8 @@ func TestNameSessionUnreadableStateMeansOn(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.home, "state.json"), []byte("{broken"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out := e.hookPrompt(t, "Add a retry"); !strings.Contains(out, `"sessionTitle":"x"`) {
+	e.hookPrompt(t, "Add a retry")
+	if out := e.hookPrompt(t, "Add a test"); !strings.Contains(out, `"sessionTitle":"x"`) {
 		t.Fatalf("out %q, want a branch name", out)
 	}
 }

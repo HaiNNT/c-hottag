@@ -7,6 +7,13 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.4] - 2026-10-11
+
+### Fixed
+
+- A session named by `chottag name-session` now gets its topic. Claude Code generates a title only for a session that has no name, so a session named at its first prompt stayed `<folder> HH:MM` (or the branch) for good. chottag now waits one prompt and names the session at the second, as `<branch> · <title>`.
+- The name follows the session: when it moves to another branch (it enters a worktree), the next prompt renames it after that branch. It used to keep the name from its first prompt.
+
 ## [0.10.3] - 2026-10-10
 
 ### Fixed
@@ -441,6 +448,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.4]: docs/release-notes/v0.10.4.md
 [0.10.3]: docs/release-notes/v0.10.3.md
 [0.10.2]: docs/release-notes/v0.10.2.md
 [0.10.1]: docs/release-notes/v0.10.1.md

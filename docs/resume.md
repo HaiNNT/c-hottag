@@ -68,11 +68,15 @@ as `<folder>-3f`, which says little. With the chottag plugin installed, chottag
 names each session for you through a `UserPromptSubmit` hook (`chottag
 name-session`):
 
-- at your first prompt, the branch you are on (`m12-owner-discovery`), or
-  `<folder> HH:MM` on `main`, a detached HEAD or outside git (a resumed
-  session with no name is named at its next prompt);
-- at a later prompt, once Claude Code has generated the session's title,
-  `<that> · <title>`.
+- at your second prompt, `<branch> · <title>`: the branch you are on
+  (`m12-owner-discovery`), or `<folder> HH:MM` on `main`, a detached HEAD or
+  outside git, then the title Claude Code generated from your first prompt.
+  chottag waits one prompt because Claude Code generates no title for a
+  session that already has a name. A resumed session that has a title is
+  named at its next prompt;
+- at any later prompt, the name follows the session: when it moves to another
+  branch (it enters a worktree, say), the branch part changes to it. Back on
+  `main`, the last branch stays.
 
 A session you name yourself (`claude -n`, `/rename`, or by accepting a plan)
 keeps your name: chottag never renames it, and it does nothing when it cannot see the session's current name. `chottag sessions` and `chottag
@@ -108,7 +112,7 @@ cmux can also resume agent sessions by itself. Turn off its
 - A reused process id can hide one session until that process exits. After a reboot this cannot happen: sessions from before it are always treated as lost.
 - A tab you closed while claude ran counts as lost for 24 hours.
 - The session id is recorded up to 15 seconds after it changes, so a `/clear` just before a crash resumes the conversation from before it.
-- A session is named by branch only until Claude Code has generated its title, which is after the first prompt, so the title shows from the second prompt on. The transcript format is internal to Claude Code: if it changes, the title is empty and the name stays the branch.
+- A session has no name from chottag until its second prompt: chottag waits for the title Claude Code generates after the first one, because a session that already has a name gets no generated title. A session named by chottag 0.10.3 or older at its first prompt therefore never gets a title. The transcript format is internal to Claude Code: if it changes, the title is empty and the name stays the branch.
 - Only one `chottag resume` runs at a time; a second one stops with an error.
 - Outside cmux, or for a session with no recorded tab, `chottag resume` prints the command instead of running it, and marks the session resumed. Only `--print` marks nothing.
 

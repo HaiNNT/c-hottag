@@ -226,7 +226,10 @@ func HashOf(name string) string {
 }
 
 // State is what chottag keeps per session: the hash of the last name it set,
-// and whether it is finished with the session.
+// and whether it is finished with the session. Done with no hash means the
+// user named the session; an empty state means one prompt was seen and no
+// name set yet. (Before 0.10.4, done with a hash meant the generated title
+// was in the name; that now reads as a name chottag still follows.)
 type State struct {
 	Hash string `json:"sha256,omitempty"`
 	Done bool   `json:"done,omitempty"`
@@ -325,6 +328,13 @@ type Env struct {
 
 // Decide returns the name to set, and whether to print it. A failure to
 // store state gives no name: it is better to name nothing than to repeat.
+//
+// While the name is still the one chottag set, it follows the session: the
+// base becomes the branch of the current cwd (a session that enters a
+// worktree is renamed after it), and the generated title is added once. A
+// session with no generated title yet is not named on its first prompt:
+// Claude Code generates no title for a session that already has a name
+// (F285), so naming it then would leave it without a topic for good.
 func Decide(in Input, env Env) (string, bool) {
 	// Only a UserPromptSubmit name reaches Claude Code's running-session
 	// listing; a SessionStart one reaches the transcript alone (F280).
@@ -338,7 +348,8 @@ func Decide(in Input, env Env) (string, bool) {
 		return "", false
 	}
 	st, have := LoadState(env.Home, in.SessionID)
-	if have && st.Done {
+	if have && st.Done && st.Hash == "" {
+		// Named by the user or a plan accept: left alone, for good.
 		return "", false
 	}
 	if have && st.Hash != "" && in.SessionTitle == "" {
@@ -346,39 +357,34 @@ func Decide(in Input, env Env) (string, bool) {
 		// changed in a way we cannot see. Never overwrite a user's /rename.
 		return "", false
 	}
-	var base string
+	var base, title string
 	if in.SessionTitle != "" {
 		if !have || st.Hash == "" || HashOf(in.SessionTitle) != st.Hash {
-			// Named by the user or a plan accept: leave it alone, for good.
 			_ = SaveState(env.Home, in.SessionID, State{Done: true})
 			return "", false
 		}
-		base, _, _ = strings.Cut(in.SessionTitle, sep)
+		base, title, _ = strings.Cut(in.SessionTitle, sep)
 	}
-	if base == "" {
-		base = BranchBase(in.Cwd)
+	if b := BranchBase(in.Cwd); b != "" {
+		base = b
 	}
-	var title string
-	if TranscriptAllowed(in.TranscriptPath, env.ConfigDir) {
+	if title == "" && TranscriptAllowed(in.TranscriptPath, env.ConfigDir) {
 		title, _ = Titles(in.TranscriptPath, HeadBytes, TailBytes)
 	}
-	generated := title != ""
+	if title == "" && !have {
+		// First prompt, no generated title yet: wait one prompt for it.
+		_ = SaveState(env.Home, in.SessionID, State{})
+		return "", false
+	}
 	if base == "" {
 		folder := filepath.Base(filepath.Clean(in.Cwd))
 		base = folder + " " + env.Now().Format("15:04")
 	}
 	name := Compose(base, title)
-	if name == "" {
+	if name == "" || name == in.SessionTitle {
 		return "", false
 	}
-	done := generated
-	if name == in.SessionTitle {
-		if done {
-			_ = SaveState(env.Home, in.SessionID, State{Hash: HashOf(name), Done: true})
-		}
-		return "", false
-	}
-	if err := SaveState(env.Home, in.SessionID, State{Hash: HashOf(name), Done: done}); err != nil {
+	if err := SaveState(env.Home, in.SessionID, State{Hash: HashOf(name)}); err != nil {
 		return "", false
 	}
 	return name, true

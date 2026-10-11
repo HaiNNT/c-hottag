@@ -119,13 +119,20 @@ resumable. See
 
 ## Session names
 
-`chottag name-session` names a session by its branch (or folder and time) at
-its first prompt (a resumed session with no name, at its next prompt), and
-adds Claude Code's generated title at a later prompt, once it exists. Claude
-Code's running-session listing shows only a name set from a prompt hook, so
-there is no name before the first prompt. The transcript's format is internal to Claude Code, so a change there
-leaves the title empty and the name as the branch. A session you named yourself
-is never renamed. A forked session that carries the name chottag gave its parent is treated as named by you, so it keeps that name and is not upgraded. A session with no branch is named `<folder> HH:MM`, then `<folder> · <title>` once Claude Code has made its title. See [resume.md](resume.md#session-names).
+`chottag name-session` names a session at its second prompt, as `<branch> ·
+<title>` (`<folder> HH:MM` when there is no branch). It does nothing at the
+first prompt: Claude Code generates a title only for a session that has no
+name yet, so a name set then would leave the session without a title for
+good, which is what happened up to 0.10.3. A session whose title is still
+missing at the second prompt is named by its branch alone, and then never
+gets a title. While the name is chottag's, a later prompt renames the session
+after the branch it moved to (a worktree it entered); the name changes at the
+next prompt, not at the move. Claude Code's running-session listing shows
+only a name set from a prompt hook. The transcript's format is internal to
+Claude Code, so a change there leaves the title empty and the name as the
+branch. A session you named yourself is never renamed. A forked session that
+carries the name chottag gave its parent is treated as named by you, so it
+keeps that name and is not upgraded. See [resume.md](resume.md#session-names).
 
 ## Tools that ignore HTTPS_PROXY
 

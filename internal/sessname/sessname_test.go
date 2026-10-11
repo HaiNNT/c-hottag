@@ -231,30 +231,92 @@ func (e env) decide(in Input) (string, bool) {
 	return Decide(in, Env{Home: e.home, ConfigDir: e.cfg, Now: func() time.Time { return e.now }})
 }
 
-func TestDecideBranchThenTitleThenDone(t *testing.T) {
+func TestDecideWaitsOnePromptForTheGeneratedTitle(t *testing.T) {
 	e := newEnv(t, "ref: refs/heads/feat/m12-x\n")
+	// First prompt, no generated title yet: naming now would stop Claude
+	// Code from ever generating one (F285).
+	if name, ok := e.decide(e.in("UserPromptSubmit", "", "")); ok {
+		t.Fatalf("first prompt printed %q", name)
+	}
+	write(t, e.tr, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
+	name, ok := e.decide(e.in("UserPromptSubmit", "", ""))
+	if !ok || name != "m12-x · Fix Acme login" {
+		t.Fatalf("second: %q %v", name, ok)
+	}
+	// Same name echoed back: nothing, and a later title is not picked up.
+	write(t, e.tr, `{"type":"ai-title","aiTitle":"Other"}`+"\n")
+	if name, ok := e.decide(e.in("UserPromptSubmit", "", "m12-x · Fix Acme login")); ok {
+		t.Errorf("repeat printed %q", name)
+	}
+}
+
+func TestDecideNamesAtOnceWhenTheTitleExists(t *testing.T) {
+	e := newEnv(t, "ref: refs/heads/feat/m12-x\n")
+	write(t, e.tr, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
+	name, ok := e.decide(e.in("UserPromptSubmit", "", ""))
+	if !ok || name != "m12-x · Fix Acme login" {
+		t.Fatalf("%q %v", name, ok)
+	}
+}
+
+func TestDecideNoTitleAfterOnePromptNamesAnyway(t *testing.T) {
+	e := newEnv(t, "ref: refs/heads/feat/m12-x\n")
+	e.decide(e.in("UserPromptSubmit", "", ""))
 	name, ok := e.decide(e.in("UserPromptSubmit", "", ""))
 	if !ok || name != "m12-x" {
-		t.Fatalf("first: %q %v", name, ok)
+		t.Fatalf("second: %q %v", name, ok)
 	}
-	// Same name echoed back, no title yet: nothing.
 	if name, ok := e.decide(e.in("UserPromptSubmit", "", "m12-x")); ok {
 		t.Errorf("repeat printed %q", name)
 	}
-	write(t, e.tr, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
+	write(t, e.tr, `{"type":"ai-title","aiTitle":"T"}`+"\n")
 	name, ok = e.decide(e.in("UserPromptSubmit", "", "m12-x"))
-	if !ok || name != "m12-x · Fix Acme login" {
+	if !ok || name != "m12-x · T" {
 		t.Fatalf("upgrade: %q %v", name, ok)
 	}
-	// Done: no more reads, even when the title changes.
-	write(t, e.tr, `{"type":"ai-title","aiTitle":"Other"}`+"\n")
-	if name, ok := e.decide(e.in("UserPromptSubmit", "", "m12-x · Fix Acme login")); ok {
-		t.Errorf("after done printed %q", name)
+}
+
+func TestDecideFollowsTheSessionIntoAWorktree(t *testing.T) {
+	e := newEnv(t, "ref: refs/heads/main\n")
+	e.decide(e.in("UserPromptSubmit", "", ""))
+	name, ok := e.decide(e.in("UserPromptSubmit", "", ""))
+	if !ok || name != "Acme 14:05" {
+		t.Fatalf("fallback: %q %v", name, ok)
+	}
+	wt := filepath.Join(e.repo, ".claude", "worktrees", "docs-x")
+	write(t, filepath.Join(wt, ".git"), "gitdir: "+filepath.Join(e.repo, ".git", "worktrees", "docs-x")+"\n")
+	write(t, filepath.Join(e.repo, ".git", "worktrees", "docs-x", "HEAD"), "ref: refs/heads/docs/x\n")
+	in := e.in("UserPromptSubmit", "", "Acme 14:05")
+	in.Cwd = wt
+	name, ok = e.decide(in)
+	if !ok || name != "x" {
+		t.Fatalf("worktree: %q %v", name, ok)
+	}
+	// Back on main, with a title: the branch base stays, the title is kept.
+	write(t, e.tr, `{"type":"ai-title","aiTitle":"T"}`+"\n")
+	name, ok = e.decide(e.in("UserPromptSubmit", "", "x"))
+	if !ok || name != "x · T" {
+		t.Fatalf("back: %q %v", name, ok)
+	}
+	in = e.in("UserPromptSubmit", "", "x · T")
+	in.Cwd = wt
+	if name, ok := e.decide(in); ok {
+		t.Errorf("unchanged printed %q", name)
+	}
+}
+
+func TestDecideOldDoneStateWithHashStillFollows(t *testing.T) {
+	e := newEnv(t, "ref: refs/heads/feat/y\n")
+	write(t, filepath.Join(e.home, "sessions", "names", sid), `{"sha256":"`+HashOf("Acme 14:05 · T")+`","done":true}`)
+	name, ok := e.decide(e.in("UserPromptSubmit", "", "Acme 14:05 · T"))
+	if !ok || name != "y · T" {
+		t.Fatalf("%q %v", name, ok)
 	}
 }
 
 func TestDecideFallbackKeepsFirstTime(t *testing.T) {
 	e := newEnv(t, "ref: refs/heads/main\n")
+	e.decide(e.in("UserPromptSubmit", "", ""))
 	name, ok := e.decide(e.in("UserPromptSubmit", "", ""))
 	if !ok || name != "Acme 14:05" {
 		t.Fatalf("%q %v", name, ok)
@@ -269,6 +331,7 @@ func TestDecideFallbackKeepsFirstTime(t *testing.T) {
 
 func TestDecideUserRenameLeftAlone(t *testing.T) {
 	e := newEnv(t, "ref: refs/heads/feat/x\n")
+	e.decide(e.in("UserPromptSubmit", "", "")) // the first prompt only waits
 	if _, ok := e.decide(e.in("UserPromptSubmit", "", "")); !ok {
 		t.Fatal("first")
 	}
@@ -291,6 +354,7 @@ func TestDecideForeignNamedFromStart(t *testing.T) {
 
 func TestDecideSessionStartPrintsNothing(t *testing.T) {
 	e := newEnv(t, "ref: refs/heads/feat/x\n")
+	e.decide(e.in("UserPromptSubmit", "", "")) // the first prompt only waits
 	for _, src := range []string{"startup", "resume", "fork", "clear", "compact", ""} {
 		if name, ok := e.decide(e.in("SessionStart", src, "")); ok {
 			t.Errorf("source %q printed %q", src, name)
@@ -319,6 +383,7 @@ func TestDecideTranscriptOutsideProjectsIgnored(t *testing.T) {
 	write(t, outside, `{"type":"ai-title","aiTitle":"Leak"}`+"\n")
 	in := e.in("UserPromptSubmit", "", "")
 	in.TranscriptPath = outside
+	e.decide(in)
 	name, ok := e.decide(in)
 	if !ok || name != "x" {
 		t.Errorf("%q %v", name, ok)
@@ -387,6 +452,7 @@ func TestDecideNeedsAnAbsoluteCwd(t *testing.T) {
 
 func TestDecideNeverOverwritesWhenTheTitleIsNotReported(t *testing.T) {
 	e := newEnv(t, "ref: refs/heads/feat/x\n")
+	e.decide(e.in("UserPromptSubmit", "", "")) // the first prompt only waits
 	if _, ok := e.decide(e.in("UserPromptSubmit", "", "")); !ok {
 		t.Fatal("first")
 	}

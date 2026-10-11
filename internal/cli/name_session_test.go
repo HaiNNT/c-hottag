@@ -72,6 +72,10 @@ func (e nsEnv) hook(t *testing.T, event, source, title string) (int, string) {
 
 func TestNameSessionPrintsOnlyTheHookJSON(t *testing.T) {
 	e := newNSEnv(t, "ref: refs/heads/feat/m12-x\n")
+	// The first prompt only waits for Claude Code's generated title (F285).
+	if code, out := e.hook(t, "UserPromptSubmit", "", ""); code != exit.OK || out != "" {
+		t.Fatalf("first prompt: exit %d out %q", code, out)
+	}
 	code, out := e.hook(t, "UserPromptSubmit", "", "")
 	if code != exit.OK {
 		t.Fatalf("exit %d", code)
@@ -131,6 +135,7 @@ func TestNameSessionBadTranscriptPath(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "t.jsonl")
 	writeTranscript(t, outside, `{"type":"ai-title","aiTitle":"Leak"}`+"\n")
 	e.tr = outside
+	e.hook(t, "UserPromptSubmit", "", "")
 	_, out := e.hook(t, "UserPromptSubmit", "", "")
 	if strings.Contains(out, "Leak") || !strings.Contains(out, `"sessionTitle":"x"`) {
 		t.Errorf("%q", out)
@@ -139,6 +144,7 @@ func TestNameSessionBadTranscriptPath(t *testing.T) {
 
 func TestNameSessionFallbackClock(t *testing.T) {
 	e := newNSEnv(t, "ref: refs/heads/main\n")
+	e.hook(t, "UserPromptSubmit", "", "")
 	if _, out := e.hook(t, "UserPromptSubmit", "", ""); !strings.Contains(out, `"sessionTitle":"Acme 09:07"`) {
 		t.Errorf("%q", out)
 	}

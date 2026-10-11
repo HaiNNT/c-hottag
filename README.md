@@ -65,7 +65,7 @@ chottag resume         # after cmux quits or the Mac crashes: relaunch the lost 
 chottag doctor         # check the install; --fix repairs what it safely can
 ```
 
-After cmux quits or the Mac crashes, `chottag resume` relaunches the sessions that were open, in their tabs and directories. With the plugin, `chottag name-session` names each session after its branch and Claude Code's generated title, and `chottag sessions` shows it; `chottag names` turns naming on, off or adds a model-made topic.
+After cmux quits or the Mac crashes, `chottag resume` relaunches the sessions that were open, in their tabs and directories. With the plugin, `chottag name-session` names each session after its branch and Claude Code's generated title, and `chottag sessions` shows it; `chottag names` turns naming on or off.
 
 What *serving*, *remote* and a *slot* are: [How it works](docs/how-it-works.md). Every command, flag and exit code: [Command reference](docs/commands.md).
 

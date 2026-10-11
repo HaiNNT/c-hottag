@@ -1431,28 +1431,35 @@ only an argument or `--json` makes it exit 2. It prints either nothing or one li
 `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","sessionTitle":"NAME"}}`,
 which Claude Code applies like `/rename`.
 
-- The name is the checkout's branch at `cwd`, last path segment only
-  (`feat/m12-owner-discovery` gives `m12-owner-discovery`), read from the
-  `.git` files (a directory, or a worktree's `gitdir:` file) without running
-  git. On `main`, `master`, a detached HEAD or outside git it is `<folder>
-  HH:MM` in local time, from the session's first naming.
-- Once Claude Code has written the session's generated title (`ai-title`) into
-  its transcript, the name becomes `<name> · <title>` and chottag stops
-  reading. It reads only the first 4 MiB and the last 1 MiB of the
+- The name is `<base> · <title>`. The base is the checkout's branch at `cwd`,
+  last path segment only (`feat/m12-owner-discovery` gives
+  `m12-owner-discovery`), read from the `.git` files (a directory, or a
+  worktree's `gitdir:` file) without running git. On `main`, `master`, a
+  detached HEAD or outside git it is the base the name already has, else
+  `<folder> HH:MM` in local time.
+- The title is the session's generated title (`ai-title`) from its
+  transcript. chottag reads only the first 4 MiB and the last 1 MiB of the
   transcript, and only `ai-title` and `custom-title` records (it uses the
-  `ai-title` for the name), and only when `transcript_path` lies under
-  `projects/` of `CLAUDE_CONFIG_DIR` (else `~/.claude`). It names nothing when
-  `cwd` is empty or not an absolute path.
+  `ai-title` for the name), only when `transcript_path` lies under
+  `projects/` of `CLAUDE_CONFIG_DIR` (else `~/.claude`), and only while the
+  name has no title yet. It names nothing when `cwd` is empty or not an
+  absolute path.
+- A session with no generated title yet is not named at its first prompt:
+  Claude Code generates a title only for a session that has no name, so
+  chottag waits one prompt for it. At the second prompt it names the session,
+  with the title if there is one, else by the base alone. A session that
+  already has a title (a resumed one) is named at its next prompt.
+- While the name is the one chottag set, every prompt checks it again: a
+  session that moved to another branch (it entered a worktree) gets that
+  branch as its base, and a title that appeared is added. It prints the name
+  only when it changed.
 - It acts only on `UserPromptSubmit`: a name set at `SessionStart` reaches the
   transcript but not Claude Code's running-session listing (agent view and
-  prompt bar), and the same name sent again does not update it. So a new
-  session is named from its first prompt, and a resumed session that has no
-  name from its next prompt. A later prompt sends the name again only when it
-  changed (the upgrade with the generated title). A `SessionStart` input, from
-  a hook you wired yourself, prints nothing.
+  prompt bar), and the same name sent again does not update it. A
+  `SessionStart` input, from a hook you wired yourself, prints nothing.
 - A session whose name chottag did not set (`-n`, `/rename`, a plan accept) is
   left alone for good. chottag keeps, per session id, only a sha256 of the last
-  name it set and a done flag, in `$CHOTTAG_HOME/sessions/names/<id>`. It never
+  name it set and a flag for a session you named, in `$CHOTTAG_HOME/sessions/names/<id>`. It never
   logs or stores a title.
 - If chottag has set a name for the session but the hook input carries no
   `session_title`, it does nothing: the name may have been changed in a way it
