@@ -85,6 +85,45 @@ func BranchBase(cwd string) string {
 	}
 }
 
+// CheckoutRoot is the nearest directory at or above cwd that holds a .git
+// (a directory or a worktree's gitdir file), "" outside git.
+func CheckoutRoot(cwd string) string {
+	dir := filepath.Clean(cwd)
+	for {
+		if headFile(dir) != "" {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+var clockRE = regexp.MustCompile(`^(.+) ([0-2][0-9]:[0-5][0-9])$`)
+
+// rebaseSubfolder heals a fallback base named after a subfolder by 0.10.5 or
+// older (`src 17:38`): when its folder part is a folder between the checkout
+// and cwd, it becomes the checkout's folder, and the time is kept.
+func rebaseSubfolder(base, cwd string) string {
+	m := clockRE.FindStringSubmatch(base)
+	root := CheckoutRoot(cwd)
+	if m == nil || root == "" {
+		return base
+	}
+	rel, err := filepath.Rel(root, filepath.Clean(cwd))
+	if err != nil || rel == "." {
+		return base
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == m[1] {
+			return filepath.Base(root) + " " + m[2]
+		}
+	}
+	return base
+}
+
 // headFile returns the HEAD file of the checkout at dir, "" if dir is none.
 func headFile(dir string) string {
 	g := filepath.Join(dir, ".git")
@@ -405,8 +444,15 @@ func Decide(in Input, env Env) (string, bool) {
 		_ = SaveState(env.Home, in.SessionID, State{})
 		return "", false
 	}
+	base = rebaseSubfolder(base, in.Cwd)
 	if base == "" {
-		folder := filepath.Base(filepath.Clean(in.Cwd))
+		// The checkout's folder, not cwd's: a session that cd'd into
+		// a subfolder (src) is still named after its repo (R182).
+		dir := CheckoutRoot(in.Cwd)
+		if dir == "" {
+			dir = in.Cwd
+		}
+		folder := filepath.Base(filepath.Clean(dir))
 		base = folder + " " + env.Now().Format("15:04")
 	}
 	name := Compose(base, title)

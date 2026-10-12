@@ -7,6 +7,12 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.6] - 2026-10-12
+
+### Fixed
+
+- A session on `main` whose working directory moved into a subfolder (`src`) before it was named is now named after the repo folder (`banyan 17:38`), not the subfolder (`src 17:38`). A name already set that way is fixed at the session's next prompt, keeping its time.
+
 ## [0.10.5] - 2026-10-12
 
 ### Changed
@@ -454,6 +460,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.6]: docs/release-notes/v0.10.6.md
 [0.10.5]: docs/release-notes/v0.10.5.md
 [0.10.4]: docs/release-notes/v0.10.4.md
 [0.10.3]: docs/release-notes/v0.10.3.md

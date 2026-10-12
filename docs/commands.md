@@ -1439,7 +1439,11 @@ which Claude Code applies like `/rename`.
   `m12-owner-discovery`), read from the `.git` files (a directory, or a
   worktree's `gitdir:` file) without running git. On `main`, `master`, a
   detached HEAD or outside git it is the base the name already has, else
-  `<folder> HH:MM` in local time.
+  `<folder> HH:MM` in local time, where `<folder>` is the checkout's folder
+  (the repo, or a worktree's folder) even when `cwd` is a subfolder of it, and
+  `cwd`'s own folder outside git. A name that 0.10.5 or older based on a
+  subfolder of the checkout (`src 17:38`) gets the checkout's folder at its
+  next prompt, keeping its time.
 - The title is the session's generated title (`ai-title`) from its
   transcript. chottag reads only the first 4 MiB and the last 1 MiB of the
   transcript, and only `ai-title` and `custom-title` records (it uses the

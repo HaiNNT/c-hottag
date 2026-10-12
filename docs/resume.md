@@ -70,7 +70,7 @@ name-session`):
 
 - at your second prompt, `<title> · <branch>`: the title Claude Code
   generated from your first prompt, then the branch you are on
-  (`m12-owner-discovery`), or `<folder> HH:MM` on `main`, a detached HEAD or
+  (`m12-owner-discovery`), or `<repo folder> HH:MM` on `main`, a detached HEAD or
   outside git. The title comes first, so a tab cut short still shows it.
   chottag waits one prompt because Claude Code generates no title for a
   session that already has a name. A resumed session that has a title is

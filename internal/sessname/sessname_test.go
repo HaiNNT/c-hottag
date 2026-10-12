@@ -504,3 +504,46 @@ func TestDecideRewritesAnOldOrderName(t *testing.T) {
 		t.Errorf("repeat printed %q", name)
 	}
 }
+
+// A session in a subfolder of the checkout is named after the checkout.
+func TestDecideFallbackUsesTheCheckoutFolder(t *testing.T) {
+	e := newEnv(t, "ref: refs/heads/main\n")
+	sub := filepath.Join(e.repo, "platform", "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	in := e.in("UserPromptSubmit", "", "")
+	in.Cwd = sub
+	e.decide(in)
+	name, ok := e.decide(in)
+	if !ok || name != "Acme 14:05" {
+		t.Fatalf("%q %v", name, ok)
+	}
+	out := filepath.Join(t.TempDir(), "notes")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := CheckoutRoot(out); got != "" {
+		t.Errorf("outside git: %q", got)
+	}
+}
+
+// A name set by 0.10.5 after a subfolder is healed, keeping its time.
+func TestDecideHealsASubfolderName(t *testing.T) {
+	e := newEnv(t, "ref: refs/heads/main\n")
+	sub := filepath.Join(e.repo, "apps", "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(e.home, "sessions", "names", sid), `{"sha256":"`+HashOf("T · src 17:38")+`","titleFirst":true}`)
+	in := e.in("UserPromptSubmit", "", "T · src 17:38")
+	in.Cwd = sub
+	name, ok := e.decide(in)
+	if !ok || name != "T · Acme 17:38" {
+		t.Fatalf("%q %v", name, ok)
+	}
+	// A folder outside the cwd's path is left alone.
+	if got := rebaseSubfolder("notes 09:00", sub); got != "notes 09:00" {
+		t.Errorf("%q", got)
+	}
+}
