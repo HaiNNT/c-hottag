@@ -1431,7 +1431,10 @@ only an argument or `--json` makes it exit 2. It prints either nothing or one li
 `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","sessionTitle":"NAME"}}`,
 which Claude Code applies like `/rename`.
 
-- The name is `<base> · <title>`. The base is the checkout's branch at `cwd`,
+- The name is `<title> · <base>`, title first so that a tab cut short still
+  shows the topic (0.10.4 put the base first; such a name is rewritten at its
+  next prompt). It is at most 80 characters: a long title is shortened, the
+  base is kept. The base is the checkout's branch at `cwd`,
   last path segment only (`feat/m12-owner-discovery` gives
   `m12-owner-discovery`), read from the `.git` files (a directory, or a
   worktree's `gitdir:` file) without running git. On `main`, `master`, a

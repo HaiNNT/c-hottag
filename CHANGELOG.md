@@ -7,6 +7,12 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.5] - 2026-10-12
+
+### Changed
+
+- A session name puts the topic first: `<title> · <branch>` (or `<title> · <folder> HH:MM`), so a tab cut short still shows it. A name set by 0.10.4 is rewritten at the session's next prompt. A long title is shortened so the branch always fits.
+
 ## [0.10.4] - 2026-10-11
 
 ### Fixed
@@ -448,6 +454,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.5]: docs/release-notes/v0.10.5.md
 [0.10.4]: docs/release-notes/v0.10.4.md
 [0.10.3]: docs/release-notes/v0.10.3.md
 [0.10.2]: docs/release-notes/v0.10.2.md

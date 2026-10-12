@@ -226,8 +226,8 @@ Tell the user, in these words or close to them:
   has no chottag PATH entry), and resume it with `claude --continue` or
   `claude --resume`.
 
-Sessions also get names automatically from their second prompt (the branch,
-then Claude Code's generated title; the branch part follows the session into a
+Sessions also get names automatically from their second prompt (Claude Code's
+generated title, then the branch; the branch part follows the session into a
 worktree) when the chottag plugin is installed.
 `chottag names off` turns that off, and `/ct names` changes the mode from
 inside Claude Code.

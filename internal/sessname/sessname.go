@@ -211,12 +211,39 @@ func Sanitize(s string) string {
 	return out
 }
 
-// Compose joins a base name and an optional title.
+// Compose joins a base name and an optional title, title first: a tab cut
+// short still shows the topic (R181). The title is shortened so that the base
+// always fits in MaxRunes; split relies on that.
 func Compose(base, title string) string {
-	if title == "" {
-		return Sanitize(base)
+	base, title = Sanitize(base), Sanitize(title)
+	if title == "" || base == "" {
+		return base + title
 	}
-	return Sanitize(base + sep + title)
+	room := MaxRunes - len([]rune(base)) - len([]rune(sep))
+	if room < 1 {
+		return base
+	}
+	if rs := []rune(title); len(rs) > room {
+		title = strings.TrimSpace(string(rs[:room]))
+	}
+	if title == "" {
+		return base
+	}
+	return title + sep + base
+}
+
+// split undoes Compose. titleFirst is false for a name set by 0.10.4 or
+// older, which put the base first. A name with no separator is a base.
+func split(name string, titleFirst bool) (base, title string) {
+	if !titleFirst {
+		base, title, _ = strings.Cut(name, sep)
+		return base, title
+	}
+	i := strings.LastIndex(name, sep)
+	if i < 0 {
+		return name, ""
+	}
+	return name[i+len(sep):], name[:i]
 }
 
 // HashOf is the hex sha256 of a name.
@@ -233,6 +260,8 @@ func HashOf(name string) string {
 type State struct {
 	Hash string `json:"sha256,omitempty"`
 	Done bool   `json:"done,omitempty"`
+	// TitleFirst says the name hashed is `<title> · <base>` (0.10.5 on).
+	TitleFirst bool `json:"titleFirst,omitempty"`
 }
 
 func statePath(home, id string) string {
@@ -363,7 +392,7 @@ func Decide(in Input, env Env) (string, bool) {
 			_ = SaveState(env.Home, in.SessionID, State{Done: true})
 			return "", false
 		}
-		base, title, _ = strings.Cut(in.SessionTitle, sep)
+		base, title = split(in.SessionTitle, st.TitleFirst)
 	}
 	if b := BranchBase(in.Cwd); b != "" {
 		base = b
@@ -381,10 +410,16 @@ func Decide(in Input, env Env) (string, bool) {
 		base = folder + " " + env.Now().Format("15:04")
 	}
 	name := Compose(base, title)
-	if name == "" || name == in.SessionTitle {
+	if name == "" {
 		return "", false
 	}
-	if err := SaveState(env.Home, in.SessionID, State{Hash: HashOf(name)}); err != nil {
+	if name == in.SessionTitle {
+		if !st.TitleFirst {
+			_ = SaveState(env.Home, in.SessionID, State{Hash: st.Hash, TitleFirst: true})
+		}
+		return "", false
+	}
+	if err := SaveState(env.Home, in.SessionID, State{Hash: HashOf(name), TitleFirst: true}); err != nil {
 		return "", false
 	}
 	return name, true

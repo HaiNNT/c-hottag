@@ -95,12 +95,12 @@ func TestNameSessionPrintsOnlyTheHookJSON(t *testing.T) {
 	// Upgrade with the transcript's title.
 	writeTranscript(t, e.tr, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
 	_, out = e.hook(t, "UserPromptSubmit", "", "m12-x")
-	if !strings.Contains(out, `"hookEventName":"UserPromptSubmit"`) || !strings.Contains(out, "m12-x · Fix Acme login") {
+	if !strings.Contains(out, `"hookEventName":"UserPromptSubmit"`) || !strings.Contains(out, "Fix Acme login · m12-x") {
 		t.Errorf("upgrade %q", out)
 	}
 	// The store holds a hash, never the name.
 	b, err := os.ReadFile(filepath.Join(e.home, "sessions", "names", nsID))
-	if err != nil || strings.Contains(string(b), "Fix Acme") || !strings.Contains(string(b), sessname.HashOf("m12-x · Fix Acme login")) {
+	if err != nil || strings.Contains(string(b), "Fix Acme") || !strings.Contains(string(b), sessname.HashOf("Fix Acme login · m12-x")) {
 		t.Errorf("store %q %v", b, err)
 	}
 }

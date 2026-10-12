@@ -127,11 +127,23 @@ func TestCompose(t *testing.T) {
 	if got := Compose("base", ""); got != "base" {
 		t.Error(got)
 	}
-	if got := Compose("base", "Fix it"); got != "base · Fix it" {
+	if got := Compose("base", "Fix it"); got != "Fix it · base" {
 		t.Error(got)
 	}
-	if got := len([]rune(Compose("base", strings.Repeat("x", 200)))); got != 80 {
+	got := Compose("base", strings.Repeat("x", 200))
+	if len([]rune(got)) != 80 || !strings.HasSuffix(got, " · base") {
 		t.Error(got)
+	}
+	if got := Compose(strings.Repeat("b", 90), "T"); got != strings.Repeat("b", 80) {
+		t.Error(got)
+	}
+	for _, c := range [][2]string{{"base", ""}, {"base", "a · b"}, {"Acme 14:05", "T"}} {
+		if b, tt := split(Compose(c[0], c[1]), true); b != c[0] || tt != c[1] {
+			t.Errorf("split %q: %q %q", c, b, tt)
+		}
+	}
+	if b, tt := split("base · a · b", false); b != "base" || tt != "a · b" {
+		t.Errorf("old order: %q %q", b, tt)
 	}
 }
 
@@ -240,12 +252,12 @@ func TestDecideWaitsOnePromptForTheGeneratedTitle(t *testing.T) {
 	}
 	write(t, e.tr, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
 	name, ok := e.decide(e.in("UserPromptSubmit", "", ""))
-	if !ok || name != "m12-x · Fix Acme login" {
+	if !ok || name != "Fix Acme login · m12-x" {
 		t.Fatalf("second: %q %v", name, ok)
 	}
 	// Same name echoed back: nothing, and a later title is not picked up.
 	write(t, e.tr, `{"type":"ai-title","aiTitle":"Other"}`+"\n")
-	if name, ok := e.decide(e.in("UserPromptSubmit", "", "m12-x · Fix Acme login")); ok {
+	if name, ok := e.decide(e.in("UserPromptSubmit", "", "Fix Acme login · m12-x")); ok {
 		t.Errorf("repeat printed %q", name)
 	}
 }
@@ -254,7 +266,7 @@ func TestDecideNamesAtOnceWhenTheTitleExists(t *testing.T) {
 	e := newEnv(t, "ref: refs/heads/feat/m12-x\n")
 	write(t, e.tr, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
 	name, ok := e.decide(e.in("UserPromptSubmit", "", ""))
-	if !ok || name != "m12-x · Fix Acme login" {
+	if !ok || name != "Fix Acme login · m12-x" {
 		t.Fatalf("%q %v", name, ok)
 	}
 }
@@ -271,7 +283,7 @@ func TestDecideNoTitleAfterOnePromptNamesAnyway(t *testing.T) {
 	}
 	write(t, e.tr, `{"type":"ai-title","aiTitle":"T"}`+"\n")
 	name, ok = e.decide(e.in("UserPromptSubmit", "", "m12-x"))
-	if !ok || name != "m12-x · T" {
+	if !ok || name != "T · m12-x" {
 		t.Fatalf("upgrade: %q %v", name, ok)
 	}
 }
@@ -295,10 +307,10 @@ func TestDecideFollowsTheSessionIntoAWorktree(t *testing.T) {
 	// Back on main, with a title: the branch base stays, the title is kept.
 	write(t, e.tr, `{"type":"ai-title","aiTitle":"T"}`+"\n")
 	name, ok = e.decide(e.in("UserPromptSubmit", "", "x"))
-	if !ok || name != "x · T" {
+	if !ok || name != "T · x" {
 		t.Fatalf("back: %q %v", name, ok)
 	}
-	in = e.in("UserPromptSubmit", "", "x · T")
+	in = e.in("UserPromptSubmit", "", "T · x")
 	in.Cwd = wt
 	if name, ok := e.decide(in); ok {
 		t.Errorf("unchanged printed %q", name)
@@ -309,7 +321,7 @@ func TestDecideOldDoneStateWithHashStillFollows(t *testing.T) {
 	e := newEnv(t, "ref: refs/heads/feat/y\n")
 	write(t, filepath.Join(e.home, "sessions", "names", sid), `{"sha256":"`+HashOf("Acme 14:05 · T")+`","done":true}`)
 	name, ok := e.decide(e.in("UserPromptSubmit", "", "Acme 14:05 · T"))
-	if !ok || name != "y · T" {
+	if !ok || name != "T · y" {
 		t.Fatalf("%q %v", name, ok)
 	}
 }
@@ -324,7 +336,7 @@ func TestDecideFallbackKeepsFirstTime(t *testing.T) {
 	e.now = e.now.Add(3 * time.Hour)
 	write(t, e.tr, `{"type":"ai-title","aiTitle":"T"}`+"\n")
 	name, ok = e.decide(e.in("UserPromptSubmit", "", "Acme 14:05"))
-	if !ok || name != "Acme 14:05 · T" {
+	if !ok || name != "T · Acme 14:05" {
 		t.Fatalf("%q %v", name, ok)
 	}
 }
@@ -476,5 +488,19 @@ func TestOldStateWithLiveStillParses(t *testing.T) {
 	st, ok := LoadState(h, sid)
 	if !ok || st.Hash != HashOf("n") || !st.Done {
 		t.Errorf("%+v %v", st, ok)
+	}
+}
+
+// A name set by 0.10.4 or older has the base first: it is read in that
+// order and rewritten title first at the next prompt.
+func TestDecideRewritesAnOldOrderName(t *testing.T) {
+	e := newEnv(t, "ref: refs/heads/main\n")
+	write(t, filepath.Join(e.home, "sessions", "names", sid), `{"sha256":"`+HashOf("Acme 14:05 · Fix · it")+`"}`)
+	name, ok := e.decide(e.in("UserPromptSubmit", "", "Acme 14:05 · Fix · it"))
+	if !ok || name != "Fix · it · Acme 14:05" {
+		t.Fatalf("%q %v", name, ok)
+	}
+	if name, ok := e.decide(e.in("UserPromptSubmit", "", "Fix · it · Acme 14:05")); ok {
+		t.Errorf("repeat printed %q", name)
 	}
 }

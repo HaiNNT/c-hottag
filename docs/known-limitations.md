@@ -119,8 +119,8 @@ resumable. See
 
 ## Session names
 
-`chottag name-session` names a session at its second prompt, as `<branch> ·
-<title>` (`<folder> HH:MM` when there is no branch). It does nothing at the
+`chottag name-session` names a session at its second prompt, as `<title> ·
+<branch>` (`<folder> HH:MM` when there is no branch). It does nothing at the
 first prompt: Claude Code generates a title only for a session that has no
 name yet, so a name set then would leave the session without a title for
 good, which is what happened up to 0.10.3. A session whose title is still
