@@ -39,6 +39,7 @@ const (
 type Entry struct {
 	Account string    `json:"account"`
 	Email   string    `json:"email,omitempty"` // the account's email when recorded, "" if it had none
+	Dir     string    `json:"dir,omitempty"`   // the account's slot dir when recorded; a rename never changes it
 	Used    time.Time `json:"used"`
 }
 
@@ -155,22 +156,45 @@ func (s *Map) Accounts(now time.Time, d time.Duration) []string {
 	return out
 }
 
-// Set records account (and its email, "" if unknown) for sid as used now,
+// Recent lists the entries of sessions used within d of now, one per distinct
+// account name, ordered by name.
+func (s *Map) Recent(now time.Time, d time.Duration) []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]bool{}
+	var out []Entry
+	for _, e := range s.m {
+		k := strings.ToLower(e.Account) + "\x00" + e.Dir
+		if now.Sub(e.Used) <= d && !seen[k] {
+			seen[k] = true
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Account != out[j].Account {
+			return out[i].Account < out[j].Account
+		}
+		return out[i].Dir < out[j].Dir
+	})
+	return out
+}
+
+// Set records account (with its email and slot dir, "" if unknown) for sid as used now,
 // drops expired entries, and keeps the newest MaxEntries. It writes the file,
 // except when the entry is unchanged and was recorded less than an hour ago.
 // The write happens outside the map's lock, so a Get never waits on a disk
 // sync. The in-memory map is updated even when the write fails; the error is
 // returned.
-func (s *Map) Set(sid, account, email string, now time.Time) error {
+func (s *Map) Set(sid, account, email, dir string, now time.Time) error {
 	if sid == "" || account == "" {
 		return errors.New("stickyval: empty session id or account")
 	}
 	s.mu.Lock()
-	if e, ok := s.m[sid]; ok && e.Account == account && e.Email == email && !s.dirty && now.Sub(e.Used) < touchEvery && now.After(e.Used) {
+	if e, ok := s.m[sid]; ok && e.Account == account && e.Email == email && e.Dir == dir && !s.dirty && now.Sub(e.Used) < touchEvery && now.After(e.Used) {
 		s.mu.Unlock()
 		return nil
 	}
-	s.m[sid] = Entry{Account: account, Email: email, Used: now.UTC()}
+	s.m[sid] = Entry{Account: account, Email: email, Dir: dir, Used: now.UTC()}
 	delete(s.gone, sid)
 	s.pruneLocked(now)
 	seq, data, err := s.snapshotLocked()

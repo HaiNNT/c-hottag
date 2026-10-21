@@ -23,14 +23,14 @@ func open(t *testing.T) (*Map, string) {
 
 func set(t *testing.T, m *Map, sid, account string, at time.Time) {
 	t.Helper()
-	if err := m.Set(sid, account, "", at); err != nil {
+	if err := m.Set(sid, account, "", "", at); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestRoundTripAcrossOpen(t *testing.T) {
 	m, p := open(t)
-	if err := m.Set("sid1", "C", "c@example.com", t0); err != nil {
+	if err := m.Set("sid1", "C", "c@example.com", "", t0); err != nil {
 		t.Fatal(err)
 	}
 	m2, err := Open(p)
@@ -142,7 +142,7 @@ func TestAccountsListsRecentlyUsedOnesOnce(t *testing.T) {
 
 func TestFileHoldsOnlySessionAccountEmailAndTime(t *testing.T) {
 	m, p := open(t)
-	if err := m.Set("sid1", "A", "alice@example.com", t0); err != nil {
+	if err := m.Set("sid1", "A", "alice@example.com", "", t0); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(p)
@@ -163,7 +163,7 @@ func TestConcurrentUseIsRaceFreeAndTheNewestSnapshotWins(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 25; j++ {
-				if err := m.Set(fmt.Sprintf("g%d", i), "C", "", t0.Add(time.Duration(j)*2*time.Hour)); err != nil {
+				if err := m.Set(fmt.Sprintf("g%d", i), "C", "", "", t0.Add(time.Duration(j)*2*time.Hour)); err != nil {
 					t.Error(err)
 				}
 				m.Get("g0", t0)
@@ -203,10 +203,10 @@ func TestFailedWriteIsRetriedByTheNextSetAndByTheTimer(t *testing.T) {
 		}
 		timers = append(timers, f)
 	}
-	if err := m.Set("a", "C", "", t0); err == nil {
+	if err := m.Set("a", "C", "", "", t0); err == nil {
 		t.Fatal("the failed write was not reported")
 	}
-	if err := m.Set("b", "D", "", t0); err == nil {
+	if err := m.Set("b", "D", "", "", t0); err == nil {
 		t.Fatal("the second failed write was not reported")
 	}
 	if len(timers) != 1 {
@@ -214,7 +214,7 @@ func TestFailedWriteIsRetriedByTheNextSetAndByTheTimer(t *testing.T) {
 	}
 	// A hit on the same entry within the hour must retry too: the file lags.
 	fail = false
-	if err := m.Set("b", "D", "", t0.Add(time.Minute)); err != nil {
+	if err := m.Set("b", "D", "", "", t0.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	m2, err := Open(p)
@@ -225,7 +225,7 @@ func TestFailedWriteIsRetriedByTheNextSetAndByTheTimer(t *testing.T) {
 	timers[0]()
 	// A failure with no validate afterwards is retried by the timer.
 	fail = true
-	if err := m.Set("c", "C", "", t0.Add(2*time.Hour)); err == nil {
+	if err := m.Set("c", "C", "", "", t0.Add(2*time.Hour)); err == nil {
 		t.Fatal("expected a failure")
 	}
 	fail = false
@@ -241,7 +241,7 @@ func TestOlderSnapshotNeverLandsAfterANewerFailedOne(t *testing.T) {
 	set(t, m, "a", "C", t0)
 	m.writeFile = func(string, []byte, os.FileMode) error { return fmt.Errorf("disk full") }
 	m.after = func(time.Duration, func()) {}
-	_ = m.Set("b", "D", "", t0) // fails: seq 2 attempted
+	_ = m.Set("b", "D", "", "", t0) // fails: seq 2 attempted
 	m.writeFile = os.WriteFile
 	if err := m.write(1, []byte(`{"version":2,"sessions":{}}`)); err != nil {
 		t.Fatal(err)
@@ -249,5 +249,30 @@ func TestOlderSnapshotNeverLandsAfterANewerFailedOne(t *testing.T) {
 	m2, _ := Open(p)
 	if m2.Len() != 1 {
 		t.Fatalf("an older snapshot overwrote the file: %d sessions", m2.Len())
+	}
+}
+
+func TestDirRoundTripsAndAV2FileWithoutItLoads(t *testing.T) {
+	m, p := open(t)
+	if err := m.Set("sid1", "C", "c@example.com", "/Users/alice/.chottag/slots/c", t0); err != nil {
+		t.Fatal(err)
+	}
+	m2, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, st := m2.Lookup("sid1", t0); st != Live || e.Dir != "/Users/alice/.chottag/slots/c" {
+		t.Fatalf("got %+v, %v", e, st)
+	}
+	old := `{"version":2,"sessions":{"sid2":{"account":"C","email":"c@example.com","used":"2026-10-04T12:00:00Z"}}}`
+	if err := os.WriteFile(p, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m3, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, st := m3.Lookup("sid2", t0); st != Live || e.Account != "C" || e.Dir != "" {
+		t.Fatalf("got %+v, %v", e, st)
 	}
 }

@@ -19,7 +19,19 @@ logins) so it never touches the owner's daily chottag install (R91).
    version-drift verdict (read-only, if one is on PATH), and whether the
    dev sandbox is built and has any logins.
 
-2. **Precondition: a dev login.** If `detect` shows `dev_env: not built`,
+2. **Scan the bundle.** Run `scripts/scan-bundle` (or `--version V`). It
+   reads the installed Claude Code binary, read-only and never running it,
+   pulls out the `/api/` and `/v1/` path literals, and asks the router which
+   ones a rule names. It prints `STATUS PATH NOTE` for each path the router
+   leaves to its default that no `routes/*.txt` lists, and exits 1 on any
+   `REVIEW` line (the path names a claude.ai object family: artifact,
+   frame, page, session, environment, trigger, mcp, share, project, doc,
+   comment). It needs no login (only `go` on PATH) and prints nothing but paths. A `REVIEW`
+   path is a candidate remote family: confirm what it is (an object that
+   belongs to one account, so a swapped token is refused), then add a
+   rule, as for step 6's flagged lines. An `INFO` path needs no action.
+
+3. **Precondition: a dev login.** If `detect` shows `dev_env: not built`,
    run `scripts/dev-env build`. Then check for a dev login (`dev_env: built,
    N account(s)`, or `scripts/dev-env run status --json`). If there are
    none, **STOP** and ask the owner to run `scripts/dev-env run login NAME`
@@ -27,36 +39,36 @@ logins) so it never touches the owner's daily chottag install (R91).
    company Team account. You may launch that login command for them only
    when they ask you to; never supply the credentials yourself.
 
-3. **Trace.** Once a dev login exists, run
+4. **Trace.** Once a dev login exists, run
    `scripts/trace --models M1,M2,...` with the model ids worth checking
    (e.g. the ones the new release shipped). It runs one non-interactive
    step per model (plus a plain session-start step) through the dev shim,
    summarizes the routes it saw into `routes/<version>.txt`, and prints a
    result line per step plus a privacy check.
 
-4. **Diff.** Run `scripts/diff-routes routes/<version>.txt` (OLD defaults
+5. **Diff.** Run `scripts/diff-routes routes/<version>.txt` (OLD defaults
    to the highest routes table below the new version) or
    `scripts/diff-routes OLD.txt NEW.txt` explicitly. It prints a table —
    `STATUS KIND +/- METHOD HOST PATH CLASS` — and exits 1 if any line is
    `REVIEW`.
 
-5. **Explain each flagged line.** A `REVIEW` line for a new or changed
+6. **Explain each flagged line.** A `REVIEW` line for a new or changed
    object route (`/v1/code/sessions`, `/v1/sessions`, `/v1/environments`,
    `/api/frame`, `/v1/code/triggers`, `/v1/mcp_servers`, or
    `mcp-proxy.anthropic.com`), or a route whose CLASS changed, becomes a
    roadmap Findings row and a router task — it needs a rule before this
    check can pass clean. An `OK` or `INFO` line needs no action.
 
-6. **Commit** the new `routes/<version>.txt` (or `.txt.new`, if one already
+7. **Commit** the new `routes/<version>.txt` (or `.txt.new`, if one already
    existed and `--force` wasn't given).
 
-7. **Report.** Write a dated report file, named `<YYYY-MM-DD>-cc-<version>.md`,
+8. **Report.** Write a dated report file, named `<YYYY-MM-DD>-cc-<version>.md`,
    under this checkout's own private checks log if it has one (ask the
-   maintainer where, otherwise), with the `detect` output, the diff table
-   with each line explained, the model step results, and the privacy
+   maintainer where, otherwise), with the `detect` output, the `scan-bundle` output (each REVIEW path
+   explained), the diff table with each line explained, the model step results, and the privacy
    check's result (must be 0 for both files).
 
-8. **Optional interactive follow-ups**, from the manual release check, need
+9. **Optional interactive follow-ups**, from the manual release check, need
    an interactive session and the owner: `/usage`, `/remote-control` with
    the phone, an artifact publish, `/schedule`, a connector call. Offer
    them; don't run them without the owner.

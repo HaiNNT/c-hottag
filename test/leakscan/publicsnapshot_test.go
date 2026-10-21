@@ -188,10 +188,12 @@ func TestSimulatedPublicSnapshotPassesItsOwnGitDependentChecks(t *testing.T) {
 	// in its own process group, and the deadline kills that whole group
 	// (go, its test binaries and anything they started), not only the go
 	// process. WaitDelay stops CombinedOutput from waiting on pipes a
-	// straggler still holds.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// straggler still holds. The bounds are generous: the nested run takes
+	// about 12s locally but passed 45s on a busy macOS CI runner (F286), and
+	// a hang guard must never fail a run that is only slow.
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	run := exec.CommandContext(ctx, goBin, "test", "-timeout=45s", "./test/leakscan/...", "./test/consistency/...", "-count=1")
+	run := exec.CommandContext(ctx, goBin, "test", "-timeout=5m", "./test/leakscan/...", "./test/consistency/...", "-count=1")
 	run.Dir = dir
 	run.Env = runEnv
 	run.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -207,7 +209,7 @@ func TestSimulatedPublicSnapshotPassesItsOwnGitDependentChecks(t *testing.T) {
 	out, rerr := run.CombinedOutput()
 	t.Logf("go test ./test/leakscan/... ./test/consistency/... in the simulated public snapshot took %s", time.Since(start))
 	if ctx.Err() == context.DeadlineExceeded {
-		t.Fatalf("the simulated public snapshot's own go test run did not finish within the 60s hang guard:\n%s", out)
+		t.Fatalf("the simulated public snapshot's own go test run did not finish within the 6m hang guard:\n%s", out)
 	}
 	if rerr != nil {
 		t.Fatalf("the simulated public snapshot's own leakscan/consistency checks failed:\n%s", out)

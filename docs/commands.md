@@ -416,7 +416,9 @@ chottag rename OLD NEW
 
 Renames an account (its display name only): the slot directory and its
 Keychain login stay exactly as they are. `rename` takes no flags; running
-it again with the same arguments resumes an interrupted rename.
+it again with the same arguments resumes an interrupted rename. A running
+session's Remote Control stays on the renamed account: the daemon's record of
+which account answers the session follows the slot, not the name.
 
 ```json
 {
@@ -714,6 +716,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
     "port": 47821,
     "heartbeat": "2026-09-28T14:00:30Z",
     "routeDrift": 0,
+    "routeDriftUnclassified": 0,
     "zeroIdExtractions": 0,
     "ownerWriteDrops": 0,
     "notifyErrors": 0,
@@ -1119,7 +1122,7 @@ Its checks, in the order they run:
 | `daemon-identity` | a running daemon proved it holds this install's proxy secret | `chottag daemon restart` |
 | `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
 | `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
-| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a request for an object whose owner chottag does not know is not counted (it gets its own notice, `chottag: an artifact's owner is unknown`, at most once an hour per account); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted | `chottag trace on` |
+| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a request for an object whose owner chottag does not know is not counted (it gets its own notice, `chottag: an artifact's owner is unknown`, at most once an hour per account); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted; when some of the count was a route the table does not list refused 403 (or 401 `permission_error`), which may belong to the remote account, the detail says how many (`status --json` `daemon.routeDriftUnclassified`, absent when 0) and the daemon log has one line per method and path an hour | `chottag trace on` |
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |

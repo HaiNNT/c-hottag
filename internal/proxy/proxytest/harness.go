@@ -43,6 +43,8 @@ type Options struct {
 	OnUsageError     func(error)
 	// OnServingRefusal is Config.OnServingRefusal (R158).
 	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)
+	// OnUnclassifiedRefusal is Config.OnUnclassifiedRefusal (R186).
+	OnUnclassifiedRefusal func(account string, status int, method, path string)
 	// OnUnknownOwner, OnOwnerFound and Now are Config's (M12/R168).
 	OnUnknownOwner func(account, kind, idHash string, status int)
 	OnOwnerFound   func(kind, idHash, found, tried string, status int)
@@ -146,26 +148,27 @@ func Start(t *testing.T, upstream http.Handler, opts Options) *Harness {
 		tracing = func() bool { return true }
 	}
 	srv := proxy.New(proxy.Config{
-		CA:               proxyCA,
-		Intercept:        proxy.SuffixMatcher(proxy.DefaultTraceSuffixes),
-		Log:              cfgLog,
-		Tracing:          tracing,
-		TraceLog:         opts.TraceLog,
-		OnClaudeVersion:  opts.OnClaudeVersion,
-		LimitFingerprint: opts.LimitFingerprint,
-		Choose:           opts.Choose,
-		OnLogError:       opts.OnLogError,
-		OnUsage:          opts.OnUsage,
-		OnUsageError:     opts.OnUsageError,
-		WallRetry:        opts.WallRetry,
-		OnServingRefusal: opts.OnServingRefusal,
-		OnUnknownOwner:   opts.OnUnknownOwner,
-		OnOwnerFound:     opts.OnOwnerFound,
-		Now:              opts.Now,
-		UpstreamProxy:    opts.UpstreamProxy,
-		Version:          opts.Version,
-		ProxyAuth:        opts.ProxyAuth,
-		UpstreamRootCAs:  upCA.Pool(),
+		CA:                    proxyCA,
+		Intercept:             proxy.SuffixMatcher(proxy.DefaultTraceSuffixes),
+		Log:                   cfgLog,
+		Tracing:               tracing,
+		TraceLog:              opts.TraceLog,
+		OnClaudeVersion:       opts.OnClaudeVersion,
+		LimitFingerprint:      opts.LimitFingerprint,
+		Choose:                opts.Choose,
+		OnLogError:            opts.OnLogError,
+		OnUsage:               opts.OnUsage,
+		OnUsageError:          opts.OnUsageError,
+		WallRetry:             opts.WallRetry,
+		OnServingRefusal:      opts.OnServingRefusal,
+		OnUnknownOwner:        opts.OnUnknownOwner,
+		OnUnclassifiedRefusal: opts.OnUnclassifiedRefusal,
+		OnOwnerFound:          opts.OnOwnerFound,
+		Now:                   opts.Now,
+		UpstreamProxy:         opts.UpstreamProxy,
+		Version:               opts.Version,
+		ProxyAuth:             opts.ProxyAuth,
+		UpstreamRootCAs:       upCA.Pool(),
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host := router.HostOnly(addr)
 			switch {

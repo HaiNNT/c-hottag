@@ -474,7 +474,7 @@ func TestServeClearsTheDaemonOnACleanShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink.setDaemon(47821, 0, 0, 0, 0, time.Now())
+	sink.setDaemon(47821, 0, 0, 0, 0, 0, time.Now())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -520,7 +520,7 @@ func TestServeClearsTheDaemonOnTheListenerErrorPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink.setDaemon(47821, 0, 0, 0, 0, time.Now())
+	sink.setDaemon(47821, 0, 0, 0, 0, 0, time.Now())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

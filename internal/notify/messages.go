@@ -49,6 +49,13 @@ func routeDriftMessage() (title, body string) {
 		"A swapped request was refused even after a retry; the route table may not match this Claude Code version. Run: chottag trace on"
 }
 
+// unclassifiedRefusedMessage is the notice for a refused request on a route
+// the table does not list (R186).
+func unclassifiedRefusedMessage(account, method, path string, status int) (title, body string) {
+	return "chottag: a new route was refused",
+		fmt.Sprintf("%s %s was refused as %s (%d); it may belong to the remote account. Please report it", method, path, account, status)
+}
+
 // unknownOwnerMessage is the notice for a claude.ai object that no account of
 // the pool could open, whose owner chottag does not know (R168).
 func unknownOwnerMessage(account, kind string) (title, body string) {

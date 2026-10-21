@@ -110,7 +110,11 @@ func routeDriftCheck() Check {
 		case d.RouteDrift == 0:
 			return Finding{Status: StatusOK, Detail: "no swapped request was refused after its refresh and retry"}
 		case d.Running:
-			return Finding{Status: StatusProblem, Detail: fmt.Sprintf("the running daemon saw %d swapped request(s) about an object, a remote route or a route the table does not list, or answered 404, refused after a refresh and retry (resent on Home's login, or refused as is for a remote, owner or pooled request): the route table may not match this Claude Code version", d.RouteDrift), Hint: "chottag trace on"}
+			detail := fmt.Sprintf("the running daemon saw %d swapped request(s) about an object, a remote route or a route the table does not list, or answered 404, refused after a refresh and retry (resent on Home's login, or refused as is for a remote, owner or pooled request): the route table may not match this Claude Code version", d.RouteDrift)
+			if d.RouteDriftUnclassified > 0 {
+				detail += fmt.Sprintf("; %d of them were on an unclassified route refused 403, which may belong to the remote account (please report it)", d.RouteDriftUnclassified)
+			}
+			return Finding{Status: StatusProblem, Detail: detail, Hint: "chottag trace on"}
 		}
 		return Finding{Status: StatusInfo, Detail: fmt.Sprintf("the last daemon saw %d swapped request(s) refused after a refresh and retry; it is not running now", d.RouteDrift), Hint: "chottag trace on"}
 	}}

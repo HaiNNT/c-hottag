@@ -245,7 +245,7 @@ func TestOwnReassignsAfterAServeCleanShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink.setDaemon(0, 0, 0, 0, 0, time.Now())
+	sink.setDaemon(0, 0, 0, 0, 0, 0, time.Now())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

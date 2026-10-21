@@ -1,0 +1,108 @@
+#!/bin/sh
+# scan-bundle: find /api/ and /v1/ paths in the installed Claude Code that
+# chottag's router has no rule for (R186, F290). Reads the binary (read-only,
+# never runs it), extracts the path literals, asks the router which ones a
+# rule names, and prints the rest that no routes/*.txt table already lists.
+#
+#   usage: .claude/skills/upstream-check/scripts/scan-bundle [--version V]
+#
+# The binary is $HOME/.local/share/claude/versions/V; without --version, V is
+# the installed version, as scripts/detect finds it. Quoted and template
+# literals starting /api/ or /v1/ count: a ${...} part becomes {id}, and so
+# does a :name segment; a ${...} glued to a word (a query string built at run
+# time) is dropped. Dropped as not routes: a bare prefix or a lone {id}, a trailing
+# slash (a prefix joined at run time), a query string, a file extension, and
+# anything with characters a path does not have.
+#
+# Prints one line per path the router leaves to its default and no
+# routes/*.txt lists, and nothing but paths:  STATUS<TAB>PATH<TAB>NOTE
+#   REVIEW  the path names a claude.ai object family (artifact, frame, page,
+#           session, environment, trigger, mcp, share, project, doc, comment)
+#   INFO    any other unclassified path
+#
+# Exit 1 if any line is REVIEW, 0 otherwise. A usage error is exit 2.
+set -eu
+
+die() {
+	echo "scan-bundle: $*" >&2
+	exit 2
+}
+
+version=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-h | --help)
+		sed -n '2,/^set -eu$/p' "$0" | sed '$d; s/^# \{0,1\}//'
+		exit 0
+		;;
+	--version)
+		[ $# -ge 2 ] || die "--version needs a value"
+		version=$2
+		shift 2
+		;;
+	*) die "usage: scan-bundle [--version V]" ;;
+	esac
+done
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git work tree"
+cd "$repo_root"
+script_dir=$(cd "$(dirname "$0")" && pwd)
+
+if [ -z "$version" ]; then
+	version=$("$script_dir/detect" | sed -n 's/^claude_version: //p')
+	case "$version" in
+	"" | unknown) die "no installed Claude Code found; pass --version V" ;;
+	esac
+fi
+case "$version" in
+*[!0-9.]* | "") die "bad version: $version" ;;
+esac
+binary="$HOME/.local/share/claude/versions/$version"
+[ -f "$binary" ] || die "no such binary: $binary"
+
+tmp=$(mktemp -d) || die "mktemp -d failed"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# normalize: collapse ${...} and :name segments and {name} to {id}.
+normalize() {
+	sed -E 's/\$\{[^}]*\}/{id}/g; s/\{[^}/]*\}/{id}/g; s#/:[A-Za-z_][A-Za-z0-9_]*#/{id}#g'
+}
+
+# Literals: an opening quote or backtick, then /api/ or /v1/, then path
+# characters or ${...} parts, up to the closing quote (so "/api/a b" is not
+# read as /api/a).
+LC_ALL=C grep -aoE "[\`\"'](/api/|/v1/)([^\`\"'[:space:]\\\$]|\\$\{[^}\`]*\})*[\`\"']" "$binary" |
+	sed 's/^.//; s/.$//' |
+	sed -E 's/\?.*$//' |
+	normalize |
+	sed -E 's/([A-Za-z0-9_.}-])\{id\}/\1/g' |
+	grep -E '^/(api|v1)/[A-Za-z0-9_.-]' |
+	grep -Ev '[^A-Za-z0-9_./{}-]|/$|\.[A-Za-z0-9]{1,5}$' |
+	sort -u >"$tmp/paths" || true
+
+# Paths the committed route tables already list, in the same shape.
+for f in routes/*.txt; do
+	[ -e "$f" ] || continue
+	awk '/^## Routes/{f=1;next} /^## /{f=0} f && $1!="METHOD"{print $3}' "$f"
+done | normalize | sort -u >"$tmp/known"
+
+if [ -s "$tmp/paths" ]; then
+	go run ./internal/router/cmd/routecheck <"$tmp/paths" >"$tmp/verdicts"
+else
+	: >"$tmp/verdicts"
+fi
+[ "$(wc -l <"$tmp/paths")" -eq "$(wc -l <"$tmp/verdicts")" ] || die "routecheck answered a different number of paths"
+
+review=0
+paste -d' ' "$tmp/verdicts" "$tmp/paths" | while IFS=' ' read -r verdict path; do
+	[ "$verdict" = default ] || continue
+	grep -F -x -q -- "$path" "$tmp/known" && continue
+	if printf '%s\n' "$path" | grep -Eqi 'artifact|frame|page|session|environment|trigger|mcp|share|project|doc|comment'; then
+		printf '%s\t%s\t%s\n' REVIEW "$path" "unclassified; may name a claude.ai object"
+	else
+		printf '%s\t%s\t%s\n' INFO "$path" "unclassified"
+	fi
+done >"$tmp/out"
+cat "$tmp/out"
+grep -q '^REVIEW' "$tmp/out" && review=1
+exit $review

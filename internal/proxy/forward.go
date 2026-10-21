@@ -29,10 +29,12 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 	// request (M2c spec §3).
 	traced := s.tracing()
 	host := router.HostOnly(r.URL.Host)
-	d := router.Route(router.Request{
+	routeReq := router.Request{
 		Method: r.Method, Host: host, Path: r.URL.Path, RawQuery: r.URL.RawQuery,
 		AbsoluteForm: form == "absolute",
-	})
+	}
+	d := router.Route(routeReq)
+	unclassified := d.Class == router.Serving && !router.Explicit(routeReq)
 	path, ids := tracelog.TemplatePath(r.URL.Path)
 	rec := tracelog.Record{
 		SID: sidOf(r.Context()),
@@ -154,7 +156,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			pr.Out.URL.Host = r.URL.Host
 			pr.Out.Host = upstreamHostHeader(r)
 		},
-		Transport: s.transportFor(account, originalAuth, originalAPIKey, d, bodyID, ownerAnswer, neverHome, ownerKnown, &rec, func(to string) {
+		Transport: s.transportFor(account, originalAuth, originalAPIKey, d, bodyID, ownerAnswer, neverHome, ownerKnown, unclassified, &rec, func(to string) {
 			// The wall retry resent the request on another account (M4
 			// spec §4a): the response, its usage headers included, is that
 			// account's. Same goroutine as ModifyResponse, so no lock.
@@ -441,7 +443,7 @@ func writePoolRefusal(w http.ResponseWriter, msg string) {
 // serving-class request with no object owner is also armed for the wall
 // retry when Config.WallRetry is set (M4 spec §4a: never remote, never an
 // owner-routed request).
-func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d router.Decision, bodyID string, ownerAnswer, neverHome, ownerKnown bool, rec *tracelog.Record, onRetarget func(string), onResent func()) http.RoundTripper {
+func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d router.Decision, bodyID string, ownerAnswer, neverHome, ownerKnown, unclassified bool, rec *tracelog.Record, onRetarget func(string), onResent func()) http.RoundTripper {
 	if account == "" || s.cfg.Choose == nil {
 		return s.transport
 	}
@@ -456,6 +458,13 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 		onServingRefusal: func(acct string, status int, errType string, resent bool) {
 			if s.cfg.OnServingRefusal != nil {
 				s.cfg.OnServingRefusal(acct, status, errType, resent, rec.Method, rec.Path)
+			}
+		},
+		unclassified: unclassified && d.Object == "",
+		onUnclassified: func(acct string, status int) {
+			s.driftUnclassified.Add(1)
+			if s.cfg.OnUnclassifiedRefusal != nil {
+				s.cfg.OnUnclassifiedRefusal(acct, status, rec.Method, rec.Path)
 			}
 		},
 		onOwnerAnswer: func() { rec.OwnerRefused = true },

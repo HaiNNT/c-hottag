@@ -33,7 +33,8 @@ func TestRoute(t *testing.T) {
 		{"POST", api, "/api/eval/sdk-zAZezfDKGoZuXXKe", "", fb()},
 		{"POST", api, "/api/event_logging/v2/batch", "", fb()},
 		{"GET", api, "/api/oauth/account/settings", "", fb()},
-		{"GET", api, "/api/oauth/organizations/org-1/marketplaces", "", d(U)}, // F218
+		{"GET", api, "/api/oauth/organizations/org-1/marketplaces", "", d(U)},               // F218
+		{"GET", api, "/api/oauth/organizations/org-1/quirky-lollipop/link-offer", "", d(U)}, // F292
 		{"GET", api, "/api/oauth/organizations/org-1/plugins/list-plugins", "limit=100", fb()},
 		{"GET", api, "/api/oauth/organizations/org-1/plugins/pl-1/download", "", fb()},
 		{"GET", api, "/api/oauth/organizations/org-1/skills/list-skills", "entrypoint=cli", fb()},
@@ -82,6 +83,10 @@ func TestRoute(t *testing.T) {
 		{"POST", api, "/v1/environments/bridge/env_1/offline", "", obj(R, router.KindEnvironment, "env_1")},
 		{"POST", api, "/v1/environments/bridge/env_1/offline", "beta=true", d(U)},
 		{"POST", api, "/v1/environments/env_1/bridge/reconnect", "", obj(R, router.KindEnvironment, "env_1")},
+		// R186 bundle scan: archive follows the environment's owner.
+		{"POST", api, "/v1/environments/env_1/archive", "", obj(R, router.KindEnvironment, "env_1")},
+		{"POST", api, "/v1/environments/env_1/archive", "beta=true", d(U)},
+		{"POST", api, "/v1/code/webhook-triggers", "", d(R)},
 		{"POST", api, "/v1/environments/env_1/bridge/reconnect", "beta=true", d(U)},
 		{"GET", api, "/v1/environments", "", d(R)},
 		{"GET", api, "/v1/environments/env_1", "", obj(R, router.KindEnvironment, "env_1")},
@@ -98,6 +103,15 @@ func TestRoute(t *testing.T) {
 		{"GET", api, "/api/frame/read/abc123", "", obj(R, router.KindArtifact, "abc123")},
 		{"GET", api, "/api/frame/abc123", "bk=1", obj(R, router.KindArtifact, "abc123")},
 		{"PUT", api, "/api/frame/abc/publish", "", obj(R, router.KindArtifact, "abc")},
+		// F290: the Artifact tool's server publishes after frame/deploy/prepare,
+		// so it must reach the same (remote) org.
+		{"POST", api, "/api/artifacts/mcp", "", d(R)},
+		{"POST", api, "/api/artifacts/mcp/upload/x", "", d(R)},
+		{"GET", api, "/api/artifacts/mcp", "", d(R)},
+		{"POST", api, "/api/artifacts/other", "", d(R)},
+		{"POST", api, "/v1/pages/mcp", "", d(R)},
+		{"GET", api, "/v1/pages/mcp/upload/x", "", d(R)},
+		{"GET", api, "/v1/pages/unseen/sub", "", d(R)},
 		// routines
 		{"GET", api, "/v1/code/triggers", "", d(R)},
 		{"POST", api, "/v1/code/triggers/trg_1/run", "", d(R)},

@@ -595,3 +595,44 @@ func TestServingRefusalHookLineCarriesNoSecretsOrLineBreaks(t *testing.T) {
 		t.Fatalf("log = %q, want one line ending \"; not resent\"", out)
 	}
 }
+
+// R186: a refusal of an unclassified route is logged, and notified, at most
+// once per METHOD+path per hour; another path, or the same one an hour later,
+// goes out again. The clock is a fake.
+func TestUnclassifiedRefusalHookLimitsPerPathPerHour(t *testing.T) {
+	n := newRecordingNotifier()
+	dn := newDaemonNotify(notifyTestState("A", "B"), n)
+	defer dn.Close()
+	var log bytes.Buffer
+	now := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	hook := unclassifiedRefusalHook(&log, dn, func() time.Time { return now })
+	hook("B", 403, "GET", "/api/new/{id}")
+	hook("B", 403, "GET", "/api/new/{id}")
+	now = now.Add(59 * time.Minute)
+	hook("B", 403, "GET", "/api/new/{id}")
+	hook("B", 403, "POST", "/api/new/{id}")
+	hook("B", 403, "GET", "/api/other")
+	want := "chottag: GET /api/new/{id} was refused as B (403); it may belong to the remote account; please report it\n" +
+		"chottag: POST /api/new/{id} was refused as B (403); it may belong to the remote account; please report it\n" +
+		"chottag: GET /api/other was refused as B (403); it may belong to the remote account; please report it\n"
+	if log.String() != want {
+		t.Fatalf("log = %q\nwant %q", log.String(), want)
+	}
+	if got := drainNotices(t, dn, n); len(got) != 3 {
+		t.Fatalf("notices = %+v, want 3", got)
+	}
+	now = now.Add(2 * time.Minute)
+	log.Reset()
+	hook("B", 403, "GET", "/api/new/{id}")
+	if strings.Count(log.String(), "\n") != 1 {
+		t.Fatalf("log after the hour = %q, want one line", log.String())
+	}
+}
+
+func TestUnclassifiedRefusalHookCleansFieldsAndToleratesNoNotifier(t *testing.T) {
+	var log bytes.Buffer
+	unclassifiedRefusalHook(&log, nil, time.Now)("B", 401, "GET", "/x\nchottag: forged")
+	if strings.Count(log.String(), "\n") != 1 {
+		t.Fatalf("log = %q, want one line", log.String())
+	}
+}

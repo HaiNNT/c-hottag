@@ -94,3 +94,15 @@ func TestSetNotifyErrorsStampsTheDaemonObject(t *testing.T) {
 		t.Errorf("SetNotifyErrors on a nil daemon object = %+v, want one created", g.Daemon)
 	}
 }
+
+func TestSetUnclassifiedDriftStampsAndCreatesTheDaemonObject(t *testing.T) {
+	var f status.File
+	f.SetUnclassifiedDrift(2)
+	if f.Daemon == nil || f.Daemon.RouteDriftUnclassified != 2 {
+		t.Fatalf("Daemon = %+v, want RouteDriftUnclassified 2", f.Daemon)
+	}
+	b, _ := json.Marshal(status.Daemon{})
+	if strings.Contains(string(b), "routeDriftUnclassified") {
+		t.Errorf("zero value is marshalled: %s", b)
+	}
+}

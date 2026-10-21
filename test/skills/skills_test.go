@@ -3,9 +3,9 @@
 // executable, that each script has the sh -eu shape scripts/dev-env's own
 // scripts use, and that none of them calls a bare `chottag` at command
 // position other than through scripts/dev-env or the read-only
-// `doctor --json` / `status --json` forms. It never spawns a process
-// (F232 forbids a test starting go or sh without its own allowlist entry):
-// every check here reads file contents and file mode only.
+// `doctor --json` / `status --json` forms. The static checks read file
+// contents and file mode only; scanbundle_test.go runs scan-bundle, and
+// only that, through a literal "sh" (F232: no go or sh -c spawn).
 package skills
 
 import (
@@ -36,7 +36,7 @@ func skillPath(t *testing.T, parts ...string) string {
 }
 
 // scriptFiles is every script this skill ships, under its own scripts/.
-var scriptFiles = []string{"detect", "diff-routes", "trace"}
+var scriptFiles = []string{"detect", "diff-routes", "scan-bundle", "trace"}
 
 // frontmatter parses SKILL.md's single-line "key: value" frontmatter
 // (test/plugin's own skill() helper parses the product skill the same way).

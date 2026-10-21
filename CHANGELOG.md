@@ -7,6 +7,19 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.7] - 2026-10-21
+
+### Fixed
+
+- Renaming an account no longer breaks Remote Control in a session that is already running. The record of which account answers a session's `POST /api/oauth/validate` kept the old name, so after a rename the answer came from the serving account, and Remote Control's owner-pin stopped whenever that was another login. The record now follows the account's slot, so the pin survives the rename and the warm loop keeps the renamed account fresh.
+- An artifact publish no longer fails with "caller org does not match owner org" when the remote and serving accounts are in different orgs. Claude Code's Artifact tool sends its publish to `/api/artifacts/mcp` after `/api/frame/deploy/prepare`; chottag sent the second as the serving account, not the remote one. All of `/api/artifacts/` and `/v1/pages/` (Claude Pages and Claude Docs) now go to the remote account.
+- Archiving a Remote Control environment now follows the environment's owner, and creating a webhook routine goes to the remote account, like the other routine routes. Both went out as the serving account.
+- Claude Code's background API-credit offer check (`/api/oauth/organizations/{id}/quirky-lollipop/link-offer`) stays on the session's own login. Sent as a serving account in another org it was refused with 404 and counted as route drift, with a `chottag: route drift` notice.
+
+### Added
+
+- A request on a route chottag's table does not list, sent as the serving account and refused 403 (or 401 `permission_error`), is now named: one daemon log line and one notice per method and path an hour (`chottag: GET /api/x/{id} was refused as work (403); it may belong to the remote account; please report it`), and `chottag doctor`'s `route-drift` row and `status --json` (`daemon.routeDriftUnclassified`) say how many. It was counted as route drift before, with nothing to say what it was.
+
 ## [0.10.6] - 2026-10-12
 
 ### Fixed
@@ -460,6 +473,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.7]: docs/release-notes/v0.10.7.md
 [0.10.6]: docs/release-notes/v0.10.6.md
 [0.10.5]: docs/release-notes/v0.10.5.md
 [0.10.4]: docs/release-notes/v0.10.4.md

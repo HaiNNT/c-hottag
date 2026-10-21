@@ -186,6 +186,13 @@ func (e *Events) ServingRefused(account string, status int, resent bool) {
 	e.fire(servingRefusedMessage(account, status, resent))
 }
 
+// UnclassifiedRefused reports that a swapped request on a route the table
+// does not list was refused with status as account (R186). The caller limits
+// it to once per METHOD and path per hour; path is the templated form.
+func (e *Events) UnclassifiedRefused(account, method, path string, status int) {
+	e.fire(unclassifiedRefusedMessage(account, method, path, status))
+}
+
 // UnknownOwnerEvery is the least time between two unknown-owner notices for
 // one account.
 const UnknownOwnerEvery = time.Hour

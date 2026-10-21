@@ -468,14 +468,14 @@ func TestLastTracedSurvivesARestartAndAStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	s1.noteTracedVersion("2.1.282", time.Date(2026, 9, 25, 10, 40, 0, 0, time.UTC))
-	s1.setDaemon(47850, 0, 0, 0, 0, time.Now())
+	s1.setDaemon(47850, 0, 0, 0, 0, 0, time.Now())
 	s1.clearDaemon()
 	s1.Close()
 	s2, err := newStatusSink(home, nil) // the next daemon generation loads the file
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2.setDaemon(47850, 0, 0, 0, 0, time.Now())
+	s2.setDaemon(47850, 0, 0, 0, 0, 0, time.Now())
 	s2.Close()
 	if lt, ok := loadLastTraced(t, home); !ok || lt.ClaudeVersion != "2.1.282" {
 		t.Fatalf("lastTraced after a restart = %+v, %v", lt, ok)

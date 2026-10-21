@@ -130,6 +130,9 @@ var (
 		// the D9 limitation). Other org routes (skills, plugins) accept a
 		// swapped token and stay serving.
 		r("GET", `^/api/oauth/organizations/[^/]+/marketplaces$`, untouched),
+		// F292: Claude Code's background API-credit offer check (2.1.305) is
+		// bound the same way; served by another org's account it 404s.
+		r("GET", `^/api/oauth/organizations/[^/]+/quirky-lollipop/link-offer$`, untouched),
 		r("GET", `^/api/organizations/[^/]+/model_selector/cc$`, untouched),
 
 		r("POST", `^/v1/code/sessions$`, Decision{Class: Remote, Records: KindSession, RecordField: "session.id"}),
@@ -145,8 +148,12 @@ var (
 		rb("", `^/v1/environments/([^/]+)/bridge/reconnect$`, Decision{Class: Remote, Object: KindEnvironment}),
 		rb("", `^/v1/environments(/bridge)?$`, remote),
 		rb("", `^/v1/environments/([^/]+)$`, Decision{Class: Remote, Object: KindEnvironment}),
+		// R186 bundle scan (2.1.305): archiving an environment follows its owner.
+		rb("POST", `^/v1/environments/([^/]+)/archive$`, Decision{Class: Remote, Object: KindEnvironment}),
 		r("", `^/v1/environment_providers(/.*)?$`, remote),
 		r("", `^/v1/code/triggers(/.*)?$`, remote),
+		// The routines tool's create_webhook_trigger (2.1.305): a routine.
+		r("", `^/v1/code/webhook-triggers(/.*)?$`, remote),
 		// The `claude remote-control` server (absolute form) registers the
 		// remote credential with validate, but a REPL session (mitm) calls
 		// the same route for its own login and feeds the returned
@@ -173,6 +180,15 @@ var (
 		r("", `^/api/frame/read/([^/]+)$`, Decision{Class: Remote, Object: KindArtifact}),
 		r("", `^/api/frame/([^/]+)(/.*)?$`, Decision{Class: Remote, Object: KindArtifact}),
 
+		// F290: the Artifact tool publishes with frame/deploy/prepare (above,
+		// remote) and then this JSON-RPC server (uploads under /upload/);
+		// the server refuses a caller whose org differs from prepare's, so
+		// it follows the remote account too. The whole family is remote (R186),
+		// as is Claude Pages / Claude Docs (/v1/pages/mcp): their objects
+		// belong to the remote org like artifacts.
+		r("", `^/api/artifacts(/.*)?$`, remote),
+		r("", `^/v1/pages(/.*)?$`, remote),
+
 		// The inference route itself: explicitly serving, so a refusal on it is
 		// the account's login being refused, not a route the table lacks (R158).
 		r("", `^/v1/messages(/.*)?$`, Decision{Class: Serving}),
@@ -189,6 +205,13 @@ var (
 
 // Route classifies one request. host may include a port.
 func Route(req Request) Decision {
+	d, _ := match(req)
+	return d
+}
+
+// match is Route's matching loop. The rule is the one that decided req, or
+// nil when none did (an unintercepted host, or the Serving fallback).
+func match(req Request) (Decision, *rule) {
 	var rules []rule
 	switch HostOnly(req.Host) {
 	case APIHost:
@@ -196,9 +219,10 @@ func Route(req Request) Decision {
 	case MCPProxyHost:
 		rules = mcpProxyRules
 	default:
-		return untouched
+		return untouched, nil
 	}
-	for _, ru := range rules {
+	for i := range rules {
+		ru := &rules[i]
 		if ru.method != "" && ru.method != req.Method {
 			continue
 		}
@@ -211,16 +235,16 @@ func Route(req Request) Decision {
 		}
 		if ru.betaSkip {
 			if q, _ := url.ParseQuery(req.RawQuery); q.Get("beta") == "true" {
-				return untouched
+				return untouched, ru
 			}
 		}
 		d := ru.d
 		if d.Object != "" && len(m) > 1 {
 			d.ObjectID = m[1]
 		}
-		return d
+		return d, ru
 	}
-	return Decision{Class: Serving, Fallback: true}
+	return Decision{Class: Serving, Fallback: true}, nil
 }
 
 // HostOnly lower-cases hostport and strips any port.

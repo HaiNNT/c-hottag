@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -290,6 +291,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, autoUsageHook(as, newUsageHook(cache.State, sink, dn)), upstreamURL)
 	cfg.WallRetry = as.wallRetry
 	cfg.OnServingRefusal = servingRefusalHook(stderr, dn)
+	cfg.OnUnclassifiedRefusal = unclassifiedRefusalHook(stderr, dn, time.Now)
 	cfg.OnUnknownOwner = unknownOwnerHook(stderr, dn)
 	cfg.OnOwnerFound = ownerFoundHook(stderr)
 	// Test hooks only (proxy.Config's own doc comment: nil = the real
@@ -1005,7 +1007,7 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 	var (
 		lastStampAt                            time.Time
 		lastRouteDrift, lastZeroIDs, lastDrops uint64
-		lastNotifyErrs                         uint64
+		lastNotifyErrs, lastUnclassified       uint64
 	)
 	stamp := func(now time.Time) {
 		// Keeping the remote accounts warm (R147) rides this tick too; kick
@@ -1017,6 +1019,7 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 			drops = d.Chooser.OwnerWriteDrops()
 		}
 		routeDrift := srv.RouteDrift()
+		unclassified := srv.UnclassifiedDrift()
 		// Notifications ride this tick (M2 spec §4). They run before the
 		// skip below: an unchanged tick must still evaluate the limit
 		// roll-up at now, since a reset time passing changes nothing a
@@ -1041,7 +1044,7 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		d.Notify.tick(d.Cache.State, d.Sink, routeDrift, now)
 		notifyErrs := d.Notify.Errors()
 		zeroIDs := d.Owners.ZeroIDExtractions()
-		changed := lastStampAt.IsZero() || routeDrift != lastRouteDrift || zeroIDs != lastZeroIDs || drops != lastDrops || notifyErrs != lastNotifyErrs
+		changed := lastStampAt.IsZero() || routeDrift != lastRouteDrift || zeroIDs != lastZeroIDs || drops != lastDrops || notifyErrs != lastNotifyErrs || unclassified != lastUnclassified
 		heartbeatDue := lastStampAt.IsZero() || now.Sub(lastStampAt) >= daemonHeartbeatInterval
 		if !changed && !heartbeatDue {
 			return
@@ -1053,9 +1056,9 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		// or heartbeatDue) always carries whatever port is currently known
 		// — including the F96 startup stamp below, which fires before
 		// listenTCP resolves it and so still writes port 0 that one time.
-		d.Sink.setDaemon(int(listenPort.Load()), routeDrift, zeroIDs, drops, notifyErrs, now)
+		d.Sink.setDaemon(int(listenPort.Load()), routeDrift, zeroIDs, drops, notifyErrs, unclassified, now)
 		lastStampAt = now
-		lastRouteDrift, lastZeroIDs, lastDrops, lastNotifyErrs = routeDrift, zeroIDs, drops, notifyErrs
+		lastRouteDrift, lastZeroIDs, lastDrops, lastNotifyErrs, lastUnclassified = routeDrift, zeroIDs, drops, notifyErrs, unclassified
 	}
 	// tickStamp adds the roster syncs to the watcher's per-tick stamp,
 	// which also runs once before the first tick: that first call is the
@@ -1925,7 +1928,72 @@ func wireStickyValidate(ch *chooser, home string, log io.Writer) func() []string
 		fmt.Fprintf(log, "chottag: %v; validate answers start afresh\n", err)
 	}
 	ch.sticky = vm
-	return func() []string { return vm.Accounts(timeNow(), stickyval.WarmWithin) }
+	return func() []string {
+		entries := vm.Recent(timeNow(), stickyval.WarmWithin)
+		var st *store.State
+		if ch.state != nil {
+			if s, err := ch.state(); err == nil {
+				st = &s
+			}
+		}
+		seen := map[string]bool{}
+		var out []string
+		for _, e := range entries {
+			name := e.Account
+			if st != nil {
+				// A renamed account is warm under its current name; one that
+				// is no longer registered has nothing to warm.
+				a, _ := resolveSticky(st, e)
+				if a == nil {
+					continue
+				}
+				name = a.Name
+			}
+			if k := strings.ToLower(name); !seen[k] {
+				seen[k] = true
+				out = append(out, name)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+}
+
+// resolveSticky is the registered account a recorded entry stands for, or nil
+// and why not. An entry that carries its slot dir follows the slot through a
+// rename. An older one, with no dir, is found by name; when the name is gone
+// (renamed) the one account with its email is taken, never a guess between
+// two that share an email. Either way an account whose email is now another
+// login's is refused: its answer would name another account than the session
+// pinned.
+func resolveSticky(st *store.State, e stickyval.Entry) (*store.Account, selector.Why) {
+	var a *store.Account
+	if e.Dir != "" {
+		for i := range st.Accounts {
+			if filepath.Clean(st.Accounts[i].Dir) == filepath.Clean(e.Dir) {
+				a = &st.Accounts[i]
+				break
+			}
+		}
+	} else if found, ok := findExact(st, e.Account); ok {
+		a = found
+	} else if e.Email != "" {
+		for i := range st.Accounts {
+			if strings.EqualFold(st.Accounts[i].Email, e.Email) {
+				if a != nil {
+					return nil, selector.WhyNotRegistered
+				}
+				a = &st.Accounts[i]
+			}
+		}
+	}
+	if a == nil {
+		return nil, selector.WhyNotRegistered
+	}
+	if e.Email != "" && a.Email != "" && !strings.EqualFold(e.Email, a.Email) {
+		return nil, selector.WhyIdentityChanged
+	}
+	return a, 0
 }
 
 // attempt is route, except that a session's validate call goes out as the
@@ -1962,7 +2030,12 @@ func (c *chooser) attempt(ctx context.Context, d router.Decision, bodyID string,
 	if ch.Account == "" {
 		return ch, pool
 	}
-	if state != stickyval.Absent && !strings.EqualFold(prev.Account, ch.Account) && c.log != nil {
+	// A rename alone is no move: compare the account the entry stands for.
+	moved := !strings.EqualFold(prev.Account, ch.Account)
+	if a, _ := resolveSticky(&st, prev); a != nil {
+		moved = !strings.EqualFold(a.Name, ch.Account)
+	}
+	if state != stickyval.Absent && moved && c.log != nil {
 		fmt.Fprintf(c.log, "chottag: validate for session %s moved from %s to %s: %s\n", shortSID(sid), prev.Account, ch.Account, reason)
 	}
 	c.stickySet(sid, ch.Account, st, now)
@@ -1977,11 +2050,11 @@ func shortSID(sid string) string {
 }
 
 func (c *chooser) stickySet(sid, account string, st store.State, now time.Time) {
-	email := ""
+	email, dir := "", ""
 	if a, ok := findExact(&st, account); ok {
-		email = a.Email
+		email, dir = a.Email, a.Dir
 	}
-	if err := c.sticky.Set(sid, account, email, now); err != nil && c.log != nil {
+	if err := c.sticky.Set(sid, account, email, dir, now); err != nil && c.log != nil {
 		fmt.Fprintf(c.log, "chottag: could not save the validate sessions: %v\n", err)
 	}
 }
@@ -2000,15 +2073,9 @@ func whyText(w selector.Why, pool string) string {
 // where `tag`'s explicit override already lets it serve, and a validate is not
 // an inference request.
 func (c *chooser) stickyChoice(ctx context.Context, st store.State, pool string, e stickyval.Entry) (selector.Choice, selector.Why) {
-	a, ok := findExact(&st, e.Account)
-	if !ok {
-		return selector.Choice{}, selector.WhyNotRegistered
-	}
-	// The name now belongs to another login (removed and added again, or
-	// logged in again as another email): its answer would name another
-	// account than the session pinned.
-	if e.Email != "" && a.Email != "" && !strings.EqualFold(e.Email, a.Email) {
-		return selector.Choice{}, selector.WhyIdentityChanged
+	a, why := resolveSticky(&st, e)
+	if a == nil {
+		return selector.Choice{}, why
 	}
 	return c.sel.ChooseNamed(ctx, pool, a.Name)
 }

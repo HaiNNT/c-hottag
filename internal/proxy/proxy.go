@@ -172,6 +172,16 @@ type Config struct {
 	// counted as such. Called on the request goroutine: it must not block.
 	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)
 
+	// OnUnclassifiedRefusal, when set, is called when a swapped request on a
+	// route the table does not list (not router.Explicit; the Serving
+	// fallback) stays refused after the safety net's retry with 403, or 401
+	// and a permission_error: the route may belong to the remote account
+	// (R186). account is the swapped account, status the first refusal's,
+	// method and path the request's (the path is templated, never a query or a
+	// body). The request is also counted as route drift, as before. Called on
+	// the request goroutine: it must not block.
+	OnUnclassifiedRefusal func(account string, status int, method, path string)
+
 	// OnUnknownOwner, when set, is called when a swapped request for an
 	// object whose owner chottag does not know, sent to the pool's remote
 	// account (never a connector call or a serving route), stayed refused
@@ -245,7 +255,10 @@ type Server struct {
 	netDialer *net.Dialer // nil when cfg.DialContext was supplied
 	transport *http.Transport
 	drift     atomic.Uint64
-	unowned   *unknownOwners // M12: objects no account here could open
+	// driftUnclassified counts the drift that was an unclassified route
+	// refused 403 (R186); it is a subset of drift.
+	driftUnclassified atomic.Uint64
+	unowned           *unknownOwners // M12: objects no account here could open
 	// inflight counts requests being served; lastStart is the Unix-nano
 	// time the latest one began (construction time before any). Both feed Idle.
 	inflight  atomic.Int64
@@ -540,6 +553,11 @@ func (s *Server) serveHealth(w http.ResponseWriter, r *http.Request) {
 // RouteDrift counts swapped requests that had to be refused even after a retry: a sign
 // the route table no longer matches this Claude Code version.
 func (s *Server) RouteDrift() uint64 { return s.drift.Load() }
+
+// UnclassifiedDrift counts the route drift that was a swapped request on a
+// route the table does not list, refused 403 (or 401 with permission_error):
+// a subset of RouteDrift (R186).
+func (s *Server) UnclassifiedDrift() uint64 { return s.driftUnclassified.Load() }
 
 // tracing is Config.Tracing's answer, false when it is unset.
 func (s *Server) tracing() bool { return s.cfg.Tracing != nil && s.cfg.Tracing() }

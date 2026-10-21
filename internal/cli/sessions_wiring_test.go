@@ -165,7 +165,7 @@ func TestSetSessionsWritesOnlyOnChange(t *testing.T) {
 func TestClearDaemonClearsSessions(t *testing.T) {
 	home := t.TempDir()
 	sink := newTestSink(t, home)
-	sink.setDaemon(47850, 0, 0, 0, 0, time.Now())
+	sink.setDaemon(47850, 0, 0, 0, 0, 0, time.Now())
 	sink.setSessions([]sessions.Activity{{SID: sidOne, Pool: "default", Account: "A", LastSeen: time.Now(), Requests: 1}})
 	sink.clearDaemon()
 	sink.Close()

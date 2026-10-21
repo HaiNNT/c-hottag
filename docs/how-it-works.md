@@ -124,11 +124,14 @@ different account from the one it pinned at start. So the first account that
 answers a session's validate keeps answering it for that session's life, even
 after the serving account moves, and chottag remembers it in
 `run/validate-sessions.json` under `CHOTTAG_HOME` (session id, account name,
-its email and last use, plus a bounded list of recently dropped entries,
+its email, its slot directory and last use, plus a bounded list of recently dropped entries,
 never a token; at most 500 sessions, none kept after 7 days unused), so a daemon restart keeps it. A recorded account whose
 token has gone stale is refreshed first (the same wait of up to 15 seconds as a
 remote request), and the warm loop keeps the accounts of sessions used in the
-last day fresh even when no pool serves them any more. Only when that account
+last day fresh even when no pool serves them any more. A `chottag rename`
+keeps the pin, because the entry follows the slot directory, which a rename never
+changes (an entry from before 0.10.7 has none, and follows a rename by email
+when only one account has it). Only when that account
 is no longer registered, was logged in again as another email, is not in the
 session's pool, has rotation off (outside the default pool), needs login, or
 cannot be refreshed does the request go out as the serving account instead,
@@ -346,7 +349,10 @@ login) gets the 503 too, rather than going out on Home's login.
 **Remote and owner requests never fall back to Home, with any number of
 pools, when a remote account is set.** A request about a claude.ai object
 (Remote Control, a connector, an artifact, a routine) goes out as the remote
-account, or as the object's owner. If that account has no usable token,
+account, or as the object's owner. This covers publishing an artifact (the
+Artifact tool's `/api/artifacts` server as well as `/api/frame`) and Claude
+Pages / Claude Docs (`/v1/pages`), so a publish never splits across two
+organizations. If that account has no usable token,
 chottag first waits up to 15 seconds for a refresh (and, if the account is
 backing off from a failed one, tries one more, at most once a minute per
 account), then answers the request itself with a 503 (`chottag: account A

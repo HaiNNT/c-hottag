@@ -53,6 +53,11 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
 cd "$repo_root"
 skill_dir=$(cd "$(dirname "$0")" && pwd)
 
+# Run from a Claude Code session that prod chottag launched, this shell
+# carries prod's HTTPS_PROXY and CA. The dev daemon would inherit them as its
+# upstream proxy and refuse prod's CA, so every step fails with a 502 (F288).
+unset HTTPS_PROXY https_proxy NODE_EXTRA_CA_CERTS
+
 models=""
 slot=""
 keep_daemon=0

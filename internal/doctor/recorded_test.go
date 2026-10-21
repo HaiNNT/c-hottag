@@ -170,3 +170,17 @@ func TestReportChecksNeverWrite(t *testing.T) {
 	mustRun(t, ti.env, ReportChecks([]string{"A"}), true)
 	assertChangedOnly(t, before, ti.snapshot())
 }
+
+func TestRouteDriftDetailMentionsAnUnclassifiedRoute(t *testing.T) {
+	for _, tc := range []struct {
+		unclassified uint64
+		want         bool
+	}{{0, false}, {2, true}} {
+		ti := newTestInstall(t)
+		writeTestStatus(t, ti.home, status.File{Daemon: &status.Daemon{Heartbeat: testNow.Add(-10 * time.Second), RouteDrift: 3, RouteDriftUnclassified: tc.unclassified}})
+		r := rowByID(t, mustRun(t, ti.env, []Check{routeDriftCheck()}, true), "route-drift")
+		if got := strings.Contains(r.Detail, "unclassified route"); got != tc.want {
+			t.Fatalf("unclassified=%d: detail %q mentions it = %v, want %v", tc.unclassified, r.Detail, got, tc.want)
+		}
+	}
+}

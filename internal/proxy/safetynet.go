@@ -34,6 +34,11 @@ type safetyNet struct {
 	original       string // the client's own Authorization header
 	originalAPIKey string // the client's own X-Api-Key header, if any
 	drift          *atomic.Uint64
+	// unclassified marks a request on a route the table does not list (R186);
+	// onUnclassified is called when it is counted as drift after a 403 (or a
+	// 401 permission_error).
+	unclassified   bool
+	onUnclassified func(account string, status int)
 	onDrift        func() // marks the trace record
 	// serving is true for a plain serving route (class serving, no object):
 	// a request there that is refused twice is the account's login being
@@ -297,6 +302,10 @@ func (s *safetyNet) countRefusal(status int, resent bool) {
 		s.onDrift()
 	}
 	s.drift.Add(1)
+	if s.unclassified && s.onUnclassified != nil &&
+		(status == http.StatusForbidden || (status == http.StatusUnauthorized && s.firstType == "permission_error")) {
+		s.onUnclassified(s.account, status)
+	}
 }
 
 // finishWall calls s.wallDone exactly once, if a wall-retry resend is

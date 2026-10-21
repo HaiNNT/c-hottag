@@ -304,7 +304,7 @@ func TestStickyValidateConcurrentSessionsAreRaceFree(t *testing.T) {
 			defer wg.Done()
 			sid := fmt.Sprintf("%032d", i)
 			for j := 0; j < 20; j++ {
-				if err := s.ch.sticky.Set(sid, "C", "c@example.com", s.now.Add(time.Duration(j)*2*time.Hour)); err != nil {
+				if err := s.ch.sticky.Set(sid, "C", "c@example.com", "", s.now.Add(time.Duration(j)*2*time.Hour)); err != nil {
 					t.Error(err)
 				}
 				s.ch.sticky.Get(sid, s.now)
@@ -326,7 +326,7 @@ func TestWireStickyValidateOpensAndAttachesTheMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := seed.Set(valSidOne, "C", "", timeNow()); err != nil {
+	if err := seed.Set(valSidOne, "C", "", "", timeNow()); err != nil {
 		t.Fatal(err)
 	}
 	ch, log := &chooser{}, newSyncBuf()
@@ -406,5 +406,134 @@ func TestStickyValidateNotInPoolRetryDoesNotWaitTwice(t *testing.T) {
 	}
 	if len(s.toks.waits) != 1 {
 		t.Fatalf("sticky waits = %v, want exactly one for the two attempts", s.toks.waits)
+	}
+}
+
+// F289: a rename leaves the pin on the same slot.
+
+// rename renames account old as `chottag rename` does and tells the token fake.
+func (s *stickyRig) rename(old, to string) {
+	s.t.Helper()
+	dir := s.account(old).Dir
+	mustPools(s.t, &s.st, func(st *store.State) error { _, _, err := st.Rename(old, to); return err })
+	s.toks.name[dir] = to
+}
+
+// legacy rewrites sid's stored entry as a daemon before 0.10.7 wrote it: no dir.
+func (s *stickyRig) legacy(sid string) {
+	s.t.Helper()
+	e, st := s.ch.sticky.Lookup(sid, s.now)
+	if st != stickyval.Live {
+		s.t.Fatalf("no live entry for %s", sid)
+	}
+	m, err := stickyval.Open(filepath.Join(s.t.TempDir(), "run", "v.json"))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if err := m.Set(sid, e.Account, e.Email, "", s.now); err != nil {
+		s.t.Fatal(err)
+	}
+	s.ch.sticky = m
+}
+
+func TestStickyValidateFollowsARenameThroughTheSlotDir(t *testing.T) {
+	s := newStickyRig(t)
+	ctx := poolCtx("personal", valSidOne)
+	s.choose(ctx, validateDecision)
+	s.serve("personal", "D")
+	dir := s.account("C").Dir
+	s.rename("C", "cee")
+	if got := s.choose(ctx, validateDecision); got != "cee" {
+		t.Fatalf("validate after the rename went out as %q, want the sticky cee", got)
+	}
+	if strings.Contains(s.log.String(), "validate for session") {
+		t.Fatalf("a rename logged a move: %q", s.log.String())
+	}
+	e, st := s.ch.sticky.Lookup(valSidOne, s.now)
+	if st != stickyval.Live || e.Account != "cee" || e.Dir != dir || e.Email != "c@example.com" {
+		t.Fatalf("stored entry %+v (%v), want cee, c@example.com and dir %s", e, st, dir)
+	}
+}
+
+func TestStickyValidateFollowsARenameOfALegacyEntryByEmail(t *testing.T) {
+	s := newStickyRig(t)
+	ctx := poolCtx("personal", valSidOne)
+	s.choose(ctx, validateDecision)
+	s.legacy(valSidOne)
+	s.serve("personal", "D")
+	s.rename("C", "cee")
+	if got := s.choose(ctx, validateDecision); got != "cee" {
+		t.Fatalf("validate went out as %q, want cee", got)
+	}
+	if strings.Contains(s.log.String(), "validate for session") {
+		t.Fatalf("a rename logged a move: %q", s.log.String())
+	}
+	if e, _ := s.ch.sticky.Lookup(valSidOne, s.now); e.Account != "cee" || e.Dir != s.account("cee").Dir {
+		t.Fatalf("the legacy entry was not migrated: %+v", e)
+	}
+}
+
+func TestStickyValidateNeverGuessesBetweenTwoAccountsOfOneEmail(t *testing.T) {
+	s := newStickyRig(t)
+	ctx := poolCtx("personal", valSidOne)
+	s.choose(ctx, validateDecision)
+	s.legacy(valSidOne)
+	s.serve("personal", "D")
+	s.rename("C", "cee")
+	for i := range s.st.Accounts {
+		if s.st.Accounts[i].Name == "B" {
+			s.st.Accounts[i].Email = "c@example.com"
+		}
+	}
+	if got := s.choose(ctx, validateDecision); got != "D" {
+		t.Fatalf("validate went out as %q, want the serving D", got)
+	}
+	if !strings.Contains(s.log.String(), "validate for session 11111111 moved from C to D: C is no longer registered\n") {
+		t.Fatalf("log %q lacks the move", s.log.String())
+	}
+}
+
+func TestStickyValidateDirWithAnotherEmailIsAChangedIdentity(t *testing.T) {
+	s := newStickyRig(t)
+	ctx := poolCtx("personal", valSidOne)
+	s.choose(ctx, validateDecision)
+	s.serve("personal", "D")
+	s.rename("C", "cee")
+	for i := range s.st.Accounts {
+		if s.st.Accounts[i].Name == "cee" {
+			s.st.Accounts[i].Email = "bob@example.com"
+		}
+	}
+	if got := s.choose(ctx, validateDecision); got != "D" {
+		t.Fatalf("validate went out as %q, want the serving D", got)
+	}
+	if !strings.Contains(s.log.String(), "moved from C to D: C was logged in again as another account\n") {
+		t.Fatalf("log %q lacks the identity change", s.log.String())
+	}
+}
+
+func TestWireStickyValidateWarmListYieldsCurrentNames(t *testing.T) {
+	home := t.TempDir()
+	seed, err := stickyval.Open(filepath.Join(home, "run", "validate-sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := timeNow()
+	for sid, e := range map[string]stickyval.Entry{
+		valSidOne: {Account: "C", Email: "c@example.com", Dir: "/slots/C"},
+		valSidTwo: {Account: "D", Email: "d@example.com"},
+	} {
+		if err := seed.Set(sid, e.Account, e.Email, e.Dir, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := store.State{Accounts: []store.Account{
+		{Name: "cee", Dir: "/slots/C", Email: "c@example.com"},
+		{Name: "dee", Dir: "/slots/D", Email: "d@example.com"},
+	}}
+	ch := &chooser{state: func() (store.State, error) { return st, nil }}
+	accounts := wireStickyValidate(ch, home, newSyncBuf())
+	if got := strings.Join(accounts(), ","); got != "cee,dee" {
+		t.Fatalf("warm accounts = %q, want cee,dee", got)
 	}
 }

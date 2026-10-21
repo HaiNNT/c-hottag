@@ -1189,11 +1189,12 @@ func (c *statusSink) dropTokenPassthroughs() {
 // redundantly, never protectively.
 // notifyErrors is stamped alongside, through status.File.SetNotifyErrors
 // (M2b).
-func (c *statusSink) setDaemon(port int, routeDrift, zeroIDs, drops, notifyErrors uint64, now time.Time) {
+func (c *statusSink) setDaemon(port int, routeDrift, zeroIDs, drops, notifyErrors, unclassified uint64, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.file.SetDaemon(port, routeDrift, zeroIDs, drops, now)
 	c.file.SetNotifyErrors(notifyErrors)
+	c.file.SetUnclassifiedDrift(unclassified)
 	c.queueLocked()
 }
 

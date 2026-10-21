@@ -272,6 +272,47 @@ func servingRefusalHook(log io.Writer, dn *daemonNotify) func(account string, st
 	}
 }
 
+// unclassifiedEvery is the least time between two reports of a refused
+// unclassified route for one METHOD and path (R186).
+const unclassifiedEvery = time.Hour
+
+// maxUnclassifiedKeys bounds the limiter's memory: past it, entries older
+// than unclassifiedEvery are dropped.
+const maxUnclassifiedKeys = 256
+
+// unclassifiedRefusalHook is proxy.Config.OnUnclassifiedRefusal (R186): a
+// swapped request on a route the table does not list that was refused 403 (or
+// 401 permission_error), so it may belong to the remote account. One
+// daemon.log line and one notice per METHOD and templated path per hour (now
+// is the clock); never a token, a body or a query. dn may be nil.
+func unclassifiedRefusalHook(log io.Writer, dn *daemonNotify, now func() time.Time) func(account string, status int, method, path string) {
+	var mu sync.Mutex
+	last := map[string]time.Time{}
+	return func(account string, status int, method, path string) {
+		method, path = cleanLogField(method), cleanLogField(path)
+		key := method + " " + path
+		t := now()
+		mu.Lock()
+		if at, ok := last[key]; ok && t.Sub(at) < unclassifiedEvery {
+			mu.Unlock()
+			return
+		}
+		if len(last) >= maxUnclassifiedKeys {
+			for k, at := range last {
+				if t.Sub(at) >= unclassifiedEvery {
+					delete(last, k)
+				}
+			}
+		}
+		last[key] = t
+		mu.Unlock()
+		fmt.Fprintf(log, "chottag: %s %s was refused as %s (%d); it may belong to the remote account; please report it\n", method, path, cleanLogField(account), status)
+		if dn != nil {
+			dn.events.UnclassifiedRefused(account, method, path, status)
+		}
+	}
+}
+
 // unknownOwnerHook is proxy.Config.OnUnknownOwner (R168): a claude.ai object
 // that account's login could not open and whose owner chottag does not know
 // (the pool's other accounts were tried only for a GET or HEAD refused 403 or

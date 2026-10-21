@@ -222,6 +222,11 @@ type Daemon struct {
 	// counted in memory but never stamped here: dn.Close() runs after
 	// runDaemon returns and the status sink has already been closed.
 	NotifyErrors uint64 `json:"notifyErrors"`
+	// RouteDriftUnclassified is the part of RouteDrift that was a swapped
+	// request on a route the table does not list, refused 403 (R186): the
+	// route may belong to the remote account. Per daemon generation like
+	// RouteDrift; omitted when zero.
+	RouteDriftUnclassified uint64 `json:"routeDriftUnclassified,omitempty"`
 	// Version and VersionMismatch are report overlays (public release
 	// design §2.4), like Running: never written by the daemon or read back
 	// from disk, only set fresh by a report consumer (`status --json`,
@@ -276,6 +281,15 @@ func (f *File) SetDaemon(port int, routeDrift, zeroIDs, ownerWriteDrops uint64, 
 	f.Daemon.RouteDrift = routeDrift
 	f.Daemon.ZeroIDExtractions = zeroIDs
 	f.Daemon.OwnerWriteDrops = ownerWriteDrops
+}
+
+// SetUnclassifiedDrift stamps the unclassified part of the route-drift count
+// (R186), creating the daemon object if there is none.
+func (f *File) SetUnclassifiedDrift(n uint64) {
+	if f.Daemon == nil {
+		f.Daemon = &Daemon{}
+	}
+	f.Daemon.RouteDriftUnclassified = n
 }
 
 // SetNotifyErrors stamps the notification error counter. It is separate

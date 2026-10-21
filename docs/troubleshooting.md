@@ -256,6 +256,19 @@ summarize`, and open an issue with that output — it holds route shapes,
 never tokens. (A claude.ai connector's own 401/403/404 from the account
 chottag recorded as its owner is passed through and not counted.)
 
+## A route was refused as the serving account
+
+A daemon log line `chottag: GET /api/x/{id} was refused as work (403); it may
+belong to the remote account; please report it`, or the desktop notice
+`chottag: a new route was refused`, means a request on a route chottag's table
+does not list was sent as the serving account and answered 403 (or 401
+`permission_error`). A new Claude Code route that belongs to the remote
+account's org is refused this way. It also counts as route drift, and
+`chottag doctor`'s `route-drift` row says how many were of this kind. The path
+is the templated form (`{id}`), never an id, a query or a body. The line comes
+at most once an hour per method and path. Open an issue with the line
+(it holds no id or token): the route is then classified in the table.
+
 ## A session isn't switching
 
 A session that started before chottag was installed, or was launched
