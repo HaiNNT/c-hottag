@@ -49,6 +49,14 @@ func routeDriftMessage() (title, body string) {
 		"A swapped request was refused even after a retry; the route table may not match this Claude Code version. Run: chottag trace on"
 }
 
+// homeLoginRefusedMessage is the notice for Claude Code's own login being
+// refused for a while (R183): every session says "Login expired" although
+// chottag's accounts are fine.
+func homeLoginRefusedMessage() (title, body string) {
+	return "chottag: Claude Code's own login was refused",
+		`Claude Code's own login (Home) was refused: sessions will say "Login expired". Run /login in one session; chottag's accounts are fine.`
+}
+
 // unclassifiedRefusedMessage is the notice for a refused request on a route
 // the table does not list (R186).
 func unclassifiedRefusedMessage(account, method, path string, status int) (title, body string) {

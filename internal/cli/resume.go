@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -62,10 +63,22 @@ type journalRow struct {
 	CmuxSurface   string     `json:"cmuxSurface,omitempty"`
 	Command       string     `json:"command,omitempty"` // journal.Command, for lost rows with a native
 	Title         string     `json:"title,omitempty"`   // read live from the transcript, never stored (R171)
+	Missing       bool       `json:"missing,omitempty"` // a lost row whose conversation has no transcript: nothing to resume
+}
+
+// unrecordedRow is a conversation that was active when the batch was lost but
+// was never journaled (launched by a shim that did not record it, F284).
+type unrecordedRow struct {
+	Dir      string    `json:"dir"`
+	Native   string    `json:"native"`
+	Modified time.Time `json:"modified"`
+	Title    string    `json:"title,omitempty"`
+	Command  string    `json:"command"`
 }
 
 type sessionsResult struct {
-	Sessions []journalRow `json:"sessions"`
+	Sessions   []journalRow    `json:"sessions"`
+	Unrecorded []unrecordedRow `json:"unrecorded"`
 }
 
 type resumeRow struct {
@@ -73,14 +86,102 @@ type resumeRow struct {
 	Pool      string    `json:"pool,omitempty"`
 	Native    string    `json:"native"`
 	Ended     time.Time `json:"ended"`
-	Placement string    `json:"placement"` // tab | new-tab | new-workspace | print | failed
+	Placement string    `json:"placement"` // tab | new-tab | new-workspace | print | skipped | failed
 	Command   string    `json:"command"`
 	Title     string    `json:"title,omitempty"` // read live from the transcript, never stored (R171)
 	Error     string    `json:"error,omitempty"`
 }
 
 type resumeResult struct {
-	Sessions []resumeRow `json:"sessions"`
+	Sessions   []resumeRow `json:"sessions"`
+	Unrecorded int         `json:"unrecorded"` // conversations active before the loss that chottag never recorded
+}
+
+const (
+	// unrecordedBefore and unrecordedAfter bound an unrecorded conversation's
+	// last write around the batch's newest end.
+	unrecordedBefore = 2 * time.Hour
+	unrecordedAfter  = 2 * time.Minute
+	unrecordedMax    = 50
+	unrecordedHead   = 64 << 10
+)
+
+// noConversation is the error of a lost row whose transcript is gone.
+const noConversation = "no conversation to resume"
+
+// missingTranscript reports whether e's conversation has no transcript: the
+// config dir is known and holds none for its resume id.
+func missingTranscript(e journal.Entry) bool {
+	dir := claudeConfigDir()
+	return dir != "" && journal.ValidNative(e.ResumeID()) && sessname.FindTranscript(dir, e.ResumeID()) == ""
+}
+
+// unrecordedConversations lists the conversations under configDir that were
+// active shortly before the batch was lost (their transcript last written
+// within 2 hours before its newest end, no later than 2 minutes after) but
+// that no journal entry names. Newest first, at most 50. Stat only, plus the
+// head read for the candidates.
+func unrecordedConversations(configDir string, batch, all []journal.Entry) []unrecordedRow {
+	out := []unrecordedRow{}
+	if configDir == "" || len(batch) == 0 {
+		return out
+	}
+	newest := batch[0].Ended
+	for _, e := range batch {
+		if e.Ended.After(newest) {
+			newest = e.Ended
+		}
+	}
+	known := map[string]bool{}
+	for _, e := range all {
+		known[strings.ToLower(e.Native)] = true
+		known[strings.ToLower(e.ResumeOf)] = true
+	}
+	type cand struct {
+		path, id string
+		mod      time.Time
+	}
+	var cands []cand
+	paths, _ := filepath.Glob(filepath.Join(configDir, "projects", "*", "*.jsonl"))
+	for _, p := range paths {
+		id := strings.TrimSuffix(filepath.Base(p), ".jsonl")
+		if !journal.ValidNative(id) || known[strings.ToLower(id)] || !sessname.TranscriptAllowed(p, configDir) {
+			continue
+		}
+		fi, err := os.Stat(p)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if m := fi.ModTime(); !m.Before(newest.Add(-unrecordedBefore)) && !m.After(newest.Add(unrecordedAfter)) {
+			cands = append(cands, cand{p, id, m})
+		}
+	}
+	sort.Slice(cands, func(a, b int) bool { return cands[a].mod.After(cands[b].mod) })
+	if len(cands) > unrecordedMax {
+		cands = cands[:unrecordedMax]
+	}
+	for _, c := range cands {
+		cwd := sessname.Cwd(c.path, unrecordedHead)
+		if cwd == "" {
+			continue
+		}
+		out = append(out, unrecordedRow{Dir: cwd, Native: c.id, Modified: c.mod,
+			Title:   sessname.Sanitize(sessname.Title(c.path)),
+			Command: journal.Command(journal.Entry{Dir: cwd, Native: c.id})})
+	}
+	return out
+}
+
+// unrecordedFor is unrecordedConversations over j's entries.
+func unrecordedFor(j *journal.Journal, batch []journal.Entry) ([]unrecordedRow, error) {
+	if len(batch) == 0 {
+		return []unrecordedRow{}, nil
+	}
+	all, err := j.List()
+	if err != nil {
+		return nil, err
+	}
+	return unrecordedConversations(claudeConfigDir(), batch, all), nil
 }
 
 // lostBatch opens the journal under home, ends the entries whose process is
@@ -123,15 +224,42 @@ func lostSessions(home string, now time.Time) (int, time.Time) {
 // custom-title, else the last ai-title, else "". Control characters are
 // stripped, since it is printed to a terminal. It is never stored.
 func titleOf(e journal.Entry) string {
+	title, _ := transcriptOf(e)
+	return title
+}
+
+// transcriptOf is titleOf, plus whether the session was connected to Remote
+// Control.
+func transcriptOf(e journal.Entry) (title string, remote bool) {
 	id := e.ResumeID()
 	if !journal.ValidNative(id) {
-		return ""
+		return "", false
 	}
 	p := sessname.FindTranscript(claudeConfigDir(), id)
 	if p == "" {
-		return ""
+		return "", false
 	}
-	return sessname.Sanitize(sessname.Title(p))
+	return sessname.Sanitize(sessname.Title(p)), sessname.RemoteControlUsed(p)
+}
+
+// resumeCommand is the command that resumes e, and e's title. A session that
+// was on Remote Control is resumed with its title as the Remote Control name:
+// Claude Code would otherwise show it there under a neutral name (F293).
+func resumeCommand(e journal.Entry) (cmd, title string) {
+	title, remote := transcriptOf(e)
+	if remote {
+		return journal.CommandNamed(e, title), title
+	}
+	return journal.Command(e), title
+}
+
+// labelOf names a session in resume's output: its title and folder, or the
+// folder alone.
+func labelOf(title, dir string) string {
+	if title == "" {
+		return dir
+	}
+	return strconv.Quote(title) + " (" + dir + ")"
 }
 
 func ptrTime(t time.Time) *time.Time {
@@ -142,11 +270,16 @@ func ptrTime(t time.Time) *time.Time {
 }
 
 func journalRowOf(e journal.Entry, withCommand bool) journalRow {
+	cmd, title := resumeCommand(e)
 	row := journalRow{PID: e.PID, Dir: e.Dir, Pool: e.Pool, Native: e.ResumeID(), Started: e.Started,
 		Ended: ptrTime(e.Ended), Outcome: e.Outcome, Resumed: ptrTime(e.Resumed),
-		CmuxWorkspace: e.CmuxWorkspace, CmuxSurface: e.CmuxSurface, Title: titleOf(e)}
+		CmuxWorkspace: e.CmuxWorkspace, CmuxSurface: e.CmuxSurface, Title: title}
 	if withCommand && e.ResumeID() != "" {
-		row.Command = journal.Command(e)
+		if missingTranscript(e) {
+			row.Missing = true
+		} else {
+			row.Command = cmd
+		}
 	}
 	return row
 }
@@ -200,13 +333,17 @@ func runSessions(args []string, r *reporter) int {
 	for _, e := range entries {
 		rows = append(rows, journalRowOf(e, inBatch[e.Key()]))
 	}
+	unrecorded, err := unrecordedFor(j, batch)
+	if err != nil {
+		return r.FailErr(err)
+	}
 	if len(entries) == 0 {
 		if *all {
 			r.Text("no sessions recorded\n")
 		} else {
 			r.Text("no lost sessions\n")
 		}
-		return r.OK(sessionsResult{Sessions: rows})
+		return r.OK(sessionsResult{Sessions: rows, Unrecorded: unrecorded})
 	}
 	tw := tabwriter.NewWriter(r.Stdout(), 0, 4, 3, ' ', 0)
 	fmt.Fprintln(tw, "DIR\tPOOL\tSTATE\tENDED\tTITLE\tCOMMAND")
@@ -228,8 +365,15 @@ func runSessions(args []string, r *reporter) int {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Dir, pool, stateOf(e), ended, title, cmd)
 	}
+	for _, u := range unrecorded {
+		title := u.Title
+		if title == "" {
+			title = "-"
+		}
+		fmt.Fprintf(tw, "%s\t-\tunrecorded\t%s\t%s\t%s\n", u.Dir, u.Modified.Local().Format("2006-01-02 15:04"), title, u.Command)
+	}
 	tw.Flush()
-	return r.OK(sessionsResult{Sessions: rows})
+	return r.OK(sessionsResult{Sessions: rows, Unrecorded: unrecorded})
 }
 
 // cmuxState returns a client and snapshot, or a nil client when cmux is not
@@ -288,6 +432,10 @@ func runResume(args []string, stdin io.Reader, r *reporter) int {
 		r.Text("chottag: no lost sessions to resume\n")
 		return r.OK(resumeResult{Sessions: []resumeRow{}})
 	}
+	unrecorded, err := unrecordedFor(j, batch) // before --pick narrows the batch
+	if err != nil {
+		return r.FailErr(err)
+	}
 
 	c, snap, why := cmuxState()
 	if why != "" {
@@ -321,24 +469,31 @@ func runResume(args []string, stdin io.Reader, r *reporter) int {
 	for _, row := range rows {
 		switch row.Placement {
 		case "tab":
-			r.Text("resumed %s in its tab\n", row.Dir)
+			r.Text("resumed %s in its tab\n", labelOf(row.Title, row.Dir))
 		case "new-tab":
-			r.Text("resumed %s in a new tab\n", row.Dir)
+			r.Text("resumed %s in a new tab\n", labelOf(row.Title, row.Dir))
 		case "new-workspace":
-			r.Text("resumed %s in a new workspace\n", row.Dir)
+			r.Text("resumed %s in a new workspace\n", labelOf(row.Title, row.Dir))
 		case "print":
 			r.Text("%s\n", row.Command)
+		case "skipped":
+			r.Text("skipped %s: %s\n", labelOf(row.Title, row.Dir), row.Error)
 		default:
 			failed++
-			r.Text("failed %s: %s\n", row.Dir, row.Error)
+			r.Text("failed %s: %s\n", labelOf(row.Title, row.Dir), row.Error)
 		}
+	}
+	if n := len(unrecorded); n == 1 {
+		r.Text("1 more conversation was active before the loss but not launched through chottag: chottag sessions lists its command\n")
+	} else if n > 1 {
+		r.Text("%d more conversations were active before the loss but not launched through chottag: chottag sessions lists their commands\n", n)
 	}
 	if failed > 0 {
 		return r.Fail(exit.Error, codeResumeFailed,
 			fmt.Sprintf("%d of %d sessions could not be resumed", failed, len(rows)),
 			map[string]any{"sessions": rows})
 	}
-	return r.OK(resumeResult{Sessions: rows})
+	return r.OK(resumeResult{Sessions: rows, Unrecorded: len(unrecorded)})
 }
 
 // pickSessions lists the batch and reads the user's choice. done means the
@@ -407,14 +562,25 @@ func placeAll(batch []journal.Entry, c *cmuxctl.Client, snap cmuxctl.Snapshot, s
 	var rows []resumeRow
 	for _, ws := range order {
 		for _, e := range groups[ws] {
-			row := resumeRow{Dir: e.Dir, Pool: e.Pool, Native: e.ResumeID(), Ended: e.Ended, Title: titleOf(e)}
+			cmd, title := resumeCommand(e)
+			row := resumeRow{Dir: e.Dir, Pool: e.Pool, Native: e.ResumeID(), Ended: e.Ended, Title: title}
 			if !journal.ValidNative(e.ResumeID()) {
 				// Never build a shell line from an id that is not a UUID.
 				row.Placement, row.Error = "failed", "unsafe session id"
 				rows = append(rows, row)
 				continue
 			}
-			cmd := journal.Command(e)
+			if missingTranscript(e) {
+				// Nothing to resume: a real run marks it, or it comes back
+				// every time; --print and a cmux error mark nothing.
+				row.Title = ""
+				row.Placement, row.Error = "skipped", noConversation
+				if markPrints {
+					mark(e)
+				}
+				rows = append(rows, row)
+				continue
+			}
 			row.Command = cmd
 			var err error
 			s, onSnap := snap.Surfaces[e.CmuxSurface]

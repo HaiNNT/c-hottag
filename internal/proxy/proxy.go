@@ -182,6 +182,15 @@ type Config struct {
 	// the request goroutine: it must not block.
 	OnUnclassifiedRefusal func(account string, status int, method, path string)
 
+	// OnHomeLogin, when set, is called when a request's final response came
+	// on the client's own OAuth login (never swapped, or resent on it by the
+	// safety net) with an OAuth access token: ok is false for 401 and true for
+	// 2xx; any other status reports nothing. Claude Code gates every request
+	// on its own login, so a refusal here is Home's login expiring, not an
+	// account's (R183). It carries no token and no body. Called on the request
+	// goroutine: it must not block.
+	OnHomeLogin func(ok bool)
+
 	// OnUnknownOwner, when set, is called when a swapped request for an
 	// object whose owner chottag does not know, sent to the pool's remote
 	// account (never a connector call or a serving route), stayed refused

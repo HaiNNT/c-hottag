@@ -88,6 +88,24 @@ func TestTranscriptTitles(t *testing.T) {
 	}
 }
 
+func TestRemoteControlUsed(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "t.jsonl")
+	write(t, p, strings.Join([]string{
+		`{"type":"user","message":"bridge-session"}`,
+		`{"type":"bridge-session","sessionId":"x","ownerAccountUuid":"u"}`,
+	}, "\n"))
+	if !RemoteControlUsed(p) {
+		t.Error("a bridge-session record should count")
+	}
+	write(t, p, `{"type":"user","message":"\"type\":\"bridge-session\""}`+"\n"+`{"type":"ai-title","aiTitle":"x"}`+"\n")
+	if RemoteControlUsed(p) {
+		t.Error("the words in a message are not a record")
+	}
+	if RemoteControlUsed(filepath.Join(t.TempDir(), "none")) {
+		t.Error("missing file")
+	}
+}
+
 func TestTranscriptBounds(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "t.jsonl")
 	pad := strings.Repeat(`{"type":"user","message":"`+strings.Repeat("a", 90)+`"}`+"\n", 100)
@@ -545,5 +563,25 @@ func TestDecideHealsASubfolderName(t *testing.T) {
 	// A folder outside the cwd's path is left alone.
 	if got := rebaseSubfolder("notes 09:00", sub); got != "notes 09:00" {
 		t.Errorf("%q", got)
+	}
+}
+
+func TestCwdReadsTheFirstAbsoluteCwdInTheHead(t *testing.T) {
+	dir := t.TempDir()
+	for name, c := range map[string]struct{ body, want string }{
+		"first":    {`{"type":"x"}` + "\n" + `{"cwd":"/Users/alice/a"}` + "\n" + `{"cwd":"/Users/alice/b"}` + "\n", "/Users/alice/a"},
+		"relative": {`{"cwd":"rel"}` + "\n" + `{"cwd":"/Users/alice/b"}` + "\n", "/Users/alice/b"},
+		"control":  {`{"cwd":"/Users/alice/a\nb"}` + "\n", ""},
+		"none":     {`{"type":"x"}` + "\n", ""},
+		"past":     {strings.Repeat("x", 200) + "\n" + `{"cwd":"/Users/alice/a"}` + "\n", ""},
+	} {
+		p := filepath.Join(dir, name+".jsonl")
+		write(t, p, c.body)
+		if got := Cwd(p, 100); got != c.want {
+			t.Errorf("%s: Cwd = %q, want %q", name, got, c.want)
+		}
+	}
+	if got := Cwd(filepath.Join(dir, "missing.jsonl"), 100); got != "" {
+		t.Errorf("missing file: %q", got)
 	}
 }

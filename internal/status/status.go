@@ -227,6 +227,11 @@ type Daemon struct {
 	// route may belong to the remote account. Per daemon generation like
 	// RouteDrift; omitted when zero.
 	RouteDriftUnclassified uint64 `json:"routeDriftUnclassified,omitempty"`
+	// HomeLoginRefused is when the first request of the open episode in which
+	// Claude Code's own (Home) login was refused 401 arrived (R183), RFC 3339;
+	// omitted when there is no such episode. The daemon clears it on shutdown
+	// (ClearDaemon).
+	HomeLoginRefused string `json:"homeLoginRefused,omitempty"`
 	// Version and VersionMismatch are report overlays (public release
 	// design §2.4), like Running: never written by the daemon or read back
 	// from disk, only set fresh by a report consumer (`status --json`,
@@ -352,6 +357,33 @@ func (f *File) ClearDaemon() {
 	f.Daemon.Running = false
 	f.Daemon.Heartbeat = time.Time{}
 	f.Daemon.RestartPending = ""
+	f.Daemon.HomeLoginRefused = ""
+}
+
+// HomeLoginSettle is how long an episode of Home's login being refused must
+// have lasted before it is reported as a fault: the desktop notice and the
+// doctor row both wait for it (R183), so one stray 401 is not an alarm.
+const HomeLoginSettle = 30 * time.Second
+
+// SetHomeLoginRefused stamps the start of the open episode in which Home's
+// login was refused (the zero time for none) and reports whether that changed
+// anything. A nil Daemon is created only for a non-zero start.
+func (f *File) SetHomeLoginRefused(since time.Time) bool {
+	want := ""
+	if !since.IsZero() {
+		want = since.UTC().Format(time.RFC3339)
+	}
+	if f.Daemon == nil {
+		if want == "" {
+			return false
+		}
+		f.Daemon = &Daemon{}
+	}
+	if f.Daemon.HomeLoginRefused == want {
+		return false
+	}
+	f.Daemon.HomeLoginRefused = want
+	return true
 }
 
 // SetRestartPending stamps the installed version this daemon is not yet

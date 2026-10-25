@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/owners"
 	"github.com/HaiNNT/c-hottag/internal/status"
@@ -16,14 +17,14 @@ import (
 const needsLogin = "needs-login"
 
 // ReportChecks are spec §2.2 rows 11-15: one token check per name, in the
-// order given (registration order), then owners, route-drift, limits and
-// version-drift. None has a Fix, and none reads a credential (D8).
+// order given (registration order), then owners, route-drift, home-login
+// (R183), limits and version-drift. None has a Fix, and none reads a credential (D8).
 func ReportChecks(names []string) []Check {
-	checks := make([]Check, 0, len(names)+5)
+	checks := make([]Check, 0, len(names)+6)
 	for _, n := range names {
 		checks = append(checks, tokenCheck(n))
 	}
-	return append(checks, ownersCheck(), routeDriftCheck(), limitsCheck(), versionDriftCheck(), planUnknownCheck())
+	return append(checks, ownersCheck(), routeDriftCheck(), homeLoginCheck(), limitsCheck(), versionDriftCheck(), planUnknownCheck())
 }
 
 // loadStatus reads cache/status.json. A missing or unparseable cache is an
@@ -117,6 +118,39 @@ func routeDriftCheck() Check {
 			return Finding{Status: StatusProblem, Detail: detail, Hint: "chottag trace on"}
 		}
 		return Finding{Status: StatusInfo, Detail: fmt.Sprintf("the last daemon saw %d swapped request(s) refused after a refresh and retry; it is not running now", d.RouteDrift), Hint: "chottag trace on"}
+	}}
+}
+
+// homeLoginCheck is the home-login row (R183): Claude Code gates every request
+// on its own (Home's) login, so once that login is refused for a while every
+// session says "Login expired", whatever the accounts' state. Only a running
+// daemon's open episode, at least status.HomeLoginSettle old, is a problem.
+func homeLoginCheck() Check {
+	return Check{ID: "home-login", Detect: func(e *Env) Finding {
+		f := loadStatus(e)
+		if f.Daemon == nil {
+			return Finding{Status: StatusInfo, Detail: "no daemon has reported yet"}
+		}
+		f.DaemonRunningAt(e.Now())
+		d := f.Daemon
+		if d.HomeLoginRefused == "" {
+			return Finding{Status: StatusOK, Detail: "Claude Code's own login was not refused"}
+		}
+		since, err := time.Parse(time.RFC3339, d.HomeLoginRefused)
+		if err != nil {
+			return Finding{Status: StatusInfo, Detail: "the recorded start of the refusal is unreadable"}
+		}
+		switch {
+		case !d.Running:
+			return Finding{Status: StatusInfo, Detail: fmt.Sprintf("the last daemon saw Claude Code's own login refused since %s; it is not running now", since.Local().Format("15:04"))}
+		case e.Now().Sub(since) < status.HomeLoginSettle:
+			return Finding{Status: StatusOK, Detail: "Claude Code's own login was not refused"}
+		}
+		return Finding{
+			Status: StatusProblem,
+			Detail: fmt.Sprintf("Claude Code's own (Home) login has been refused since %s: sessions say \"Login expired\"; chottag's accounts are not the cause", since.Local().Format("15:04")),
+			Hint:   "run /login in a Claude Code session",
+		}
 	}}
 }
 

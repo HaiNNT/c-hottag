@@ -5,12 +5,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/HaiNNT/c-hottag/internal/fsutil"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"os"
 
 	"github.com/HaiNNT/c-hottag/internal/cmuxctl"
 	"github.com/HaiNNT/c-hottag/internal/exit"
@@ -122,6 +125,8 @@ func resumeHome(t *testing.T, alive map[int]bool) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("CHOTTAG_HOME", home)
+	// Its own transcripts: the unrecorded scan must not see another test's.
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	stubAlive(t, alive)
 	return home
 }
@@ -144,6 +149,8 @@ func putLost(t *testing.T, home string, pid int, off int, ws, surf, dir string) 
 	if err := openJ(t, home).Put(e); err != nil {
 		t.Fatal(err)
 	}
+	// Resume only relaunches a conversation that has a transcript.
+	writeTranscript(t, filepath.Join(claudeConfigDir(), "projects", "-Users-alice", e.ResumeID()+".jsonl"), "{}\n")
 	return e
 }
 
@@ -257,6 +264,7 @@ func TestResumeWithoutDaemonSweeps(t *testing.T) {
 	if err := openJ(t, home).Put(open); err != nil {
 		t.Fatal(err)
 	}
+	writeTranscript(t, filepath.Join(claudeConfigDir(), "projects", "-Users-alice", open.Native+".jsonl"), "{}\n")
 	code, out, errs := runChottag(t, "resume", "--json")
 	if code != exit.OK {
 		t.Fatalf("resume = %d %q %q", code, out, errs)
@@ -643,7 +651,7 @@ func TestResumePickShowsTitleAndJSONHasIt(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 	installCmux(t)
 	e := putLost(t, home, 11, 0, "", "", "/Users/alice/a")
-	writeTranscript(t, filepath.Join(cfg, "projects", "-p", e.ResumeID()+".jsonl"), `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
+	writeTranscript(t, filepath.Join(cfg, "projects", "-Users-alice", e.ResumeID()+".jsonl"), `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
 	_, out, _ := runChottag(t, "resume", "--print", "--json")
 	if res := resumeDoc(t, out); len(res.Sessions) != 1 || res.Sessions[0].Title != "Fix Acme login" {
 		t.Errorf("json %s", out)
@@ -653,5 +661,252 @@ func TestResumePickShowsTitleAndJSONHasIt(t *testing.T) {
 	pickSessions([]journal.Entry{e}, cmuxctl.Snapshot{}, strings.NewReader("\n"), r)
 	if !strings.Contains(sb.String(), "Fix Acme login") {
 		t.Errorf("pick lacks the title:\n%s", sb.String())
+	}
+}
+
+func TestResumeNamesEachSessionAndItsRemoteControl(t *testing.T) {
+	home := resumeHome(t, nil)
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	f := installCmux(t)
+	rc := putLost(t, home, 11, 0, "WS-1", "S-IDLE", "/Users/alice/rc")
+	plain := putLost(t, home, 12, 1, "WS-1", "S-GONE", "/Users/alice/plain")
+	bare := putLost(t, home, 13, 2, "", "", "/Users/alice/bare")
+	put := func(e journal.Entry, body string) {
+		writeTranscript(t, filepath.Join(cfg, "projects", "-Users-alice", e.ResumeID()+".jsonl"), body)
+	}
+	put(rc, `{"type":"custom-title","customTitle":"Acme release · rc 10:00"}`+"\n"+`{"type":"bridge-session","sessionId":"x"}`+"\n")
+	put(plain, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n")
+	// bare has the bridge record but no title: no name to give.
+	put(bare, `{"type":"bridge-session","sessionId":"x"}`+"\n")
+
+	code, out, errs := runChottag(t, "resume")
+	if code != exit.OK {
+		t.Fatalf("exit %d: %s %s", code, out, errs)
+	}
+	for _, want := range []string{
+		`resumed "Acme release · rc 10:00" (/Users/alice/rc) in its tab`,
+		`resumed "Fix Acme login" (/Users/alice/plain) in a new tab`,
+		"cd '/Users/alice/bare' && claude --resume " + bare.ResumeID() + "\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	sends := f.sends()
+	if len(sends) != 2 {
+		t.Fatalf("sends %q", sends)
+	}
+	wantRC := journal.CommandNamed(rc, "Acme release · rc 10:00") + "\n"
+	if got := sends[0][len(sends[0])-1]; got != wantRC {
+		t.Errorf("rc session sent %q, want %q", got, wantRC)
+	}
+	if got := sends[1][len(sends[1])-1]; got != journal.Command(plain)+"\n" {
+		t.Errorf("a session without Remote Control gets no flag: %q", got)
+	}
+}
+
+func TestSessionsCommandNamesRemoteControl(t *testing.T) {
+	home := resumeHome(t, nil)
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	installCmux(t)
+	e := putLost(t, home, 11, 0, "", "", "/Users/alice/rc")
+	writeTranscript(t, filepath.Join(cfg, "projects", "-Users-alice", e.ResumeID()+".jsonl"),
+		`{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n"+`{"type":"bridge-session","sessionId":"x"}`+"\n")
+	_, out, _ := runChottag(t, "sessions", "--json")
+	var res sessionsResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Sessions) != 1 || res.Sessions[0].Command != journal.CommandNamed(e, "Fix Acme login") {
+		t.Errorf("sessions command %s", out)
+	}
+	_, printed, _ := runChottag(t, "resume", "--print")
+	if strings.TrimSpace(printed) != journal.CommandNamed(e, "Fix Acme login") {
+		t.Errorf("--print %q", printed)
+	}
+}
+
+func TestResumeSkipsAConversationWithoutATranscript(t *testing.T) {
+	home := resumeHome(t, nil)
+	fc := installCmux(t)
+	gone := putLost(t, home, 11, 0, "WS-1", "S-IDLE", "/Users/alice/gone")
+	putLost(t, home, 12, 1, "WS-1", "S-VIM", "/Users/alice/kept")
+	if err := os.Remove(filepath.Join(claudeConfigDir(), "projects", "-Users-alice", gone.ResumeID()+".jsonl")); err != nil {
+		t.Fatal(err)
+	}
+
+	code, text, errs := runChottag(t, "resume", "--print")
+	if code != exit.OK {
+		t.Fatalf("resume --print = %d %q %q", code, text, errs)
+	}
+	if !strings.Contains(text, "skipped /Users/alice/gone: no conversation to resume\n") {
+		t.Errorf("no skipped line:\n%s", text)
+	}
+	if strings.Contains(text, gone.ResumeID()) {
+		t.Errorf("the missing conversation's command was printed:\n%s", text)
+	}
+	// --print marks nothing, so it is skipped again; a real run marks it,
+	// so it never comes back after that.
+	code, text, _ = runChottag(t, "resume", "--print")
+	if code != exit.OK || !strings.Contains(text, "skipped /Users/alice/gone") {
+		t.Errorf("--print marked the skipped entry: %d %q", code, text)
+	}
+	runChottag(t, "resume")
+	code, text, _ = runChottag(t, "resume", "--print")
+	if code != exit.OK || strings.Contains(text, "gone") {
+		t.Errorf("after a real run = %d %q", code, text)
+	}
+
+	before := len(fc.sends())
+	home2 := resumeHome(t, nil)
+	putLost(t, home2, 11, 0, "WS-1", "S-IDLE", "/Users/alice/gone2")
+	e2 := putLost(t, home2, 12, 1, "", "", "/Users/alice/gone3")
+	_ = os.Remove(filepath.Join(claudeConfigDir(), "projects", "-Users-alice", e2.ResumeID()+".jsonl"))
+	code, out, _ := runChottag(t, "resume", "--json")
+	if code != exit.OK {
+		t.Fatalf("a skipped row failed the command: %d %q", code, out)
+	}
+	res := resumeDoc(t, out)
+	if got, want := placements(res), []string{"tab", "skipped"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("placements %v, want %v", got, want)
+	}
+	if r := res.Sessions[1]; r.Error != "no conversation to resume" || r.Command != "" {
+		t.Errorf("skipped row %+v", r)
+	}
+	if n := len(fc.sends()) - before; n != 1 {
+		t.Errorf("sends %d, want 1", n)
+	}
+}
+
+func TestSessionsMarksAMissingConversation(t *testing.T) {
+	home := resumeHome(t, nil)
+	gone := putLost(t, home, 11, 0, "", "", "/Users/alice/gone")
+	putLost(t, home, 12, 1, "", "", "/Users/alice/kept")
+	if err := os.Remove(filepath.Join(claudeConfigDir(), "projects", "-Users-alice", gone.ResumeID()+".jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ := runChottag(t, "sessions", "--json")
+	var raw struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil || len(raw.Sessions) != 2 {
+		t.Fatalf("sessions %q (%v)", out, err)
+	}
+	if m := raw.Sessions[0]; m["missing"] != true || m["command"] != nil || m["outcome"] != "lost" {
+		t.Errorf("missing row %v", m)
+	}
+	if m := raw.Sessions[1]; m["missing"] != nil || m["command"] == nil {
+		t.Errorf("kept row %v", m)
+	}
+	_, text, _ := runChottag(t, "sessions")
+	if !strings.Contains(text, "lost") || strings.Contains(text, gone.ResumeID()) {
+		t.Errorf("text %q", text)
+	}
+}
+
+// unrecordedSetup makes a lost batch of one and the transcripts around it.
+func unrecordedSetup(t *testing.T) (home string, in string, lost journal.Entry) {
+	t.Helper()
+	home = resumeHome(t, nil)
+	installCmux(t)
+	lost = putLost(t, home, 11, 0, "WS-1", "S-IDLE", "/Users/alice/a")
+	proj := filepath.Join(claudeConfigDir(), "projects", "-Users-alice")
+	at := func(name string, off time.Duration, body string) string {
+		id := testNative(name)
+		p := filepath.Join(proj, id+".jsonl")
+		writeTranscript(t, p, body)
+		if err := os.Chtimes(p, lostAt.Add(off), lostAt.Add(off)); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	cwd := func(d string) string { return `{"type":"user","cwd":"` + d + `"}` + "\n" }
+	in = at("unrec", -10*time.Minute, `{"type":"ai-title","aiTitle":"Fix Acme login"}`+"\n"+cwd("/Users/alice/it's"))
+	at("old", -3*time.Hour, cwd("/Users/alice/old"))
+	at("late", 5*time.Minute, cwd("/Users/alice/late"))
+	at("nocwd", -time.Minute, `{"type":"user"}`+"\n")
+	at("relcwd", -time.Minute, cwd("rel/dir"))
+	// A journaled conversation (by ResumeOf) is not unrecorded.
+	of := at("ofres", -time.Minute, cwd("/Users/alice/of"))
+	if err := openJ(t, home).Put(journal.Entry{PID: 60, PPID: 59, Started: lostAt.Add(-time.Hour), Dir: "/Users/alice/of",
+		Native: testNative("other"), ResumeOf: of, Ended: lostAt.Add(-time.Hour), Outcome: journal.OutcomeExited}); err != nil {
+		t.Fatal(err)
+	}
+	writeTranscript(t, filepath.Join(proj, "not-a-uuid.jsonl"), cwd("/Users/alice/x"))
+	writeTranscript(t, filepath.Join(proj, testNative("sub"), "sub.jsonl"), cwd("/Users/alice/sub"))
+	return home, in, lost
+}
+
+func TestSessionsListsUnrecordedConversations(t *testing.T) {
+	_, id, _ := unrecordedSetup(t)
+	_, out, _ := runChottag(t, "sessions", "--json")
+	var res sessionsResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Unrecorded) != 1 {
+		t.Fatalf("unrecorded %+v", res.Unrecorded)
+	}
+	u := res.Unrecorded[0]
+	if u.Dir != "/Users/alice/it's" || u.Native != id || u.Title != "Fix Acme login" || !u.Modified.Equal(lostAt.Add(-10*time.Minute)) ||
+		u.Command != `cd '/Users/alice/it'\''s' && claude --resume `+id {
+		t.Errorf("row %+v", u)
+	}
+	_, text, _ := runChottag(t, "sessions")
+	if !strings.Contains(text, "unrecorded") || !strings.Contains(text, u.Command) {
+		t.Errorf("text lacks the unrecorded row:\n%s", text)
+	}
+}
+
+func TestSessionsUnrecordedIsEmptyWithoutABatch(t *testing.T) {
+	resumeHome(t, nil)
+	_, out, _ := runChottag(t, "sessions", "--json")
+	if !strings.Contains(out, `"unrecorded": []`) && !strings.Contains(out, `"unrecorded":[]`) {
+		t.Errorf("no empty unrecorded array: %s", out)
+	}
+}
+
+func TestResumeHintsAtUnrecordedConversations(t *testing.T) {
+	_, id, _ := unrecordedSetup(t)
+	fc := installCmux(t)
+	code, text, _ := runChottag(t, "resume")
+	if code != exit.OK {
+		t.Fatalf("resume = %d %q", code, text)
+	}
+	const hint = "1 more conversation was active before the loss but not launched through chottag: chottag sessions lists its command\n"
+	if !strings.HasSuffix(text, hint) {
+		t.Errorf("hint missing:\n%s", text)
+	}
+	if strings.Contains(text, id) || len(fc.sends()) != 1 {
+		t.Errorf("an unrecorded conversation was placed: %q", fc.sends())
+	}
+}
+
+func TestResumeJSONCountsUnrecorded(t *testing.T) {
+	unrecordedSetup(t)
+	_, out, _ := runChottag(t, "resume", "--json", "--print")
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(out), &raw); err != nil || raw["unrecorded"] != float64(1) {
+		t.Errorf("unrecorded = %v (%v) in %s", raw["unrecorded"], err, out)
+	}
+}
+
+func TestUnrecordedCapsItsCandidates(t *testing.T) {
+	home := resumeHome(t, nil)
+	lost := putLost(t, home, 11, 0, "", "", "/Users/alice/a")
+	for i := 0; i < 60; i++ {
+		id := testNative(fmt.Sprintf("c%02d", i))
+		p := filepath.Join(claudeConfigDir(), "projects", "-p", id+".jsonl")
+		writeTranscript(t, p, `{"cwd":"/Users/alice/p"}`+"\n")
+		mt := lostAt.Add(-time.Duration(i) * time.Second)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := unrecordedConversations(claudeConfigDir(), []journal.Entry{lost}, []journal.Entry{lost})
+	if len(got) != 50 || got[0].Native != testNative("c00") {
+		t.Errorf("got %d rows, first %v", len(got), got[0].Native)
 	}
 }

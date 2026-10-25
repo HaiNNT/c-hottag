@@ -171,6 +171,17 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			success := rec.Status >= 200 && rec.Status < 300
 			respIsJSON := isJSON(rec.RespType)
 
+			// The response came on the client's own OAuth login when nothing
+			// was swapped or the safety net resent it there (R183).
+			if s.cfg.OnHomeLogin != nil && rec.Auth == "oauth-access" && (!rec.Swapped || viaHome) {
+				switch {
+				case rec.Status == http.StatusUnauthorized:
+					s.cfg.OnHomeLogin(false)
+				case success:
+					s.cfg.OnHomeLogin(true)
+				}
+			}
+
 			// Usage belongs to an account, so only a swapped response has
 			// any — and a DRIFTED response was answered on the client's own
 			// login, so its quota headers are not this account's at all.

@@ -292,6 +292,8 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	cfg.WallRetry = as.wallRetry
 	cfg.OnServingRefusal = servingRefusalHook(stderr, dn)
 	cfg.OnUnclassifiedRefusal = unclassifiedRefusalHook(stderr, dn, time.Now)
+	homeLogin := newHomeLoginWatch(stderr, dn, time.Now)
+	cfg.OnHomeLogin = homeLogin.report
 	cfg.OnUnknownOwner = unknownOwnerHook(stderr, dn)
 	cfg.OnOwnerFound = ownerFoundHook(stderr)
 	// Test hooks only (proxy.Config's own doc comment: nil = the real
@@ -360,6 +362,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Chooser:    ch,
 			Poller:     poller,
 			Notify:     dn,
+			HomeLogin:  homeLogin,
 			Auto:       as,
 			Spread:     sp,
 			Update:     ul,
@@ -834,6 +837,10 @@ type daemonDeps struct {
 	// to it, and stamps its error count as daemon.notifyErrors. nil (every
 	// daemonDeps literal before M2b) posts nothing and stamps 0.
 	Notify *daemonNotify
+	// HomeLogin, if non-nil, is the watch on Claude Code's own login (R183):
+	// the roster tick stamps its open episode as daemon.homeLoginRefused. nil
+	// (every test literal) stamps nothing.
+	HomeLogin *homeLoginWatch
 	// Auto, if non-nil, is the auto-switcher (M4 spec §4). The roster tick
 	// runs it before the notification roll-up, so a switch at a reset
 	// replaces "available again" (S8). nil (every daemonDeps literal
@@ -1043,6 +1050,9 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		}
 		d.Notify.tick(d.Cache.State, d.Sink, routeDrift, now)
 		notifyErrs := d.Notify.Errors()
+		if d.HomeLogin != nil && d.Sink != nil {
+			d.Sink.setHomeLoginRefused(d.HomeLogin.refusedSince())
+		}
 		zeroIDs := d.Owners.ZeroIDExtractions()
 		changed := lastStampAt.IsZero() || routeDrift != lastRouteDrift || zeroIDs != lastZeroIDs || drops != lastDrops || notifyErrs != lastNotifyErrs || unclassified != lastUnclassified
 		heartbeatDue := lastStampAt.IsZero() || now.Sub(lastStampAt) >= daemonHeartbeatInterval

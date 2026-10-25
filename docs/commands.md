@@ -717,6 +717,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
     "heartbeat": "2026-09-28T14:00:30Z",
     "routeDrift": 0,
     "routeDriftUnclassified": 0,
+    "homeLoginRefused": "2026-09-28T13:58:12Z",
     "zeroIdExtractions": 0,
     "ownerWriteDrops": 0,
     "notifyErrors": 0,
@@ -893,6 +894,17 @@ switches from `state.json`, always present: `check` (the daemon's update check),
 
 The text form adds one line, `update: 0.6.0 available (run: chottag update)`,
 only when the cache says a release newer than this build is available.
+
+`daemon.homeLoginRefused` is when Claude Code's own (Home) login started being
+refused: the first 401 of an open episode, on a request that went out on that
+login (not swapped, or resent on it by the safety net). A 2xx on that login
+closes the episode and the field is left out, as it is when the daemon is not
+running. While it is set the text form prints `Home's login was refused since
+15:45: run /login in a Claude Code session`. Once the episode is 30 seconds
+old the daemon sends one desktop notice (`chottag: Claude Code's own login was
+refused`, at most once an hour) and `chottag doctor` shows a `home-login`
+problem; the daemon log has a line when the episode starts and one when it
+ends.
 
 `daemon.restartPending` is the installed version the running daemon is not
 yet using: the version `bin/chottag` resolves to under `versions/`, or, if it
@@ -1123,6 +1135,7 @@ Its checks, in the order they run:
 | `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
 | `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
 | `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a request for an object whose owner chottag does not know is not counted (it gets its own notice, `chottag: an artifact's owner is unknown`, at most once an hour per account); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted; when some of the count was a route the table does not list refused 403 (or 401 `permission_error`), which may belong to the remote account, the detail says how many (`status --json` `daemon.routeDriftUnclassified`, absent when 0) and the daemon log has one line per method and path an hour | `chottag trace on` |
+| `home-login` | Claude Code's own login (Home's) is not being refused: a problem while the running daemon has an open episode, at least 30 seconds old, of requests that went out on that login (not swapped, or resent on it) and were answered 401, since Claude Code then says `Login expired` in every session although chottag's accounts are fine (`status --json` `daemon.homeLoginRefused`, the episode's start, absent when none; a 2xx on that login closes it); info when no daemon has reported | run `/login` in a Claude Code session |
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |
@@ -1309,6 +1322,7 @@ takes no arguments.
 ```text
 DIR                    POOL      STATE   ENDED             TITLE           COMMAND
 /Users/alice/acme-api  default   lost    2026-10-06 18:01  Fix Acme login  cd '/Users/alice/acme-api' && claude --resume 1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed
+/Users/alice/acme-web  -         unrecorded  2026-10-06 17:58  Add Acme search  cd '/Users/alice/acme-web' && claude --resume 6f1c2a90-3d4e-4b7a-8c15-9e0d2b7a41f3
 ```
 
 ```json
@@ -1329,7 +1343,17 @@ DIR                    POOL      STATE   ENDED             TITLE           COMMA
       "cmuxWorkspace": "E72B0882-62C2-44E3-9566-AAFA22CE3974",
       "cmuxSurface": "E983EC5D-2601-4C14-894B-05EDB2CC3ADD",
       "command": "cd '/Users/alice/acme-api' && claude --resume 1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
-      "title": "Fix Acme login"
+      "title": "Fix Acme login",
+      "missing": true
+    }
+  ],
+  "unrecorded": [
+    {
+      "dir": "/Users/alice/acme-web",
+      "native": "6f1c2a90-3d4e-4b7a-8c15-9e0d2b7a41f3",
+      "modified": "2026-10-06T17:58:00Z",
+      "title": "Add Acme search",
+      "command": "cd '/Users/alice/acme-web' && claude --resume 6f1c2a90-3d4e-4b7a-8c15-9e0d2b7a41f3"
     }
   ]
 }
@@ -1339,6 +1363,19 @@ The example shows every field at once (the docs tests require it): a row has `re
 sessions`). `pool`, `native`, `ended`, `outcome`, `resumed`, `cmuxWorkspace` and
 `cmuxSurface` are omitted when unknown (a running session has no `ended`). The
 `command` is set only for the sessions in the lost batch (also under `--all`).
+A lost session whose conversation has no transcript (Claude Code deleted it, or
+it never wrote one) has `missing: true` and no `command`: there is nothing to
+resume, and `chottag resume` skips it.
+
+`unrecorded` lists conversations that were active shortly before the batch was
+lost but that chottag never recorded (a session an old shim launched): a
+transcript under `projects/*/` last written within 2 hours before the batch's
+newest end (and no more than 2 minutes after) that no journal entry names, with
+an absolute `cwd` in its first 64 KiB. Newest first, at most 50; `[]` when
+there is no lost batch or none qualifies. In the text form they follow the
+batch with the state `unrecorded` and the time of their last write. `chottag
+resume` never places them. `dir` is the conversation's `cwd`, `modified` its
+last write, `title` as below (omitted when empty).
 
 `title` (and the `TITLE` column, `-` when empty) is the session's name in Claude
 Code, read live from its transcript and never stored: the last `custom-title`
@@ -1356,7 +1393,11 @@ chottag resume [--pick] [--print] [--json]
 
 Relaunches the lost batch, each session in its own directory and pool
 (`cd '<dir>' && claude --resume <id>`, with `CHOTTAG_POOL=<pool>` before
-`claude` outside `default`). cmux's tabs survive a relaunch, so each session
+`claude` outside `default`). A session whose transcript shows it was on
+Remote Control, and that has a title, gets `--remote-control='<title>'` at
+the end, so Remote Control lists it under its name and not as
+`<host>-<words>` (see [known limitations](known-limitations.md#resuming-sessions));
+`chottag sessions` shows the same command. cmux's tabs survive a relaunch, so each session
 goes back where it was and never types into a busy tab:
 
 1. its old cmux tab is still there and idle (only shells running in it):
@@ -1387,9 +1428,10 @@ prints `chottag: no lost sessions to resume` and exits 0.
 | `--pick` | list the sessions numbered and read a choice from stdin: numbers separated by spaces or commas, `all`, or an empty line to cancel (refused with `--json`) |
 | `--print` | only print each command, and mark nothing |
 
-The text form is one line per session: `resumed /Users/alice/acme-api in its
-tab` (or `in a new tab`, `in a new workspace`), the bare command for `print`,
-or `failed <dir>: <error>`.
+The text form is one line per session: `resumed "Fix Acme login"
+(/Users/alice/acme-api) in its tab` (or `in a new tab`, `in a new
+workspace`), the bare command for `print`, or `failed "<title>" (<dir>):
+<error>`. A session with no title shows its directory alone.
 
 ```json
 {
@@ -1407,12 +1449,21 @@ or `failed <dir>: <error>`.
       "title": "Fix Acme login",
       "error": ""
     }
-  ]
+  ],
+  "unrecorded": 1
 }
 ```
 
-The example shows every field (the docs tests require it). `placement` is `tab`, `new-tab`, `new-workspace`, `print` or `failed`; `error`
-is present only for `failed`. `title` is as in `chottag sessions` and is omitted when empty; `--pick` shows it after each directory. If any session failed, the command exits 1 with
+The example shows every field (the docs tests require it). `placement` is `tab`, `new-tab`, `new-workspace`, `print`, `skipped` or `failed`; `error`
+is present only for `failed` and `skipped`. `skipped` is a lost session whose
+conversation has no transcript (text: `skipped <dir>: no conversation to
+resume`, with no `command`): a real run marks it resumed so it does not come
+back (`--print` and a cmux error mark nothing), and it does not fail the
+command. `unrecorded` counts the conversations that were
+active before the loss but that chottag never recorded
+(see [`chottag sessions`](#chottag-sessions)); when it is not 0, the text form
+ends with `N more conversations were active before the loss but not launched
+through chottag: chottag sessions lists their commands`. `title` is as in `chottag sessions` and is omitted when empty; `--pick` shows it after each directory. If any session failed, the command exits 1 with
 the error code `resume_failed` and the rows under `error.sessions`. `--pick`
 with `--json`, a choice that is not a listed number or `all`, and any argument
 are exit 2, code `usage`. `chottag status` shows `N sessions were lost at

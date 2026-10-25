@@ -7,6 +7,22 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.8] - 2026-10-25
+
+### Added
+
+- chottag says when Claude Code's own (Home) login is refused (every session then says "Login expired"): a desktop notice, a line in `chottag status` (`daemon.homeLoginRefused`), and a `home-login` row in `chottag doctor`.
+- `chottag sessions` lists, as `unrecorded`, conversations that were active before a loss but not launched through chottag, with their commands; `chottag resume` says how many there are.
+
+### Changed
+
+- `chottag resume` names each session it relaunches: `resumed "<title>" (<dir>) in its tab`, not the directory alone.
+
+### Fixed
+
+- A session `chottag resume` relaunches is named on Remote Control too. A session whose transcript shows Remote Control is resumed with `--remote-control='<title>'`: Claude Code otherwise lists a resumed session whose Remote Control owner differs from Home's login as `<host>-<words>` in the Claude apps.
+- `chottag resume` no longer relaunches a lost session whose conversation has no transcript: it is `skipped`, and `chottag sessions` marks it `missing`.
+
 ## [0.10.7] - 2026-10-21
 
 ### Fixed
@@ -473,6 +489,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.8]: docs/release-notes/v0.10.8.md
 [0.10.7]: docs/release-notes/v0.10.7.md
 [0.10.6]: docs/release-notes/v0.10.6.md
 [0.10.5]: docs/release-notes/v0.10.5.md

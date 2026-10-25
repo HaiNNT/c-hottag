@@ -186,6 +186,12 @@ func (e *Events) ServingRefused(account string, status int, resent bool) {
 	e.fire(servingRefusedMessage(account, status, resent))
 }
 
+// HomeLoginRefused reports that Claude Code's own login has been refused for a
+// while (R183). The caller limits it to once per episode and once an hour.
+func (e *Events) HomeLoginRefused() {
+	e.fire(homeLoginRefusedMessage())
+}
+
 // UnclassifiedRefused reports that a swapped request on a route the table
 // does not list was refused with status as account (R186). The caller limits
 // it to once per METHOD and path per hour; path is the templated form.

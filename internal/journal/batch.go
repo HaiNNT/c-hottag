@@ -91,4 +91,14 @@ func Command(e Entry) string {
 	return "cd " + shellQuote(e.Dir) + " && " + pool + "claude --resume " + e.ResumeID()
 }
 
+// CommandNamed is Command, also naming the session's Remote Control session
+// when name is not empty: Claude Code otherwise gives a resumed session whose
+// history it suppresses a neutral `<host>-<words>` name (F293).
+func CommandNamed(e Entry, name string) string {
+	if name == "" {
+		return Command(e)
+	}
+	return Command(e) + " --remote-control=" + shellQuote(name)
+}
+
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

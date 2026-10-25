@@ -277,11 +277,22 @@ the chat):
 If `chottag status` says `N sessions were lost at HH:MM`, cmux quit or the Mac
 crashed. Run `chottag sessions` to list them and tell the user. Run `chottag
 resume` only when they say yes: it types a `claude --resume` command into
-their terminal tabs. `chottag resume --print` only prints. Each listed
+their terminal tabs (with `--remote-control='<title>'` for a session that
+was on Remote Control, so the Claude apps show its name). `chottag resume
+--print` only prints. A session listed as `unrecorded` was not launched
+through chottag: `chottag resume` leaves it alone, and the user can run its
+command themselves. Each listed
 session has a `title` when its transcript holds one. The plugin also runs
 `chottag name-session` as a Claude Code hook, to name sessions after their
 branch and generated title; it needs no action from you, and
 `chottag names off` turns it off. See [resume.md](resume.md).
+
+## "Login expired" in every session
+
+If every session says `Login expired · Please run /login`, Claude Code's own
+(Home) login was refused, not one of chottag's accounts. `chottag status` and
+`chottag doctor` (`home-login`) say so. Tell the user to run `/login` in one
+Claude Code session.
 
 ## Two notices
 

@@ -1,6 +1,7 @@
 // Package sessname names Claude Code sessions (R171). It reads a checkout's
 // branch from files, never runs git, and reads only the ai-title and
-// custom-title records of a session transcript. It never logs or stores a
+// custom-title records of a session transcript, and whether it has a
+// bridge-session one. It never logs or stores a
 // title: the only thing kept per session is a sha256 of the name chottag set.
 package sessname
 
@@ -148,21 +149,20 @@ func headFile(dir string) string {
 	return filepath.Join(p, "HEAD")
 }
 
-// Titles returns the last ai-title and the last custom-title found in the
-// first head and last tail bytes of the transcript at path. A missing file,
-// bad lines or other fields give empty strings. Nothing else is read.
-func Titles(path string, head, tail int64) (ai, custom string) {
+// scanLines calls fn with each line in the first head and last tail bytes of
+// the regular file at path. A line cut by the tail window is skipped.
+func scanLines(path string, head, tail int64, fn func(line []byte)) {
 	if sfi, err := os.Stat(path); err != nil || !sfi.Mode().IsRegular() {
-		return "", ""
+		return
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", ""
+		return
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() {
-		return "", ""
+		return
 	}
 	size := fi.Size()
 	scan := func(off, n int64, dropFirst bool) {
@@ -184,29 +184,7 @@ func Titles(path string, head, tail int64) (ai, custom string) {
 			}
 		}
 		for _, line := range bytes.Split(buf, []byte{'\n'}) {
-			isAI := bytes.Contains(line, []byte(`"ai-title"`))
-			isCustom := bytes.Contains(line, []byte(`"custom-title"`))
-			if !isAI && !isCustom {
-				continue
-			}
-			var rec struct {
-				Type        string `json:"type"`
-				AITitle     string `json:"aiTitle"`
-				CustomTitle string `json:"customTitle"`
-			}
-			if json.Unmarshal(line, &rec) != nil {
-				continue
-			}
-			switch rec.Type {
-			case "ai-title":
-				if rec.AITitle != "" {
-					ai = rec.AITitle
-				}
-			case "custom-title":
-				if rec.CustomTitle != "" {
-					custom = rec.CustomTitle
-				}
-			}
+			fn(line)
 		}
 	}
 	scan(0, head, false)
@@ -218,7 +196,75 @@ func Titles(path string, head, tail int64) (ai, custom string) {
 		// Back up one byte so a line starting exactly at start is whole.
 		scan(start-1, size-start+1, true)
 	}
+}
+
+// Titles returns the last ai-title and the last custom-title found in the
+// first head and last tail bytes of the transcript at path. A missing file,
+// bad lines or other fields give empty strings. Nothing else is read.
+func Titles(path string, head, tail int64) (ai, custom string) {
+	scanLines(path, head, tail, func(line []byte) {
+		isAI := bytes.Contains(line, []byte(`"ai-title"`))
+		isCustom := bytes.Contains(line, []byte(`"custom-title"`))
+		if !isAI && !isCustom {
+			return
+		}
+		var rec struct {
+			Type        string `json:"type"`
+			AITitle     string `json:"aiTitle"`
+			CustomTitle string `json:"customTitle"`
+		}
+		if json.Unmarshal(line, &rec) != nil {
+			return
+		}
+		switch rec.Type {
+		case "ai-title":
+			if rec.AITitle != "" {
+				ai = rec.AITitle
+			}
+		case "custom-title":
+			if rec.CustomTitle != "" {
+				custom = rec.CustomTitle
+			}
+		}
+	})
 	return ai, custom
+}
+
+// RemoteControlUsed reports whether the transcript at path holds a
+// bridge-session record, which Claude Code writes while the session is
+// connected to Remote Control. Only the record's type is read.
+func RemoteControlUsed(path string) bool {
+	used := false
+	scanLines(path, HeadBytes, TailBytes, func(line []byte) {
+		if used || !bytes.Contains(line, []byte(`"bridge-session"`)) {
+			return
+		}
+		var rec struct {
+			Type string `json:"type"`
+		}
+		used = json.Unmarshal(line, &rec) == nil && rec.Type == "bridge-session"
+	})
+	return used
+}
+
+// Cwd is the first absolute "cwd" in the first head bytes of the transcript at
+// path, "" when there is none (or it holds a control character). Only that
+// field is read.
+func Cwd(path string, head int64) string {
+	cwd := ""
+	scanLines(path, head, 0, func(line []byte) {
+		if cwd != "" || !bytes.Contains(line, []byte(`"cwd"`)) {
+			return
+		}
+		var rec struct {
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal(line, &rec) != nil || !filepath.IsAbs(rec.Cwd) || strings.ContainsFunc(rec.Cwd, unicode.IsControl) {
+			return
+		}
+		cwd = rec.Cwd
+	})
+	return cwd
 }
 
 // Title is the live title of a transcript: custom-title wins, else ai-title.

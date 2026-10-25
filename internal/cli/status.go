@@ -149,6 +149,7 @@ func runStatus(home string, args []string, r *reporter) int {
 	if f.Daemon != nil && !f.Daemon.Running {
 		// A stopped daemon's last pending mark is not a statement about now.
 		f.Daemon.RestartPending = ""
+		f.Daemon.HomeLoginRefused = ""
 	}
 	if f.Daemon != nil {
 		f.Daemon.RestartsWhenIdle = st.RestartOn()
@@ -376,6 +377,13 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 		fmt.Fprint(out, "daemon: running without proxy authentication (run: chottag daemon restart)\n\n")
 	case f.Daemon != nil && f.Daemon.Identity == string(shim.IdentityMismatch):
 		fmt.Fprintf(out, "daemon: port %d answered but did not prove it is this install's daemon (run: chottag doctor)\n\n", f.Daemon.Port)
+	}
+	// R183: Claude Code's own login was refused, so every session says "Login
+	// expired" although the accounts below are fine.
+	if f.Daemon != nil && f.Daemon.HomeLoginRefused != "" {
+		if since, err := time.Parse(time.RFC3339, f.Daemon.HomeLoginRefused); err == nil {
+			fmt.Fprintf(out, "Home's login was refused since %s: run /login in a Claude Code session\n\n", since.Local().Format("15:04"))
+		}
 	}
 	if f.Daemon != nil && (f.Daemon.Running || f.Daemon.LiveSessions > 0) {
 		fmt.Fprintf(out, "live sessions: %d%s\n\n", f.Daemon.LiveSessions, counts)
@@ -1196,6 +1204,17 @@ func (c *statusSink) setDaemon(port int, routeDrift, zeroIDs, drops, notifyError
 	c.file.SetNotifyErrors(notifyErrors)
 	c.file.SetUnclassifiedDrift(unclassified)
 	c.queueLocked()
+}
+
+// setHomeLoginRefused stamps (or clears, with the zero time) the start of the
+// open episode in which Claude Code's own login was refused (R183), and queues
+// a write only when it changed.
+func (c *statusSink) setHomeLoginRefused(since time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.file.SetHomeLoginRefused(since) {
+		c.queueLocked()
+	}
 }
 
 // setRestartPending stamps (or clears, with "") the installed version this

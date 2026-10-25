@@ -239,6 +239,18 @@ and add it to the pool, or use the object from a terminal outside chottag
 (`CHOTTAG_BYPASS=1 claude` inside a chottag session still goes through chottag).
 The notice comes at most once an hour per account. See [known limitations](known-limitations.md).
 
+## Every session says "Login expired"
+
+Claude Code checks its own (Home) login on every request, whichever account
+chottag serves it with. When that login has expired and Claude Code cannot
+refresh it, every session says `Login expired · Please run /login`, even
+though chottag's accounts are fine. chottag notices: `chottag status` prints
+`Home's login was refused since 15:45`, `chottag doctor`'s `home-login` row is
+a problem, and a desktop notice `chottag: Claude Code's own login was refused`
+comes once (at most once an hour) after 30 seconds of it. Run `/login` in one
+Claude Code session. The daemon log has a line when this starts and one when
+it ends.
+
 ## Route drift after a Claude Code update
 
 `chottag doctor`'s `route-drift` row and the desktop notice

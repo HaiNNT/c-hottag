@@ -48,6 +48,11 @@ pool. It puts each one back in the first of these that works:
 3. a new workspace, one for each old workspace, if the workspace is gone too;
 4. nowhere: with no cmux, or no tab was recorded, it prints the command for you to run. chottag marks that session resumed too, because you were shown the command. If cmux is there but does not answer, it prints the commands and marks nothing, like `--print`.
 
+Each line it prints names the session by its title and directory. A session
+that was on Remote Control comes back with its title as its Remote Control
+name (`--remote-control='<title>'`), because Claude Code would otherwise list
+it in the Claude apps as `<host>-<words>`.
+
 If you run `chottag resume` from inside the tab it will restore, that tab counts as idle: cmux types the command there and your shell runs it when `chottag` exits.
 
 It never types into a busy tab. If one session fails, the rest still go on,
@@ -115,6 +120,9 @@ cmux can also resume agent sessions by itself. Turn off its
 - The session id is recorded up to 15 seconds after it changes, so a `/clear` just before a crash resumes the conversation from before it.
 - A session has no name from chottag until its second prompt: chottag waits for the title Claude Code generates after the first one, because a session that already has a name gets no generated title. A session named by chottag 0.10.3 or older at its first prompt therefore never gets a title. The transcript format is internal to Claude Code: if it changes, the title is empty and the name stays the branch.
 - Only one `chottag resume` runs at a time; a second one stops with an error.
+- A lost session whose conversation has no transcript is skipped (`skipped <dir>: no conversation to resume`), not relaunched.
+- A conversation that was active in the 2 hours before the loss, but that chottag never recorded (a `claude` started outside chottag's shim, or by a version before 0.10.1), is listed by `chottag sessions` as `unrecorded`, with its command. `chottag resume` does not relaunch it; it says how many there are. A conversation idle for longer than that before the loss is not listed.
+- In the Claude apps, a resumed session's Remote Control name is the title it had at the resume: a later rename in the terminal does not reach it, and the earlier conversation may not show there. See [known limitations](known-limitations.md#resuming-sessions).
 - Outside cmux, or for a session with no recorded tab, `chottag resume` prints the command instead of running it, and marks the session resumed. Only `--print` marks nothing.
 
 See [`commands.md#sessions`](commands.md#sessions) for every flag and the

@@ -76,6 +76,20 @@ func TestCommand(t *testing.T) {
 	}
 }
 
+func TestCommandNamed(t *testing.T) {
+	e := Entry{Dir: "/Users/alice/repo", Native: nat1}
+	if got := CommandNamed(e, ""); got != Command(e) {
+		t.Errorf("no name: %q", got)
+	}
+	want := Command(e) + ` --remote-control='Fix Acme'\''s login · repo 10:00'`
+	if got := CommandNamed(e, "Fix Acme's login · repo 10:00"); got != want {
+		t.Errorf("CommandNamed = %q, want %q", got, want)
+	}
+	if got := CommandNamed(e, "-x $(id)"); got != Command(e)+` --remote-control='-x $(id)'` {
+		t.Errorf("a leading dash or $ stays quoted: %q", got)
+	}
+}
+
 func TestValidNative(t *testing.T) {
 	for s, want := range map[string]bool{
 		nat1:                                   true,

@@ -114,8 +114,30 @@ session you moved with `/cd` comes back in the directory it was launched in. A
 reused process id can hide one session until that process exits. Outside cmux
 it prints the command instead of running it. A session started with
 `claude --continue` names no id, so the id chottag captured may not be
-resumable. See
-[resume.md](resume.md).
+resumable.
+
+In the Claude apps, a resumed session can show under Claude Code's neutral
+name, `<host>-<words>`, without its earlier conversation. Claude Code records
+which account a session's Remote Control belongs to; chottag answers that
+check as the serving account. On a resume, Claude Code compares the record
+with the login in its own credential store (Home's). When they differ, it
+starts a fresh Remote Control session with a neutral name, leaves out the
+history, and marks the conversation so that every later resume does the same.
+A switch of accounts during a session can mark it too. chottag cannot clear
+the mark: it is in the transcript, under `~/.claude`, which chottag never
+writes. `chottag resume` passes the session's title as its Remote Control
+name, so the name is right, but later renames do not reach the apps. To
+rename it there, use the Claude app. See [resume.md](resume.md).
+
+## Home's login has to stay valid
+
+Claude Code checks its own login (Home's, the one `~/.claude` holds) before it
+sends anything, so chottag cannot help when that login expires and its
+renewal fails: every session says `Login expired · Please run /login`, while
+chottag's accounts are fine. chottag notices the refusals and says so (a
+desktop notice, a line in `chottag status`, the `home-login` row in `chottag
+doctor`). Run `/login` in one Claude Code session. See
+[troubleshooting](troubleshooting.md).
 
 ## Session names
 
