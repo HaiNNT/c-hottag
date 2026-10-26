@@ -364,13 +364,7 @@ func (in Input) leave(d Decision, s Account) Decision {
 	target, score, gain, ok := in.pickTarget(s)
 	fellBack := false
 	if !ok && d.Trigger == TriggerLimit {
-		var cands []Account
-		for _, a := range afterServing(in.Accounts, s.Name) {
-			if FallbackEligible(a, in.Now) {
-				cands = append(cands, a)
-			}
-		}
-		target, score, gain, ok = Fallback(cands, in.Accounts, in.Params, in.Burn, in.Now)
+		target, score, gain, ok = in.fallback(s)
 		fellBack = ok
 	}
 	if !ok {
@@ -388,6 +382,33 @@ func (in Input) leave(d Decision, s Account) Decision {
 		d.Reason = fmt.Sprintf("switched %s -> %s (%s)", s.Name, target, triggerText(d))
 	}
 	return d
+}
+
+// fallback is the LIMIT trigger's fallback target when leaving s.
+func (in Input) fallback(s Account) (string, time.Duration, time.Duration, bool) {
+	var cands []Account
+	for _, a := range afterServing(in.Accounts, s.Name) {
+		if FallbackEligible(a, in.Now) {
+			cands = append(cands, a)
+		}
+	}
+	return Fallback(cands, in.Accounts, in.Params, in.Burn, in.Now)
+}
+
+// Next is the account the planner would switch to were Serving to hit a
+// limit now: its pick, else the LIMIT fallback (R189, the card's "next").
+// ok is false when no account could take over, or Serving is not known.
+// Enabled, holds and the serving account's own usage play no part.
+func Next(in Input) (string, bool) {
+	s, ok := find(in.Accounts, in.Serving)
+	if !ok {
+		return "", false
+	}
+	if name, _, _, ok := in.pickTarget(s); ok {
+		return name, true
+	}
+	name, _, _, ok := in.fallback(s)
+	return name, ok
 }
 
 // FallbackEligible is item 2's fallback rule (review round 2): when a hard

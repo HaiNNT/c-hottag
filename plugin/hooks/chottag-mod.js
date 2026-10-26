@@ -9,7 +9,7 @@
 
 // MOD_VERSION is this plugin's version, set by `scripts/release bump` and tested
 // against plugin.json. A chottag newer than it means the plugin is behind.
-export const MOD_VERSION = '0.10.8'
+export const MOD_VERSION = '0.10.9'
 const VERSION_CHECK_MS = 600000
 const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]*)?/
 const CLEAN_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,64}$/
@@ -37,7 +37,11 @@ const REFRESH_MS = 15000
 const FAILS_BEFORE_UNKNOWN = 3
 const STALE_REFRESHES = 2
 const HOUR_MS = 3600000
-const BAR_CELLS = 8
+const BAR_CELLS = 10
+// The pace colours (R189): a bar's cells used ahead of the clock, and its time
+// gone but not used. The usage level keeps green, yellow and red.
+const PACE_FAST = 'magenta'
+const PACE_SLOW = 'cyan'
 const ACCENT = '▌ ' // the card's left border (a Box border prop for one side is not documented)
 const GAP = 3
 const RIGHT_MARGIN = 4 // Claude Code draws its [-] band control at the top right
@@ -122,8 +126,8 @@ export function parseCt(args) {
 }
 
 const WINDOWS = [
-  { key: 'five', name: '5-hour', pct: 'fiveHourPct', reset: 'fiveHourResetsAt', near: '5h' },
-  { key: 'seven', name: 'weekly', pct: 'sevenDayPct', reset: 'sevenDayResetsAt', near: '7d' },
+  { key: 'five', name: '5-hour', pct: 'fiveHourPct', reset: 'fiveHourResetsAt', near: '5h', ms: 5 * HOUR_MS },
+  { key: 'seven', name: 'weekly', pct: 'sevenDayPct', reset: 'sevenDayResetsAt', near: '7d', ms: 7 * 24 * HOUR_MS },
 ]
 const REMOTE_NOTE = 'Remote Control, connectors and artifacts use it'
 const NO_REMOTE = 'none (uses your own Claude login)'
@@ -158,9 +162,32 @@ function pctText(p) {
   return typeof p === 'number' ? Math.round(p) + '%' : '–'
 }
 
-function bar(p) {
-  const filled = typeof p === 'number' ? Math.min(BAR_CELLS, Math.max(0, Math.round((p / 100) * BAR_CELLS))) : 0
-  return '█'.repeat(filled) + '░'.repeat(BAR_CELLS - filled)
+// timeGone is the percent of a window already past, from its reset and its
+// length; undefined when the reset is unknown, past, or further than a window.
+export function timeGone(iso, windowMs, nowMs) {
+  const at = iso ? new Date(iso).getTime() : NaN
+  const left = at - nowMs
+  if (isNaN(at) || left <= 0 || left > windowMs) return undefined
+  return 100 - (left / windowMs) * 100
+}
+
+const cells = (p) => Math.min(BAR_CELLS, Math.max(0, Math.round((p / 100) * BAR_CELLS)))
+
+// bar is a window's bar as segments (R189): two bars, usage and time gone,
+// laid over each other. The cells both cover are █ in the usage level's
+// colour; cells used ahead of the clock are ▓ (PACE_FAST); time gone but not
+// used is ▒ (PACE_SLOW); the rest is ░. The glyphs differ too, for NO_COLOR.
+// With the time unknown it is a plain usage bar.
+function bar(p, gone, level, bold) {
+  const used = typeof p === 'number' ? cells(p) : 0
+  const time = typeof p === 'number' && typeof gone === 'number' ? cells(gone) : used
+  const segs = [
+    { t: '█'.repeat(Math.min(used, time)), color: level },
+    { t: '▓'.repeat(Math.max(0, used - time)), color: PACE_FAST },
+    { t: '▒'.repeat(Math.max(0, time - used)), color: PACE_SLOW, dim: true },
+    { t: '░'.repeat(BAR_CELLS - Math.max(used, time)), dim: true },
+  ]
+  return segs.filter((s) => s.t).map((s) => (bold ? { ...s, bold } : s))
 }
 
 function useColor(p, limited) {
@@ -272,18 +299,20 @@ export function layoutCard(doc, nowMs, columns, fmt, maxRows, behind) {
       const p = doc[w.pct]
       const c = useColor(p, doc.limited)
       const b = doc.nearWindow === w.near
-      const g = [{ t: w.name + ' ', bold: b }]
-      if (bars) g.push({ t: bar(p), color: c, bold: b }, { t: ' ' })
-      g.push({ t: pctText(p), color: c, bold: b })
-      const at = reset
-      const r = full ? formatReset(at, nowMs, fmt) : shortLeft(at, nowMs, fmt)
-      if (r) g.push({ t: full ? ' · resets ' + r : ' · ↻ ' + r, bold: b })
+      const g = [{ t: w.name + ' ', bold: b }, { t: pctText(p), color: c, bold: b }]
+      if (bars) g.push({ t: ' ' }, ...bar(p, timeGone(reset, w.ms, nowMs), c, b))
+      const r = full ? formatReset(reset, nowMs, fmt) : shortLeft(reset, nowMs, fmt)
+      // After a bar the reset needs no separator: "5-hour 81% ███▓░ resets in 1h 35m".
+      if (r) g.push({ t: (bars ? ' resets ' : full ? ' · resets ' : ' · ↻ ') + r, bold: b })
       return g
     }
     const title = [{ t: cardTitle(doc), bold: true, color: tone }]
     let account
     if (session !== serving) account = [{ t: 'This session ', dim: true }, { t: session, bold: true, color: tone }, { t: '  pool serves ' + serving, dim: true }]
     else account = [{ t: both ? 'Serving + remote ' : 'Serving ', dim: true }, { t: serving, bold: true, color: tone }]
+    // The account that would serve next (R189); a chottag before 0.10.9, or spread, says none.
+    if (doc.next) account.push({ t: ' → next ', dim: true }, { t: doc.next, color: tone })
+    else if (doc.next === '') account.push({ t: ' → next: none ready', color: 'yellow' })
     let remote = []
     if (remoteKnown && !both) {
       remote = doc.remote
@@ -306,7 +335,7 @@ export function layoutCard(doc, nowMs, columns, fmt, maxRows, behind) {
     }
   }
   const left = shortLeft(doc.resetsAt, nowMs, fmt)
-  const line = [session, '5h ' + pctText(doc.fiveHourPct), '7d ' + pctText(doc.sevenDayPct), ...(left ? ['↻ ' + left] : [])].join(' · ')
+  const line = [session + (doc.next ? ' → ' + doc.next : ''), '5h ' + pctText(doc.fiveHourPct), '7d ' + pctText(doc.sevenDayPct), ...(left ? ['↻ ' + left] : [])].join(' · ')
   return { mode: 'line', rows: [[{ t: 'c» ', bold: true, color: tone }, { t: line }]] }
 }
 

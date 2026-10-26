@@ -321,8 +321,9 @@ also switches the update check off.
 
 On Claude Code 2.1.287 or newer this plugin also carries a mod (a view and a
 guard; nothing depends on it). It draws a status card above the prompt
-(the serving and remote accounts, both usage windows with their resets, how
-many accounts are ready), shows a toast when the session's account changes, an
+(the serving account and the one that would serve next, the remote account,
+both usage windows with their resets, each bar showing whether use runs ahead
+of the clock, how many accounts are ready), shows a toast when the session's account changes, an
 update is out or the remote account needs a login, and adds the `/ct`
 commands the user types themselves:
 

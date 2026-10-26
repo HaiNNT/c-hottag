@@ -711,3 +711,32 @@ func TestLimitFallbackAlsoRanksOldAfterRecent(t *testing.T) {
 		t.Fatalf("Plan = %+v, want the fallback to take the recent C", d)
 	}
 }
+
+// TestNext is the card's next account (R189): the planner's pick while the
+// serving account is far from any point, its LIMIT fallback when every
+// other account is above its own, and none when nothing could take over.
+func TestNext(t *testing.T) {
+	a := acct("A", TierMax5x, 20, 3*time.Hour, 40, 72*time.Hour)
+	b := acct("B", TierMax5x, 10, 4*time.Hour, 20, 72*time.Hour)
+	c := acct("C", TierMax5x, 5, 4*time.Hour, 10, 72*time.Hour)
+	c.Rotates = false
+	if name, ok := Next(input(ModeCacheOptimize, "A", a, b, c)); !ok || name != "B" {
+		t.Fatalf("Next = %q, %v; want B", name, ok)
+	}
+	in := input(ModeBalanced, "A", a, b, c)
+	in.Enabled = false // the card still names who would take over
+	if name, ok := Next(in); !ok || name != "B" {
+		t.Fatalf("Next (auto off) = %q, %v; want B", name, ok)
+	}
+	over := acct("B", TierMax5x, 97, 4*time.Hour, 20, 72*time.Hour)
+	if name, ok := Next(input(ModeBalanced, "A", a, over, c)); !ok || name != "B" {
+		t.Fatalf("Next (fallback) = %q, %v; want B", name, ok)
+	}
+	full := acct("B", TierMax5x, 100, 4*time.Hour, 20, 72*time.Hour)
+	if name, ok := Next(input(ModeBalanced, "A", a, full, c)); ok {
+		t.Fatalf("Next (none) = %q, want none", name)
+	}
+	if _, ok := Next(input(ModeBalanced, "Z", a, b)); ok {
+		t.Fatal("Next with an unknown serving account found one")
+	}
+}

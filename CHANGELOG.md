@@ -7,6 +7,16 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.9] - 2026-10-26
+
+### Added
+
+- The mod's card names the account that would serve next: `Serving C → next B`, or `→ next: none ready`. `chottag statusline --json` has it as `next`.
+
+### Changed
+
+- The card's usage bars show the pace too: each lays the window's use over how much of it has gone by, so cells used ahead of the clock (`▓`, magenta) mean the limit comes before the reset, and time gone unused (`▒`, dim cyan) is slack. The percent now comes before the 10-cell bar: `5-hour 81% ███████▓░░ resets in 1h 35m (5:30 PM)`.
+
 ## [0.10.8] - 2026-10-25
 
 ### Added
@@ -489,6 +499,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.9]: docs/release-notes/v0.10.9.md
 [0.10.8]: docs/release-notes/v0.10.8.md
 [0.10.7]: docs/release-notes/v0.10.7.md
 [0.10.6]: docs/release-notes/v0.10.6.md

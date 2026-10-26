@@ -1067,7 +1067,8 @@ failure is ignored. `--cmux` combines with `--json`.
     "at": "2026-10-01T11:59:00+07:00"
   },
   "remote": "other",
-  "remoteToken": "needs-login"
+  "remoteToken": "needs-login",
+  "next": "other"
 }
 ```
 
@@ -1086,7 +1087,7 @@ running (`daemon.restartPending` in `status`); the text form shows it as
 ` · ⟳0.6.1` after the update suffix. Both are shown only while the session is
 routed and the daemon is up.
 
-The last seven fields feed the [Claude Code mod](#claude-code-mod)'s card and
+The last eight fields feed the [Claude Code mod](#claude-code-mod)'s card and
 notices, and are left out when unknown. `fiveHourResetsAt` and
 `sevenDayResetsAt` (RFC 3339, local) are the two windows' own resets, each
 left out once it is past; `resetsAt` stays the one the text line shows.
@@ -1096,7 +1097,11 @@ session's account is limited. `lastSwitch` is the session's pool's last
 auto-switch: the account it moved to (`account`), the one it left (`from`),
 why (`reason`, `limit` or `threshold`) and when (`at`, RFC 3339).
 `remote` is the pool's remote account (`""` when it has none, left out when not known), and `remoteToken` its token state when
-that is `stale` or `needs-login`.
+that is `stale` or `needs-login`. `next` is the account that would serve the
+pool next: the one auto-switch would move to on a limit, or the one
+`chottag next` would pick while auto-switch is off. It is `""` when no
+account could take over, and left out under `spread` (no one account serves
+next) and when not known.
 
 ### `chottag doctor`
 
@@ -2034,26 +2039,26 @@ usual.
 Above the prompt the mod draws a compact card with a blue bar on its left, and
 keeps what other mods draw under it. It is built from `chottag statusline
 --json` and refreshed every 15 seconds. The segments flow left to right, in
-this order, 3 spaces apart: the title, `Serving C`, the 5-hour window, the
-weekly window, the remote, the ready count and the update. A segment that does
+this order, 3 spaces apart: the title, `Serving C → next B`, the 5-hour
+window, the weekly window, the remote, the ready count and the update. A segment that does
 not fit starts the next row and is never split; a row is never padded or
 stretched, and none is wider than the band less 4 columns (Claude Code draws
 its `[-]` control at the top right). Two rows from 100 columns, three from 60:
 
 ```text
-▌ c» chottag   Serving C   5-hour ██░░░░░░ 28% · resets in 3h 20m (01:40)   weekly █████░░░ 68% · resets Mon 18:00
+▌ c» chottag   Serving C → next B   5-hour 28% ███░░░░░░░ resets in 3h 20m (01:40)   weekly 68% ████▓▓▓░░░ resets Mon 18:00
 ▌ Remote A · Remote Control, connectors and artifacts use it   1 of 3 accounts ready   update 0.9.1 available
 ```
 
 ```text
-▌ c» chottag   Serving C   5-hour 28% · resets in 3h 20m (01:40)
+▌ c» chottag   Serving C → next B   5-hour 28% · resets in 3h 20m (01:40)
 ▌ weekly 68% · resets Mon 18:00   Remote A · Remote Control, connectors and artifacts use it
 ▌ 1 of 3 accounts ready   update 0.9.1 available
 ```
 
 The richest variant that fits in that many rows is used: bars and full resets,
 then no bars, then short resets (`↻ 3h20m`). Otherwise, and below 60 columns, it
-is one line: `c» C · 5h 28% · 7d 68% · ↻ 3h20m`.
+is one line: `c» C → B · 5h 28% · 7d 68% · ↻ 3h20m`.
 
 - The title is `c» chottag`, with ` dev` after it for an install label and
   ` · pool work` outside `default`.
@@ -2063,8 +2068,17 @@ is one line: `c» C · 5h 28% · 7d 68% · ↻ 3h20m`.
   Remote Control, connectors and artifacts; with no remote account it reads
   `Remote none (uses your own Claude login)`. A chottag older than 0.9.0 does
   not report its remote account, so the card leaves the segment out.
-- Each window shows an 8-cell bar, the rounded percent (`–` when unknown) and
-  its reset. The window closer to its switch point is bold. An older chottag
+- `→ next B` names the account that would serve next (`next` in
+  [`chottag statusline`](#chottag-statusline)'s JSON), and `→ next: none
+  ready` (yellow) says no account could take over. Under `spread`, and with
+  a chottag older than 0.10.9, it is left out.
+- Each window shows the rounded percent (`–` when unknown), a 10-cell bar and
+  its reset. The bar lays two bars over each other: the window's use, and how
+  much of the window has gone by (from its reset; 5 hours, 7 days). Cells
+  both cover are `█`; cells used ahead of the clock are `▓`, so you will hit
+  the limit before the reset; time gone but not used is `▒`, slack; the rest
+  is `░`. `5-hour 81% ███████▓░░` is slightly ahead of the clock, `weekly 85%
+  ███▓▓▓▓▓▓░` far ahead. With the reset unknown it is a plain usage bar. The window closer to its switch point is bold. An older chottag
   reports one reset only, and cannot say which window it belongs to, so it is
   its own segment after the windows: `next reset in 2h 10m (15:20)`.
 - A reset is in local time, in the system's 12- or 24-hour style: `in 42m`
@@ -2082,8 +2096,10 @@ is one line: `c» C · 5h 28% · 7d 68% · ↻ 3h20m`.
   10 minutes). Update the plugin as `chottag update` prints it (see
   [`chottag update`](#chottag-update)).
 - Colour: the left bar, the title and the account are chottag
-  blue (amber with a label); bars and percents are green below 70%, yellow
-  below 90% and red from 90%, and red while the account is limited.
+  blue (amber with a label). The percent and the `█` cells show the use:
+  green below 70%, yellow below 90% and red from 90%, and red while the
+  account is limited. The pace has its own colours: `▓` magenta (faster
+  than the clock), `▒` dim cyan (slower).
   `NO_COLOR` turns colour off.
 - Other states, as a one-row card: `c» chottag · down: the daemon is not
   answering` (red), `c» chottag · off: this session is not routed through

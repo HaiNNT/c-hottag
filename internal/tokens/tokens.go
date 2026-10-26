@@ -177,6 +177,18 @@ const forceEvery = time.Minute
 // lock, so this refresh attempt did not happen.
 var errSlotBusy = errors.New("slot is locked by another holder")
 
+// awaitJoined, when set (tests only), is called once an Await has joined an
+// in-flight refresh and is about to wait for it: a test can then let the
+// refresh finish only after every caller is waiting on it.
+var awaitJoined func()
+
+// SetAwaitJoinedForTest sets awaitJoined and returns the restore.
+func SetAwaitJoinedForTest(fn func()) (restore func()) {
+	orig := awaitJoined
+	awaitJoined = fn
+	return func() { awaitJoined = orig }
+}
+
 func New(cfg Config) *Manager {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -301,6 +313,9 @@ func (m *Manager) Await(ctx context.Context, slotDir string) (string, creds.Stat
 	}
 	done := s.done
 	s.mu.Unlock()
+	if awaitJoined != nil {
+		awaitJoined()
+	}
 
 	select {
 	case <-ctx.Done():

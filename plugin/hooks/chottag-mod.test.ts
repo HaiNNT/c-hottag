@@ -2,7 +2,7 @@
 // check before a release: the repo's gate never runs the real claude). They
 // drive the module with a fake `$`, so no chottag, network or session is used.
 import { expect, test } from 'claude-code/testing'
-import { CT_HELP, GUARD_LOGIN, GUARD_LOGOUT, MOD_VERSION, bandModel, displayWidth, formatReset, layoutCard, parseCt, pluginBehind, register, versionNewer } from './chottag-mod.js'
+import { CT_HELP, GUARD_LOGIN, GUARD_LOGOUT, MOD_VERSION, bandModel, displayWidth, formatReset, layoutCard, parseCt, pluginBehind, register, timeGone, versionNewer } from './chottag-mod.js'
 
 const ROUTED = 'http://chottag.default.0123456789abcdef0123456789abcdef:x@127.0.0.1:47850'
 const HOUR = 3600000
@@ -294,7 +294,7 @@ test('width classes: 2 rows from 100 columns, 3 from 60, one line below', () => 
   const at = (cols: number) => layoutCard(d, 0, cols, fmt)
   const wide = at(180)
   expect(wide.mode).toBe('wide')
-  expect(flat(wide)[0]).toMatch(/^▌ c» chottag {3}Serving C {3}5-hour ██░░░░░░ 28% · resets in 2h 10m \(\d\d:\d\d\) {3}weekly █████░░░ 68% · resets /)
+  expect(flat(wide)[0]).toMatch(/^▌ c» chottag {3}Serving C {3}5-hour 28% ███▒▒▒░░░░ resets in 2h 10m \(\d\d:\d\d\) {3}weekly 68% ████▓▓▓░░░ resets /)
   expect(flat(wide).join('\n')).toMatch(/Remote A · Remote Control, connectors and artifacts use it/)
   expect(wide.rows.length).toBeLessThanOrEqual(2)
   const medium = at(99)
@@ -325,12 +325,59 @@ test('a tight width drops the bars, then the long reset text, before it gives up
 })
 
 
-test('the bars are 8 blocks, with a rounded percent, and – when unknown', () => {
+test('the bars are 10 blocks after a rounded percent, and – when unknown', () => {
   const lay = layoutCard(doc({ fiveHourPct: 28.2, sevenDayPct: undefined }), 0, 120)
   const text = flat(lay).join('\n')
-  expect(text).toContain('5-hour ██░░░░░░ 28%')
-  expect(text).toContain('weekly ░░░░░░░░ –')
-  expect(flat(layoutCard(doc({ fiveHourPct: 100, sevenDayPct: 50 }), 0, 140)).join('')).toContain('5-hour ████████ 100%')
+  expect(text).toContain('5-hour 28% ███░░░░░░░')
+  expect(text).toContain('weekly – ░░░░░░░░░░')
+  expect(flat(layoutCard(doc({ fiveHourPct: 100, sevenDayPct: 50 }), 0, 140)).join('')).toContain('5-hour 100% ██████████')
+})
+
+// R189: usage and time gone, laid over each other. The overlap keeps the
+// usage level's colour; the pace has its own two.
+test('the bar shows the pace: used ahead of the clock, and time gone unused', () => {
+  const fmt = { locale: 'en-US', timeZone: 'UTC', hourCycle: 'h23' }
+  const now = 10 * 24 * HOUR
+  // 5-hour: 81% used, 1h35m left (68% gone). weekly: 85% used, 5d2h left (27% gone).
+  const d = doc({ fiveHourPct: 81, sevenDayPct: 85,
+    fiveHourResetsAt: new Date(now + 95 * 60000).toISOString(),
+    sevenDayResetsAt: new Date(now + 122 * HOUR).toISOString() })
+  const lay = layoutCard(d, now, 200, fmt)
+  const text = flat(lay).join('\n')
+  expect(text).toContain('5-hour 81% ███████▓░░ resets in 1h 35m')
+  expect(text).toContain('weekly 85% ███▓▓▓▓▓▓░ resets ')
+  const cellsOf = (glyph: string) => lay.rows.flat().filter((s: any) => s.t.length && [...s.t].every((c: string) => c === glyph))
+  expect(cellsOf('█').map((s: any) => s.color)).toEqual(['yellow', 'yellow'])
+  expect(cellsOf('▓').map((s: any) => s.color)).toEqual(['magenta', 'magenta'])
+  expect(cellsOf('░').every((s: any) => s.dim && !s.color)).toBe(true)
+  // A calm window: time ahead of use, in dim cyan.
+  const calm = layoutCard(doc({ fiveHourPct: 30, fiveHourResetsAt: new Date(now + 2 * HOUR).toISOString() }), now, 200, fmt)
+  expect(flat(calm).join('')).toContain('5-hour 30% ███▒▒▒░░░░ resets')
+  const slow = calm.rows.flat().find((s: any) => s.t === '▒▒▒')
+  expect(slow.color).toBe('cyan')
+  expect(slow.dim).toBe(true)
+  // On pace: no pace cells at all.
+  const even = layoutCard(doc({ fiveHourPct: 50, fiveHourResetsAt: new Date(now + 150 * 60000).toISOString() }), now, 200, fmt)
+  expect(flat(even).join('')).toContain('5-hour 50% █████░░░░░ resets')
+})
+
+test('timeGone: the share of a window past, and nothing for an unknown, past or too-far reset', () => {
+  expect(timeGone(new Date(HOUR).toISOString(), 5 * HOUR, 0)).toBe(80)
+  expect(timeGone(new Date(5 * HOUR).toISOString(), 5 * HOUR, 0)).toBe(0)
+  expect(timeGone(undefined, 5 * HOUR, 0)).toBeUndefined()
+  expect(timeGone('nonsense', 5 * HOUR, 0)).toBeUndefined()
+  expect(timeGone(new Date(0).toISOString(), 5 * HOUR, 0)).toBeUndefined()
+  expect(timeGone(new Date(6 * HOUR).toISOString(), 5 * HOUR, 0)).toBeUndefined()
+})
+
+test('the account that serves next follows the serving one, and none ready says so', () => {
+  const rows = (d: any, cols = 250) => flat(layoutCard(d, 0, cols)).join('\n')
+  expect(rows(doc({ next: 'B' }))).toContain('Serving C → next B')
+  const none = layoutCard(doc({ next: '' }), 0, 250)
+  expect(flat(none).join('')).toContain('Serving C → next: none ready')
+  expect(none.rows.flat().find((s: any) => s.t === ' → next: none ready').color).toBe('yellow')
+  expect(rows(doc())).not.toContain('next') // an older chottag, or spread
+  expect(flat(layoutCard(doc({ next: 'B' }), 0, 59))).toEqual(['c» C → B · 5h 28% · 7d 68%'])
 })
 
 

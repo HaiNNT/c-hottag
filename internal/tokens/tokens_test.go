@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1276,6 +1277,8 @@ func TestAwaitReturnsPromptlyWhenTheRefreshFails(t *testing.T) {
 		return errors.New("network down")
 	}
 	m := newManager(f, &now, false)
+	var joined atomic.Int32
+	t.Cleanup(tokens.SetAwaitJoinedForTest(func() { joined.Add(1) }))
 
 	const n = 5
 	type result struct {
@@ -1293,7 +1296,10 @@ func TestAwaitReturnsPromptlyWhenTheRefreshFails(t *testing.T) {
 		}()
 	}
 
-	waitFor(t, "the refresh attempt to start", func() bool { return f.refreshCount() == 1 })
+	// Every caller must have joined the refresh before it fails: one that
+	// arrived after the failure would rightly force an attempt of its own
+	// (R147), which a loaded machine's scheduling can otherwise cause.
+	waitFor(t, "every Await to join the refresh", func() bool { return joined.Load() == n })
 	close(release)
 
 	for i := 0; i < n; i++ {

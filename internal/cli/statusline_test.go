@@ -144,7 +144,7 @@ func TestStatuslineJSONShapes(t *testing.T) {
 	home, port := statuslineEnv(t, true, map[int]int{os.Getppid(): os.Getpid()})
 	registerLive(t, home, os.Getpid(), port)
 	_, out, _ := runHome(t, home, "statusline", "--json")
-	want := `{"version":1,"ok":true,"warnings":[],"session":"routed","daemon":"up","serving":"work","account":"work","okAccounts":2,"rotationAccounts":2,"remote":"other"}`
+	want := `{"version":1,"ok":true,"warnings":[],"session":"routed","daemon":"up","serving":"work","account":"work","okAccounts":2,"rotationAccounts":2,"remote":"other","next":"other"}`
 	if compact(t, out) != want {
 		t.Fatalf("routed json = %s", out)
 	}
@@ -720,5 +720,31 @@ func TestStatuslineJSONSaysNoRemoteExplicitly(t *testing.T) {
 	_, out, _ = runHome(t, home2, "statusline", "--json")
 	if strings.Contains(out, `"remote"`) {
 		t.Fatalf("daemon down must not claim a remote state: %s", out)
+	}
+}
+
+// next is the account that would serve next (R189): "" when none could, and
+// left out under spread, where no one account serves next.
+func TestStatuslineJSONCarriesTheNextAccount(t *testing.T) {
+	home, now := v2Env(t)
+	_, out, _ := runHome(t, home, "statusline", "--json")
+	if !strings.Contains(out, `"next": "other"`) {
+		t.Fatalf("json = %s", out)
+	}
+	writeCache(t, home,
+		status.Account{Name: "work", Usage: usageOf(now, 10, 20, now.Add(time.Hour), time.Time{})},
+		status.Account{Name: "other", Limited: true, LimitedUntil: now.Add(time.Hour)})
+	_, out, _ = runHome(t, home, "statusline", "--json")
+	if !strings.Contains(out, `"next": ""`) {
+		t.Fatalf("a limited other cannot serve next: %s", out)
+	}
+	if _, err := (store.Store{Dir: home}).Update(func(st *store.State) error {
+		return st.SetPoolPolicy(store.DefaultPool, store.PolicySpread)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ = runHome(t, home, "statusline", "--json")
+	if strings.Contains(out, `"next"`) {
+		t.Fatalf("spread names no next account: %s", out)
 	}
 }

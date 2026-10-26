@@ -140,6 +140,10 @@ type statuslineResult struct {
 	// "needs-login").
 	Remote      *string `json:"remote,omitempty"`
 	RemoteToken string  `json:"remoteToken,omitempty"`
+	// Next is the account that would serve the pool next (R189): auto-switch's
+	// pick, or `next`'s while auto-switch is off. "" when none could, and
+	// left out under spread (no one account serves next) or when not computed.
+	Next *string `json:"next,omitempty"`
 
 	resets time.Time
 }
@@ -334,6 +338,7 @@ func statuslineCheck(h string) statuslineResult {
 	rep.Account = sessionAccount(f, sid, serving)
 	fillUsage(&rep, st, pool, f)
 	fillNotices(&rep, st, pool, f)
+	fillNext(&rep, st, pool, f)
 	if rep.Account != "" {
 		rep.UpdateAvailable = availableUpdate(f)
 		if f.Daemon != nil {
@@ -386,6 +391,30 @@ func fillNotices(rep *statuslineResult, st store.State, pool string, f status.Fi
 			rep.RemoteToken = string(a.Token)
 		}
 	}
+}
+
+// fillNext adds the account that would serve the pool next: the one
+// auto-switch would move to on a limit, or `chottag next`'s pick while
+// auto-switch is off. Under spread there is none to name.
+func fillNext(rep *statuslineResult, st store.State, pool string, f status.File) {
+	if poolSpread(st, pool) {
+		return
+	}
+	view := poolView(st, pool)
+	if view.Serving == "" {
+		return
+	}
+	now := statuslineNow()
+	var next string
+	if view.AutoOn() {
+		next, _ = autoswitch.Next(autoswitch.Input{
+			Now: now, Enabled: true, Params: autoParams(view), Serving: view.Serving,
+			Accounts: planAccounts(&view, &f, now), Burn: burnOf(&f),
+		})
+	} else if a, _, _, err := nextCandidate(&view, &f, now, false); err == nil {
+		next = a.Name
+	}
+	rep.Next = &next
 }
 
 // fillUsage adds the serving account's usage, its next reset and the pool
