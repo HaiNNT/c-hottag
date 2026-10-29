@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,9 +16,11 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/autoswitch"
 	"github.com/HaiNNT/c-hottag/internal/fsutil"
 	"github.com/HaiNNT/c-hottag/internal/notify"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/sessions"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
+	usagehdr "github.com/HaiNNT/c-hottag/internal/usage"
 )
 
 // The spread policy's placement engine (M7 spec §3 to §6). Under
@@ -68,6 +71,23 @@ type placement struct {
 	// Conversations is the tracker's count when the session was placed or
 	// last checked: a higher count now means its prompt cache is cold.
 	Conversations int `json:"conversations"`
+	// Chosen marks a placement the user made with `chottag move` (R191): it
+	// stays through a switch point, a spread notice and the cold-cache
+	// rebalance, and leaves only by a hard trigger or a limit retry.
+	Chosen bool `json:"chosen,omitempty"`
+}
+
+// moveRefusal is why account a cannot take a moved session, "" when it can: an
+// autoswitch.Reason* text. Rotation off, a missing login and a limit always
+// refuse; a switch point refuses unless force (the user's --force, or the
+// daemon, which cannot know a move was forced). `chottag move` and the
+// engine's apply step share it so they cannot drift.
+func moveRefusal(a autoswitch.Account, p autoswitch.Params, now time.Time, force bool) string {
+	r := autoswitch.Eligible(a, p, now)
+	if r == autoswitch.ReasonAboveSwitch && force {
+		return ""
+	}
+	return r
 }
 
 // markOutcome describes what mark did, for the notice.
@@ -83,16 +103,34 @@ type spreadEngine struct {
 	file  func() status.File
 	// conv is the tracker's Conversations count for sid as it would be after
 	// a request carrying native.
-	conv  func(sid, native string) int
-	log   io.Writer
-	path  string
-	write func(path string, data []byte, perm os.FileMode) error
+	conv func(sid, native string) int
+	log  io.Writer
+	path string
+	// appliedPath is run/moves-applied.json: the move requests already
+	// honoured, so a deleted placement never re-applies one.
+	appliedPath string
+	write       func(path string, data []byte, perm os.FileMode) error
+
+	// Lock order (R192): spreadEngine.mu, then paceMu, never the reverse. The
+	// pace meter is fed from the response path (observe) holding only paceMu,
+	// and read by the placement code (placePace, paceRatio, ...) which holds
+	// mu and takes paceMu for the pure computation. paceMu is never held
+	// across I/O, a callback or another lock: flush marshals under it and
+	// writes after releasing it.
+	paceMu    sync.Mutex
+	pace      autoswitch.Pace
+	paceDirty bool
+	pacePath  string
 
 	mu         sync.Mutex
 	placements map[string]*placement
-	seen       map[string]time.Time  // last request per sid
-	loadedAt   time.Time             // when the file was loaded: the prune grace of an unseen placement runs from here
-	live       func(sid string) bool // the registry snapshot of the last prune; nil until the first
+	applied    map[string]time.Time // sid -> the At of the last move request handled
+	// appliedOnDisk: the applied file exists (loaded or written), so an empty
+	// map still overwrites it.
+	appliedOnDisk bool
+	seen          map[string]time.Time  // last request per sid
+	loadedAt      time.Time             // when the file was loaded: the prune grace of an unseen placement runs from here
+	live          func(sid string) bool // the registry snapshot of the last prune; nil until the first
 	// lastAccount, if set, is the account the tracker last saw sid on, so
 	// turning spread on does not scatter running sessions (see accountFor).
 	lastAccount func(sid string) string
@@ -111,11 +149,11 @@ type spreadEngine struct {
 // file is empty and logged once). now is when the daemon started: a loaded
 // placement's prune grace runs from it, and it counts toward load only once
 // its session is seen or listed live.
-func newSpreadEngine(path string, state func() (store.State, error), file func() status.File, conv func(sid, native string) int, log io.Writer, now time.Time) *spreadEngine {
+func newSpreadEngine(path, appliedPath string, state func() (store.State, error), file func() status.File, conv func(sid, native string) int, log io.Writer, now time.Time) *spreadEngine {
 	e := &spreadEngine{
-		state: state, file: file, conv: conv, log: log, path: path, write: spreadWrite,
+		state: state, file: file, conv: conv, log: log, path: path, appliedPath: appliedPath, write: spreadWrite,
 		loadedAt:   now,
-		placements: map[string]*placement{}, seen: map[string]time.Time{}, marked: map[string]string{},
+		placements: map[string]*placement{}, applied: map[string]time.Time{}, seen: map[string]time.Time{}, marked: map[string]string{},
 	}
 	raw, err := os.ReadFile(path)
 	switch {
@@ -134,7 +172,107 @@ func newSpreadEngine(path string, state func() (store.State, error), file func()
 			}
 		}
 	}
+	e.loadApplied()
+	e.pacePath = filepath.Join(filepath.Dir(path), "pace.json")
+	e.loadPace()
 	return e
+}
+
+// loadPace reads run/pace.json; missing is empty, a corrupt file is empty and
+// logged once.
+func (e *spreadEngine) loadPace() {
+	raw, err := os.ReadFile(e.pacePath)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		fmt.Fprintf(e.log, "chottag: spread: cannot read pace.json, starting empty: %v\n", err)
+	default:
+		var loaded autoswitch.Pace
+		if err := json.Unmarshal(raw, &loaded); err != nil {
+			fmt.Fprintf(e.log, "chottag: spread: pace.json is not valid, starting empty: %v\n", err)
+			return
+		}
+		e.pace = loaded
+	}
+}
+
+// observe feeds the pace meter from one response (R192): the account's two
+// windows and, for an inference response of an identified session, that
+// session's spend. It holds only paceMu and never blocks on I/O.
+func (e *spreadEngine) observe(account string, units float64, s usagehdr.Snapshot, req proxy.UsageRequest, now time.Time) {
+	e.paceMu.Lock()
+	defer e.paceMu.Unlock()
+	e.pace.Observe(account, units, s, now)
+	if req.Inference && req.SID != "" {
+		e.pace.Credit(req.SID, account, units, now)
+	}
+	e.paceDirty = true
+}
+
+// liveSessions is the live placed sessions per account (the same liveness as
+// load), keyed by the account's registered name. Caller holds e.mu.
+func (e *spreadEngine) liveSessions(v spreadView, now time.Time) map[string][]string {
+	out := map[string][]string{}
+	for sid, p := range e.placements {
+		if !e.counts(sid, now) {
+			continue
+		}
+		if a, ok := e.resolve(v, p); ok {
+			out[a.Name] = append(out[a.Name], sid)
+		}
+	}
+	return out
+}
+
+// paceInput is one placement or move question. subject is the session being
+// placed or moved ("" for a notice target or the display), from its current
+// account for a move. Caller holds e.mu.
+func (e *spreadEngine) paceInput(v spreadView, now time.Time, cands []autoswitch.Account, pin string, exclude map[string]bool, subject, from string) autoswitch.PaceInput {
+	return autoswitch.PaceInput{
+		Accounts: cands, Sessions: e.liveSessions(v, now), Subject: subject, SubjectFrom: from,
+		Pin: pin, Exclude: exclude, Params: v.params, Now: now,
+	}
+}
+
+// placePace is autoswitch.PlacePace over the engine's meter. Caller holds e.mu.
+func (e *spreadEngine) placePace(in autoswitch.PaceInput) (string, string, bool) {
+	e.paceMu.Lock()
+	defer e.paceMu.Unlock()
+	in.Pace = &e.pace
+	return autoswitch.PlacePace(in)
+}
+
+// paceRatio is account's score for in's subject. Caller holds e.mu.
+func (e *spreadEngine) paceRatio(in autoswitch.PaceInput, account string) float64 {
+	e.paceMu.Lock()
+	defer e.paceMu.Unlock()
+	in.Pace = &e.pace
+	r, _ := autoswitch.PaceRatio(in, account)
+	return r
+}
+
+// loadApplied reads moves-applied.json; missing is empty, a corrupt file is
+// empty and logged once.
+func (e *spreadEngine) loadApplied() {
+	raw, err := os.ReadFile(e.appliedPath)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		fmt.Fprintf(e.log, "chottag: spread: cannot read moves-applied.json, starting empty: %v\n", err)
+	default:
+		var loaded map[string]time.Time
+		if err := json.Unmarshal(raw, &loaded); err != nil {
+			fmt.Fprintf(e.log, "chottag: spread: moves-applied.json is not valid, starting empty: %v\n", err)
+			e.appliedOnDisk = true
+			return
+		}
+		for sid, at := range loaded {
+			if sid != "" {
+				e.applied[sid] = at
+			}
+		}
+		e.appliedOnDisk = true
+	}
 }
 
 // view is one decision's inputs, read fresh from state and the status cache.
@@ -215,16 +353,15 @@ func (v spreadView) find(name string) (autoswitch.Account, bool) {
 // It brings p's name and dir up to date. Caller holds e.mu.
 func (e *spreadEngine) resolve(v spreadView, p *placement) (autoswitch.Account, bool) {
 	if p.Dir != "" {
-		for _, a := range v.st.Accounts {
-			if a.Dir == p.Dir {
-				if p.Account != a.Name {
-					p.Account = a.Name
-					e.dirty = true
-				}
-				return v.find(a.Name)
-			}
+		name, ok := nameByDir(v, p.Dir)
+		if !ok {
+			return autoswitch.Account{}, false
 		}
-		return autoswitch.Account{}, false
+		if p.Account != name {
+			p.Account = name
+			e.dirty = true
+		}
+		return v.find(name)
 	}
 	a, ok := v.find(p.Account)
 	if ok {
@@ -234,6 +371,16 @@ func (e *spreadEngine) resolve(v spreadView, p *placement) (autoswitch.Account, 
 		}
 	}
 	return a, ok
+}
+
+// nameByDir is the registered name of the account whose slot dir is dir.
+func nameByDir(v spreadView, dir string) (string, bool) {
+	for _, a := range v.st.Accounts {
+		if a.Dir == dir {
+			return a.Name, true
+		}
+	}
+	return "", false
 }
 
 func dirOf(v spreadView, name string) string {
@@ -269,9 +416,15 @@ func (e *spreadEngine) counts(sid string, now time.Time) bool {
 // account that is not registered counts nowhere, nor does one whose session
 // has not been seen since a restart and is not in the registry.
 func (e *spreadEngine) load(v spreadView, now time.Time) map[string]int {
+	return e.loadWhere(v, now, false)
+}
+
+// loadWhere is load, optionally leaving out the sessions the user chose: the
+// ones a spread notice's mark will not move.
+func (e *spreadEngine) loadWhere(v spreadView, now time.Time, skipChosen bool) map[string]int {
 	out := map[string]int{}
 	for sid, p := range e.placements {
-		if !e.counts(sid, now) {
+		if !e.counts(sid, now) || (skipChosen && p.Chosen) {
 			continue
 		}
 		if a, ok := e.resolve(v, p); ok {
@@ -295,6 +448,14 @@ func (e *spreadEngine) accountFor(sid, native, pool string, now time.Time) (stri
 	conv := e.conv(sid, native)
 	cands, pin := v.in(pool)
 	p := e.placements[sid]
+	if mv, ok := v.st.Moves[sid]; ok && !mv.At.Equal(e.applied[sid]) {
+		// A move request (R191), handled once whatever its outcome.
+		e.applied[sid] = mv.At
+		e.dirty = true
+		if name, ok := e.applyMove(sid, mv, p, conv, v, pool, now); ok {
+			return name, true
+		}
+	}
 	if p == nil {
 		// A running session whose account is a candidate stays on it: turning
 		// spread on must not scatter warm prompt caches. (A pin, which is for
@@ -307,7 +468,7 @@ func (e *spreadEngine) accountFor(sid, native, pool string, now time.Time) (stri
 				return cur.Name, true
 			}
 		}
-		name, ok := autoswitch.Place(cands, e.load(v, now), pin, nil, v.params, now)
+		name, _, ok := e.placePace(e.paceInput(v, now, cands, pin, nil, sid, ""))
 		if !ok {
 			return "", false // the caller serves the pool's fallback; the next request tries again
 		}
@@ -316,6 +477,34 @@ func (e *spreadEngine) accountFor(sid, native, pool string, now time.Time) (stri
 		return name, true
 	}
 	return e.keepOrMove(sid, p, conv, v, pool, now)
+}
+
+// applyMove puts sid on the account mv names, creating its placement if it has
+// none, and marks it chosen. A target that cannot serve (gone, not in the
+// session's pool, out of rotation, needing a login, limited) drops the
+// request with one log line naming the session and the account. Caller holds
+// e.mu.
+func (e *spreadEngine) applyMove(sid string, mv store.Move, p *placement, conv int, v spreadView, pool string, now time.Time) (string, bool) {
+	name := mv.Account
+	if mv.Dir != "" {
+		name, _ = nameByDir(v, mv.Dir) // "" when gone: v.find then fails
+	}
+	target, ok := v.find(name)
+	if !ok || !v.isMember(pool, target.Name) || moveRefusal(target, v.params, now, true) != "" {
+		fmt.Fprintf(e.log, "chottag: spread: move of session %s to %s dropped: the account cannot serve it\n", sid, mv.Account)
+		return "", false
+	}
+	switch {
+	case p == nil:
+		p = &placement{Account: target.Name, Dir: dirOf(v, target.Name), At: now, MovedAt: now, Conversations: conv}
+		e.placements[sid] = p
+	case strings.EqualFold(p.Account, target.Name):
+		p.Account, p.Dir, p.Conversations = target.Name, dirOf(v, target.Name), conv
+	default:
+		e.move(v, p, target.Name, conv, now)
+	}
+	p.Chosen = true
+	return target.Name, true
 }
 
 // account is accountFor for a default-pool request without a native session
@@ -356,7 +545,12 @@ func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadVi
 		if from, ok := v.find(p.From); ok && recent && !allowBack {
 			exclude[from.Name] = true
 		}
-		return autoswitch.Place(cands, e.load(v, now), "", exclude, v.params, now)
+		from := ""
+		if found {
+			from = cur.Name
+		}
+		name, _, ok := e.placePace(e.paceInput(v, now, cands, "", exclude, sid, from))
+		return name, ok
 	}
 	switch {
 	case hard:
@@ -373,7 +567,7 @@ func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadVi
 		}
 		e.move(v, p, name, conv, now)
 		return name, true
-	case !candidate || isMarked:
+	case (!candidate || isMarked) && !p.Chosen:
 		// At a switch point: move at the next request, unless it moved
 		// within the window or nothing else can take it (then it keeps its
 		// account rather than fail or loop: its cache is warm there).
@@ -383,16 +577,14 @@ func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadVi
 				return name, true
 			}
 		}
-	case cold:
+	case cold && !p.Chosen:
 		if !recent {
 			if name, ok := moveTo(false); ok {
 				// Like with like: the current account without this session
 				// against the target with it, so a session never moves for
 				// the sake of counting itself on the account it is leaving.
-				best, _ := v.find(name)
-				l := e.load(v, now)
-				bs := autoswitch.Headroom(best, v.params, now) / float64(1+l[best.Name])
-				cs := autoswitch.Headroom(cur, v.params, now) / float64(max(l[cur.Name], 1))
+				in := e.paceInput(v, now, cands, "", nil, sid, cur.Name)
+				bs, cs := e.paceRatio(in, name), e.paceRatio(in, cur.Name)
 				if bs >= spreadColdMargin*cs {
 					e.move(v, p, name, conv, now)
 					return name, true
@@ -409,7 +601,7 @@ func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadVi
 
 // move records p moving to name. Caller holds e.mu.
 func (e *spreadEngine) move(v spreadView, p *placement, name string, conv int, now time.Time) {
-	p.From, p.Account, p.Dir, p.MovedAt, p.Conversations = p.Account, name, dirOf(v, name), now, conv
+	p.From, p.Account, p.Dir, p.MovedAt, p.Conversations, p.Chosen = p.Account, name, dirOf(v, name), now, conv, false
 	e.dirty = true
 }
 
@@ -430,13 +622,15 @@ func (e *spreadEngine) replaceIn(sid, pool string, now time.Time) (string, bool)
 	}
 	p := e.placements[sid]
 	exclude := map[string]bool{}
+	from := ""
 	if p != nil {
 		if a, ok := e.resolve(v, p); ok {
 			exclude[a.Name] = true
+			from = a.Name
 		}
 	}
 	cands, _ := v.in(pool)
-	name, ok := autoswitch.Place(cands, e.load(v, now), "", exclude, v.params, now)
+	name, _, ok := e.placePace(e.paceInput(v, now, cands, "", exclude, sid, from))
 	if !ok {
 		return "", false
 	}
@@ -458,6 +652,16 @@ func (e *spreadEngine) placed(sid string) (string, bool) {
 		return p.Account, true
 	}
 	return "", false
+}
+
+// placementOf is sid's placement: its account and whether the user chose it.
+func (e *spreadEngine) placementOf(sid string) (account string, chosen bool, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if p := e.placements[sid]; p != nil {
+		return p.Account, p.Chosen, true
+	}
+	return "", false, false
 }
 
 // mark records that account is at a switch point or limited: its sessions
@@ -482,12 +686,14 @@ func (e *spreadEngine) mark(account, why string, now time.Time) markOutcome {
 	exclude := map[string]bool{}
 	if a, ok := v.find(account); ok {
 		exclude[a.Name] = true
-		res.Sessions = e.load(v, now)[a.Name]
+		// A chosen session stays at a switch point, but leaves an account that
+		// cannot serve (limited, rotation off, needs a login).
+		hard := a.Limited || !a.Rotates || a.NeedsLogin
+		res.Sessions = e.loadWhere(v, now, !hard)[a.Name]
 	}
-	load := e.load(v, now)
 	cands := v.sharing(account)
 	for len(res.To) < spreadNoticeTargets {
-		name, ok := autoswitch.Place(cands, load, "", exclude, v.params, now)
+		name, _, ok := e.placePace(e.paceInput(v, now, cands, "", exclude, "", ""))
 		if !ok {
 			break
 		}
@@ -516,9 +722,9 @@ func (e *spreadEngine) servingFor(pool, current string, now time.Time) (string, 
 	if !ok {
 		return "", false
 	}
-	load := e.load(v, now)
 	cands, pin := v.in(pool)
-	best, ok := autoswitch.Place(cands, load, pin, nil, v.params, now)
+	in := e.paceInput(v, now, cands, pin, nil, "", "")
+	best, _, ok := e.placePace(in)
 	if !ok {
 		return "", false
 	}
@@ -529,14 +735,51 @@ func (e *spreadEngine) servingFor(pool, current string, now time.Time) (string, 
 	curOK = curOK && v.isMember(pool, cur.Name)
 	bestAcct, _ := v.find(best)
 	if curOK && autoswitch.Candidate(cur, v.params, now) {
-		score := func(a autoswitch.Account) float64 {
-			return autoswitch.Headroom(a, v.params, now) / float64(1+load[a.Name])
-		}
-		if score(cur)*spreadColdMargin >= score(bestAcct) {
+		in.Pin = ""
+		if e.paceRatio(in, cur.Name)*spreadColdMargin >= e.paceRatio(in, bestAcct.Name) {
 			return cur.Name, true
 		}
 	}
 	return best, true
+}
+
+// spreadPick is what a new session of a pool would get, and the pace numbers
+// the status document shows (R192).
+type spreadPick struct {
+	Name, Reason string
+	OK           bool
+	// Pace is the score and the measured 5h burn of each candidate of the pool.
+	Pace map[string]status.Pace
+	// Burn is the sum of the 5h burn (units per hour) of every member of the pool.
+	Burn float64
+}
+
+// pickFor is the account a new session of pool would get, with its reason,
+// and the pool's pace numbers.
+func (e *spreadEngine) pickFor(pool string, now time.Time) spreadPick {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	v, ok := e.view(now)
+	if !ok {
+		return spreadPick{}
+	}
+	cands, pin := v.in(pool)
+	in := e.paceInput(v, now, cands, pin, nil, "", "")
+	var out spreadPick
+	out.Name, out.Reason, out.OK = e.placePace(in)
+	out.Pace = map[string]status.Pace{}
+	e.paceMu.Lock()
+	defer e.paceMu.Unlock()
+	in.Pace = &e.pace
+	for _, a := range cands {
+		burn, _ := e.pace.AccountBurn(a.Name, autoswitch.Win5h, now)
+		out.Burn += burn
+		if autoswitch.Candidate(a, v.params, now) {
+			ratio, _ := autoswitch.PaceRatio(in, a.Name)
+			out.Pace[a.Name] = status.Pace{Ratio: math.Round(ratio*100) / 100, Burn5h: math.Round(burn)}
+		}
+	}
+	return out
 }
 
 // prune drops the placements of sessions the registry no longer lists, once
@@ -545,13 +788,34 @@ func (e *spreadEngine) prune(live func(sid string) bool, now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.live = live
-	for sid := range e.placements {
+	expired := func(sid string) bool {
 		last := e.seen[sid]
 		if last.Before(e.loadedAt) {
 			last = e.loadedAt // never seen since the load: the grace runs from the start
 		}
-		if !live(sid) && now.Sub(last) > sessions.Grace {
+		return !live(sid) && now.Sub(last) > sessions.Grace
+	}
+	for sid := range e.placements {
+		if expired(sid) {
 			delete(e.placements, sid)
+			delete(e.applied, sid)
+			delete(e.seen, sid)
+			e.dirty = true
+		}
+	}
+	// The pace meter forgets sessions that have ended, with their placements.
+	e.paceMu.Lock()
+	before := len(e.pace.Sessions)
+	e.pace.Prune(func(sid string) bool { _, placed := e.placements[sid]; return placed || live(sid) })
+	if len(e.pace.Sessions) != before {
+		e.paceDirty = true
+	}
+	e.paceMu.Unlock()
+	// A session whose placement was deleted keeps its applied mark only as
+	// long as it lives.
+	for sid := range e.applied {
+		if expired(sid) {
+			delete(e.applied, sid)
 			delete(e.seen, sid)
 			e.dirty = true
 		}
@@ -587,43 +851,92 @@ func (e *spreadEngine) close() {
 func (e *spreadEngine) flush(now time.Time, force bool) {
 
 	e.mu.Lock()
-	if !e.dirty || (!force && now.Sub(e.lastSave) < spreadSaveEvery) {
+	if (!e.dirty && !e.paceChanged()) || (!force && now.Sub(e.lastSave) < spreadSaveEvery) {
 		e.mu.Unlock()
 		return
 	}
-	data, err := json.Marshal(e.placements)
-	if err != nil {
-		e.mu.Unlock()
-		return // placements hold only strings, ints and times
+	paceData := e.paceBytes()
+	// placements.json is rewritten only when the placements changed.
+	var data []byte
+	placementsDirty := e.dirty
+	var err error
+	if placementsDirty {
+		if data, err = json.Marshal(e.placements); err != nil {
+			e.mu.Unlock()
+			return // placements hold only strings, ints and times
+		}
+	}
+	var appliedData []byte
+	if len(e.applied) > 0 || e.appliedOnDisk {
+		if appliedData, err = json.Marshal(e.applied); err != nil {
+			e.mu.Unlock()
+			return
+		}
 	}
 	e.dirty, e.lastSave = false, now
+	e.appliedOnDisk = e.appliedOnDisk || appliedData != nil
 	e.saveSeq++
 	seq := e.saveSeq
 	e.inflight.Add(1)
 	e.mu.Unlock()
-	ok := e.writeFile(seq, data)
+	ok := e.writeFile(seq, data, appliedData, paceData)
 	e.inflight.Done()
 	if !ok {
 		e.mu.Lock()
-		e.dirty = true
+		e.dirty = e.dirty || placementsDirty
 		e.mu.Unlock()
+		e.paceMu.Lock()
+		e.paceDirty = paceData != nil || e.paceDirty
+		e.paceMu.Unlock()
 	}
 }
 
+func (e *spreadEngine) paceChanged() bool {
+	e.paceMu.Lock()
+	defer e.paceMu.Unlock()
+	return e.paceDirty
+}
+
+// paceBytes is the marshaled pace meter when it changed since the last save
+// (nil otherwise), and marks it saved: a failed write sets it dirty again. It
+// holds paceMu only for the marshal. Caller holds e.mu.
+func (e *spreadEngine) paceBytes() []byte {
+	e.paceMu.Lock()
+	defer e.paceMu.Unlock()
+	if !e.paceDirty {
+		return nil
+	}
+	data, err := json.Marshal(&e.pace)
+	if err != nil {
+		return nil // the meter holds only numbers, strings and times
+	}
+	e.paceDirty = false
+	return data
+}
+
 // writeFile reports whether the data is safely on disk (or superseded).
-func (e *spreadEngine) writeFile(seq uint64, data []byte) bool {
+func (e *spreadEngine) writeFile(seq uint64, data, appliedData, paceData []byte) bool {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 	if seq <= e.writtenSeq {
-		return true
+		// A newer write is on disk. It may not carry what this one does
+		// (placements and pace are written only when they changed), so a
+		// write with content is retried at the next flush.
+		return data == nil && paceData == nil
 	}
 	err := os.MkdirAll(filepath.Dir(e.path), 0o700)
-	if err == nil {
+	if err == nil && data != nil {
 		err = e.write(e.path, data, 0o600)
+	}
+	if err == nil && appliedData != nil {
+		err = e.write(e.appliedPath, appliedData, 0o600)
+	}
+	if err == nil && paceData != nil {
+		err = e.write(e.pacePath, paceData, 0o600)
 	}
 	if err != nil {
 		if msg := err.Error(); msg != e.lastWriteErr {
-			fmt.Fprintf(e.log, "chottag: spread: cannot write placements.json: %v\n", err)
+			fmt.Fprintf(e.log, "chottag: spread: cannot write the spread files: %v\n", err)
 			e.lastWriteErr = msg
 		}
 		return false
@@ -648,8 +961,19 @@ func (e *spreadEngine) writeFile(seq uint64, data []byte) bool {
 func (a *autoSwitcher) evaluateSpread(now time.Time, deferNotice bool, pool string, v store.State, limited map[string]autoswitch.Account, params autoswitch.Params, tag string) (*status.AutoSwitch, status.Auto) {
 	var sw *status.AutoSwitch
 	decision := "spread: no account can take a new session"
+	pick := a.spread.pickFor(pool, now)
+	if pick.OK {
+		decision = "spread: next session → " + pick.Name + " (" + pick.Reason + ")"
+	}
+	for name, p := range pick.Pace {
+		if a.pacePub == nil {
+			a.pacePub = map[string]status.Pace{}
+		}
+		if _, dup := a.pacePub[name]; !dup {
+			a.pacePub[name] = p
+		}
+	}
 	if target, ok := a.spread.servingFor(pool, v.Serving, now); ok {
-		decision = "spread: new sessions go to " + target
 		if !strings.EqualFold(target, v.Serving) {
 			if a.spreadServe(now, pool, v.Serving, target) && deferNotice {
 				if from, ok := limited[strings.ToLower(v.Serving)]; ok {
@@ -658,7 +982,7 @@ func (a *autoSwitcher) evaluateSpread(now time.Time, deferNotice bool, pool stri
 			}
 		}
 	}
-	return sw, status.Auto{Decision: decision}
+	return sw, status.Auto{Decision: decision, Next: &pick.Name, BurnRate: pick.Burn}
 }
 
 // spreadOnUsage is onUsage under spread: it only refreshes the marks (and
@@ -874,4 +1198,34 @@ func pctOr0(has bool, pct float64) float64 {
 		return pct
 	}
 	return 0
+}
+
+// placementView is the placement lookup stampSessions publishes (R191), nil
+// when there is no engine or no pool spreads. Only a session of a pool that
+// spreads is published: a stale placement under serial says nothing about
+// where a session goes.
+func (a *autoSwitcher) placementView() func(sid, pool string) (string, bool, bool) {
+	if a == nil || a.spread == nil || a.state == nil {
+		return nil
+	}
+	st, err := a.state()
+	if err != nil || !anySpread(st) {
+		return nil
+	}
+	return spreadOnly(st, a.spread.placementOf)
+}
+
+// spreadOnly limits place to sessions whose pool spreads in st (a pool since
+// removed routes as default).
+func spreadOnly(st store.State, place func(sid string) (string, bool, bool)) func(sid, pool string) (string, bool, bool) {
+	return func(sid, pool string) (string, bool, bool) {
+		pool = poolOrDefault(pool)
+		if !st.HasPool(pool) {
+			pool = store.DefaultPool
+		}
+		if !poolSpread(st, pool) {
+			return "", false, false
+		}
+		return place(sid)
+	}
 }

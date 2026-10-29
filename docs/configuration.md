@@ -37,7 +37,9 @@ Every path below is relative to the chottag home (`~/.chottag` unless
 | `bin/` | Holds the `chottag` and `claude` symlinks that `setup` puts on `PATH`. | `chottag setup`. | No — removing it breaks the `claude` shim; re-run `chottag setup` to recreate it. |
 | `bin/claude` | A symlink to the `chottag` binary itself: this is the shim `claude` invocations actually run, ahead of the real Claude Code on `PATH`. | `chottag setup`. | No, for the reason above. |
 | `run/` | Holds the daemon's lock file, proving which process, if any, currently owns the daemon role, and the live-session records (one file per `claude` the shim launched). | `daemon run`, and the shim. | Yes when no daemon is running; `chottag daemon stop` is the normal way to release it. |
-| `run/placements.json` | Under `chottag policy spread`: the account each live session is placed on (session id, account, slot directory, when it was placed and last moved), so a daemon restart keeps every session where it was. Written with mode 0600, only by the daemon, and only while it holds placements (an earlier spread period's expire after their sessions end); never holds a token. | The daemon, within a few seconds of a change and at shutdown. | Yes — the sessions are placed again at their next request, which can put them on different accounts. |
+| `run/moves-applied.json` | Under `chottag policy spread`: which `chottag move` requests the daemon has already applied (session id, and the time of the request), so a restart, or a placement that was dropped, never applies one twice. Written with mode 0600, only by the daemon, whenever the daemon saves its spread files (when the placements, the moves or the pace meter changed, about once a second at most, and at shutdown); never holds a token. | The daemon. | Yes, but deleting it while a session still lives can let a pending move in `state.json` apply again at that session's next request. |
+| `run/pace.json` | The pace meter: each account's measured 5-hour and 7-day burn (units per hour, a percentage point of a window times the account's plan units: a max20x 5-hour window is 2000) and the readings it was last updated from, and the rates of the live sessions by id, so a restart keeps the placement scores. Written under every policy, whenever it changed, with mode 0600, only by the daemon, debounced to about once a second; never holds a token. | The daemon. | Yes — the burns are measured again from the next responses, and new sessions are placed on the default burn estimate until then. |
+| `run/placements.json` | Under `chottag policy spread`: the account each live session is placed on (session id, account, slot directory, when it was placed and last moved), so a daemon restart keeps every session where it was. Written with mode 0600, only by the daemon, and only when the placements changed (never for a pace update alone) (an earlier spread period's expire after their sessions end); never holds a token. | The daemon, within a few seconds of a change and at shutdown. | Yes — the sessions are placed again at their next request, which can put them on different accounts. |
 | `cache/` | Holds `cache/status.json` above. | `chottag setup`. | Yes, for the reason above. |
 
 ## state.json
@@ -83,6 +85,13 @@ an auto-switch.
   "policy": "spread",
   "pin": "A",
   "label": "dev",
+  "moves": {
+    "3f9c1a2b4d5e6f708192a3b4c5d6e7f8": {
+      "account": "B",
+      "dir": "/Users/alice/.chottag/accounts/B",
+      "at": "2026-01-01T10:00:00Z"
+    }
+  },
   "updates": {
     "check": true,
     "auto": false,
@@ -93,6 +102,13 @@ an auto-switch.
   }
 }
 ```
+
+`moves` holds the pending requests of `chottag move`, keyed by session id: the
+target account, its slot directory (which survives a rename) and when it was
+asked. `chottag move` writes it and drops the entries of ended sessions and
+those older than 7 days on each run; the daemon only reads it (it records the
+requests it has applied in `run/moves-applied.json`) and never writes it. The
+key is absent when there are none.
 
 With a pool other than `default` (see [Pools](how-it-works.md#pools)), the
 file is `"version": 2`, each account may carry `"pools"`, and there is a
@@ -147,8 +163,9 @@ top-level `"pools"` object:
 - `names` — session naming: `model` or `off`; absent means `on`. Set it with
   `chottag names`.
 - `policy` — how new sessions are placed: `spread` puts each on the account
-  with most headroom and keeps it there; absent means `serial`, one serving
-  account. Set it with `chottag policy`.
+  whose windows its sessions use up the slowest (pace; see [how it
+  works](how-it-works.md#spreading-sessions-spread)) and keeps it there;
+  absent means `serial`, one serving account. Set it with `chottag policy`.
 - `pin` — the account `chottag tag NAME` pins new sessions to under
   `spread`; it has no effect under `serial`. Absent means unpinned.
 - `pools` — every pool other than `default`, by name (`a-z`, `0-9` and `-`,

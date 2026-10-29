@@ -39,7 +39,7 @@ type Options struct {
 	LimitFingerprint bool
 	DownHosts        []string
 	OnLogError       func(error)
-	OnUsage          func(account string, status int, h http.Header)
+	OnUsage          func(account string, status int, h http.Header, req proxy.UsageRequest)
 	OnUsageError     func(error)
 	// OnServingRefusal is Config.OnServingRefusal (R158).
 	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)

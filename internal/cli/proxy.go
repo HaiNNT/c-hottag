@@ -282,7 +282,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 
 	// The spread policy's placements (M7): loaded now, so a daemon restart
 	// keeps every session on its account; saved on change and at shutdown.
-	sp := newSpreadEngine(filepath.Join(h, "run", "placements.json"), cache.State, sink.fileCopy, ch.tracker.Peek, stderr, time.Now())
+	sp := newSpreadEngine(filepath.Join(h, "run", "placements.json"), filepath.Join(h, "run", "moves-applied.json"), cache.State, sink.fileCopy, ch.tracker.Peek, stderr, time.Now())
 	ch.spread, as.spread = sp, sp
 	ch.log, ch.refresh = stderr, cache.Invalidate
 	stickyAccounts := wireStickyValidate(ch, h, stderr)
@@ -526,7 +526,7 @@ func openTraceLog(path string) (*tracelog.Writer, error) {
 // exists as its own function so upstream-proxy wiring can be asserted
 // directly: a `UpstreamProxy: upstreamURL` silently shrinking to `nil`
 // here compiles and left the whole suite green before this existed.
-func newProxyConfig(authority *ca.Authority, secret proxyauth.Secret, lw *tracelog.Writer, ch *chooser, onUsage func(account string, status int, h http.Header), onUsageError func(error), onLogError func(error), upstreamURL *url.URL) proxy.Config {
+func newProxyConfig(authority *ca.Authority, secret proxyauth.Secret, lw *tracelog.Writer, ch *chooser, onUsage func(account string, status int, h http.Header, req proxy.UsageRequest), onUsageError func(error), onLogError func(error), upstreamURL *url.URL) proxy.Config {
 	return proxy.Config{
 		CA:            authority,
 		ProxyAuth:     secret,
@@ -554,7 +554,7 @@ func newProxyConfig(authority *ca.Authority, secret proxyauth.Secret, lw *tracel
 // TestWireProxyConfigRoutesErrorsToTheirOwnThrottle, which calls this exact
 // function and would fail if the two arguments below were ever swapped
 // again.
-func wireProxyConfig(stderr io.Writer, authority *ca.Authority, secret proxyauth.Secret, lw *tracelog.Writer, ch *chooser, onUsage func(account string, status int, h http.Header), upstreamURL *url.URL) proxy.Config {
+func wireProxyConfig(stderr io.Writer, authority *ca.Authority, secret proxyauth.Secret, lw *tracelog.Writer, ch *chooser, onUsage func(account string, status int, h http.Header, req proxy.UsageRequest), upstreamURL *url.URL) proxy.Config {
 	return newProxyConfig(authority, secret, lw, ch, onUsage, usageErrorThrottle(stderr), logErrorThrottle(stderr), upstreamURL)
 }
 
@@ -1035,7 +1035,7 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		// Session activity rides the same tick; it queues its own write
 		// only when the snapshot changed.
 		if d.Chooser != nil && d.Chooser.tracker != nil && d.Sink != nil {
-			stampSessions(d.Sink, d.Chooser.tracker, d.Home, now)
+			stampSessions(d.Sink, d.Chooser.tracker, d.Home, now, d.Auto.placementView())
 		}
 		if d.Journal != nil {
 			var tr *sessions.Tracker

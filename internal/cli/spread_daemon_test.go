@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/sessions"
 	"github.com/HaiNNT/c-hottag/internal/store"
@@ -22,7 +23,7 @@ func spreadAutoRig(t *testing.T) *autoRig {
 	t.Helper()
 	r := newAutoRig(t)
 	r.update(func(st *store.State) { st.Policy, st.Pin = store.PolicySpread, "A" })
-	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), r.state, r.sink.fileCopy,
+	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), filepath.Join(r.home, "run", "moves-applied.json"), r.state, r.sink.fileCopy,
 		func(string, string) int { return 0 }, r.log, r.now)
 	for _, sid := range []string{"s1", "s2", "s3"} {
 		if got, ok := r.as.spread.account(sid, r.now); !ok || got != "A" {
@@ -79,7 +80,7 @@ func TestSpreadEvaluateMarksInsteadOfSwitchingAndNoticesOnce(t *testing.T) {
 
 func TestSpreadEvaluateSerialPathIsUntouched(t *testing.T) {
 	r := newAutoRig(t, onlyB(eligNow)...)
-	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), r.state, r.sink.fileCopy,
+	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), filepath.Join(r.home, "run", "moves-applied.json"), r.state, r.sink.fileCopy,
 		func(string, string) int { return 0 }, r.log, r.now) // wired, but the policy is serial
 	r.row(busyRow("A", 95, r.now, 3*time.Hour))
 	r.as.evaluate(r.now, false)
@@ -142,7 +143,7 @@ func TestSpreadWallRetryForAnUnidentifiedSessionKeepsToday(t *testing.T) {
 func TestSpreadOnUsageOfANonServingAccountMarksIt(t *testing.T) {
 	r := newAutoRig(t)
 	r.update(func(st *store.State) { st.Policy, st.Pin = store.PolicySpread, "B" })
-	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), r.state, r.sink.fileCopy,
+	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), filepath.Join(r.home, "run", "moves-applied.json"), r.state, r.sink.fileCopy,
 		func(string, string) int { return 0 }, r.log, r.now)
 	if got, _ := r.as.spread.account("s1", r.now); got != "B" {
 		t.Fatalf("s1 on %q, want the pinned B", got)
@@ -152,7 +153,7 @@ func TestSpreadOnUsageOfANonServingAccountMarksIt(t *testing.T) {
 	r.notices()
 	r.update(func(st *store.State) { st.Serving = "A" })
 	r.row(busyRow("B", 95, r.now, 3*time.Hour)) // what the usage hook folded in just before
-	r.as.onUsage("B", 200, http.Header{})
+	r.as.onUsage("B", 200, http.Header{}, proxy.UsageRequest{})
 	got := r.notices()
 	if len(got) != 1 || !strings.HasPrefix(got[0].title, "chottag: moved 1 session from B to ") {
 		t.Fatalf("notices = %+v: a response from B (not serving) did not mark it", got)
@@ -225,7 +226,7 @@ func TestSpreadFirstEvaluationOnlySeedsMarks(t *testing.T) {
 	// a daemon restart: a new switcher and engine on the same placements.
 	r.row(busyRow("A", 95, r.now, 3*time.Hour))
 	r.as.spread.close()
-	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), r.state, r.sink.fileCopy,
+	r.as.spread = newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), filepath.Join(r.home, "run", "moves-applied.json"), r.state, r.sink.fileCopy,
 		func(string, string) int { return 0 }, r.log, r.now)
 	r.as.spreadSeeded = false
 	for _, sid := range []string{"s1", "s2", "s3"} {
@@ -268,7 +269,7 @@ func TestDaemonSpreadPlacementsSurviveARestart(t *testing.T) {
 		tr := sessions.NewTracker()
 		elog := newSyncBuf()
 		t.Cleanup(func() { t.Log("spread log:", elog.String()) })
-		eng := newSpreadEngine(path, cache.State, sink.fileCopy, tr.Peek, elog, time.Now())
+		eng := newSpreadEngine(path, filepath.Join(filepath.Dir(path), "moves-applied.json"), cache.State, sink.fileCopy, tr.Peek, elog, time.Now())
 		toks := fakeTokens2{filepath.Join(home, "accounts", "A"): "tok-A", filepath.Join(home, "accounts", "B"): "tok-B"}
 		sel := selector.New(selector.Config{State: cache.State, Tokens: toks, Owners: fakeOwners{}})
 		ch = &chooser{sel: sel, state: cache.State, spread: eng, tracker: tr}
@@ -313,7 +314,7 @@ func TestDaemonSpreadPlacementsSurviveARestart(t *testing.T) {
 func TestSpreadResponsesNeverWriteServingAndTicksAreSteady(t *testing.T) {
 	r := newAutoRig(t)
 	r.update(func(st *store.State) { st.Policy = store.PolicySpread })
-	eng := newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), r.state, r.sink.fileCopy,
+	eng := newSpreadEngine(filepath.Join(r.home, "run", "placements.json"), filepath.Join(r.home, "run", "moves-applied.json"), r.state, r.sink.fileCopy,
 		func(string, string) int { return 0 }, r.log, r.now)
 	r.as.spread = eng
 	for i := 0; i < 16; i++ { // sessions spread over A, B, C, D by score
@@ -330,7 +331,7 @@ func TestSpreadResponsesNeverWriteServingAndTicksAreSteady(t *testing.T) {
 	for i := 1; i <= 100; i++ { // usage creeping on every account, 100 responses
 		for _, n := range []string{"A", "B", "C", "D"} {
 			r.row(freshRow(n, 10+float64(i%40)*0.5+float64(len(n)), 10, r.now))
-			r.as.onUsage(n, 200, http.Header{})
+			r.as.onUsage(n, 200, http.Header{}, proxy.UsageRequest{})
 		}
 	}
 	after, _ := os.Stat(statePath)
@@ -342,7 +343,7 @@ func TestSpreadResponsesNeverWriteServingAndTicksAreSteady(t *testing.T) {
 	// tick moves serving.
 	serving := r.serving()
 	r.row(busyRow(serving, 96, r.now, 3*time.Hour))
-	r.as.onUsage(serving, 200, http.Header{})
+	r.as.onUsage(serving, 200, http.Header{}, proxy.UsageRequest{})
 	if got := r.serving(); got != serving {
 		t.Fatalf("a response moved serving from %s to %s", serving, got)
 	}

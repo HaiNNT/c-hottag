@@ -194,7 +194,7 @@ func TestMain(m *testing.M) {
 	SetParentPIDForTest(func(int) (int, error) {
 		panic("parentPID reached from internal/cli's test binary: stub it with SetParentPIDForTest")
 	})
-	SetStatuslineProbeForTest(func(int) bool {
+	SetStatuslineProbeForTest(func(int) (bool, string) {
 		panic("statuslineProbe reached from internal/cli's test binary: stub it with SetStatuslineProbeForTest")
 	})
 	// cmuxSetStatus (statusline.go) runs cmux(1); a test that sets

@@ -112,6 +112,14 @@ func ProbeHealthWithin(port int, timeout time.Duration) bool {
 	return ok
 }
 
+// ProbeHealthVersionWithin is ProbeHealthWithin that also returns the
+// daemon's health Version ("" when it reports none).
+func ProbeHealthVersionWithin(port int, timeout time.Duration) (bool, string) {
+	c := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil}}
+	ok, h := probeWith(c, port, "")
+	return ok, h.Version
+}
+
 func probeWith(client *http.Client, port int, nonce string) (bool, proxy.Health) {
 	u := "http://127.0.0.1:" + strconv.Itoa(port) + proxy.HealthPath
 	if nonce != "" {

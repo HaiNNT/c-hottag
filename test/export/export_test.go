@@ -406,6 +406,35 @@ func TestExportFailsClosedWhenTheGateFails(t *testing.T) {
 	}
 }
 
+// TestExportNoGateSkipsOnlyTheGateCommands is R190: --no-gate leaves the
+// gate to the public repo's release.yml, so a failing gate line no longer
+// stops the export; every other check still applies, the gate block too.
+func TestExportNoGateSkipsOnlyTheGateCommands(t *testing.T) {
+	e := newEnv(t)
+	e.write(map[string]string{"CLAUDE.md": "- The gate:\n```sh\ntest -f README.md\nfalse\n```\n"})
+	e.commitAndTag("v1.2.4")
+	out, errb, code := e.export("--no-gate", "v1.2.4", e.pub)
+	if code != 0 {
+		t.Fatalf("--no-gate: exit %d, stderr %q", code, errb)
+	}
+	if !strings.Contains(out+errb, "gate: skipped (--no-gate)") || strings.Contains(out+errb, "gate: false") {
+		t.Errorf("--no-gate must say it skipped the gate and run no line; got %q %q", out, errb)
+	}
+	if e.git(e.pub, "rev-parse", "v1.2.4^{commit}") != e.git(e.pub, "rev-parse", "HEAD") {
+		t.Error("tag v1.2.4 does not point at the export commit")
+	}
+
+	e2 := newEnv(t)
+	e2.write(map[string]string{"CLAUDE.md": "# no gate here\n"})
+	e2.commitAndTag("v1.2.4")
+	if _, errb, code := e2.export("--no-gate", "v1.2.4", e2.pub); code != 1 || !strings.Contains(errb, "no gate block") {
+		t.Errorf("--no-gate without a gate block: exit %d, stderr %q; want 1", code, errb)
+	}
+	if _, errb, code := e2.export("--no-gate", "--check", "HEAD"); code != 2 || !strings.Contains(errb, "--no-gate") {
+		t.Errorf("--no-gate --check: exit %d, stderr %q; want a usage error", code, errb)
+	}
+}
+
 func TestExportNeedsAnExistingVersionTag(t *testing.T) {
 	e := newEnv(t)
 	before := e.pubState()

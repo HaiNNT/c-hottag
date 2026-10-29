@@ -13,6 +13,7 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/notify"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/store"
 )
@@ -236,12 +237,12 @@ func notifyEventHook(dn *daemonNotify, next func(selector.Event)) func(selector.
 // re-arms the needs-login notice only when the account isn't blocked —
 // i.e. no needs-login notice has fired for it since the last successful
 // Choose (ruling 4, and T1 review #5's blocked-flag fix).
-func notifyUsageHook(dn *daemonNotify, next func(string, int, http.Header)) func(string, int, http.Header) {
+func notifyUsageHook(dn *daemonNotify, next func(string, int, http.Header, proxy.UsageRequest)) func(string, int, http.Header, proxy.UsageRequest) {
 	if dn == nil {
 		return next
 	}
-	return func(account string, code int, h http.Header) {
-		next(account, code, h)
+	return func(account string, code int, h http.Header, req proxy.UsageRequest) {
+		next(account, code, h, req)
 		if code >= 200 && code < 300 && !dn.isBlocked(account) {
 			dn.events.AccountOK(account)
 		}

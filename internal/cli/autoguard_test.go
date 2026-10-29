@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/creds"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/status"
 )
 
@@ -338,7 +339,7 @@ func TestGuardMidWaitDoesNotBlockResponseDelivery(t *testing.T) {
 	<-entered // the guard is waiting for B's token
 	delivered := make(chan struct{})
 	go func() {
-		g.as.onUsage("A", http.StatusOK, http.Header{})
+		g.as.onUsage("A", http.StatusOK, http.Header{}, proxy.UsageRequest{})
 		close(delivered)
 	}()
 	select {

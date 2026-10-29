@@ -78,6 +78,9 @@ type autoSwitcher struct {
 	// has been announced, until they are candidates again. Both under mu.
 	spreadSeeded       bool
 	spreadLimitNoticed map[string]bool
+	// pacePub collects the pace numbers of the spread pools' candidates during
+	// one evaluation, published as the accounts' pace. Under mu.
+	pacePub map[string]status.Pace
 
 	mu   sync.Mutex
 	burn autoswitch.Burn
@@ -206,17 +209,17 @@ func newAutoSwitcher(s store.Store, cache *store.Cache, sink *statusSink, dn *da
 // rate and runs the planner. OnUsage fires only for a swapped response
 // answered on the account's own credential (!Drift, F26), so nothing here
 // is attributed to the wrong account. A nil a returns next unchanged.
-func autoUsageHook(a *autoSwitcher, next func(string, int, http.Header)) func(string, int, http.Header) {
+func autoUsageHook(a *autoSwitcher, next func(string, int, http.Header, proxy.UsageRequest)) func(string, int, http.Header, proxy.UsageRequest) {
 	if a == nil {
 		return next
 	}
-	return func(account string, code int, h http.Header) {
-		next(account, code, h)
-		a.onUsage(account, code, h)
+	return func(account string, code int, h http.Header, req proxy.UsageRequest) {
+		next(account, code, h, req)
+		a.onUsage(account, code, h, req)
 	}
 }
 
-func (a *autoSwitcher) onUsage(account string, code int, h http.Header) {
+func (a *autoSwitcher) onUsage(account string, code int, h http.Header, req proxy.UsageRequest) {
 	if code >= 200 && code < 300 {
 		a.sink.setTokenCleared(account, a.now())
 	}
@@ -224,6 +227,7 @@ func (a *autoSwitcher) onUsage(account string, code int, h http.Header) {
 	if err != nil {
 		return
 	}
+	a.feedPace(st, account, h, req)
 	if a.spread != nil && anySpread(st) {
 		// Sessions sit on many accounts: any account's response can push it
 		// over a point. Only the marks are refreshed here: serving is kept on
@@ -242,6 +246,20 @@ func (a *autoSwitcher) onUsage(account string, code int, h http.Header) {
 		}
 	}
 	a.evaluate(now, false)
+}
+
+// feedPace folds one response into the pace meter (R192), for every account
+// under every policy. The engine owns the meter; without one there is none.
+func (a *autoSwitcher) feedPace(st store.State, account string, h http.Header, req proxy.UsageRequest) {
+	if a.spread == nil {
+		return
+	}
+	acct, ok := findExact(&st, account)
+	if !ok {
+		return
+	}
+	now := a.now()
+	a.spread.observe(acct.Name, unitsOf(*acct), usagehdr.Parse(h, now), req, now)
 }
 
 // anySpread reports whether some pool's policy is spread.
@@ -421,6 +439,7 @@ func (a *autoSwitcher) evaluateOnce(now time.Time, deferNotice bool, want string
 	}
 	f := a.sink.fileCopy()
 	params := autoParams(st)
+	a.pacePub = nil
 	var wantSw *status.AutoSwitch
 	var def status.Auto
 	var others map[string]status.PoolAuto
@@ -452,13 +471,25 @@ func (a *autoSwitcher) evaluateOnce(now time.Time, deferNotice bool, want string
 			if others == nil {
 				others = map[string]status.PoolAuto{}
 			}
-			others[pool] = status.PoolAuto{Decision: pub.Decision, UserChosen: pub.UserChosen, LastSwitch: a.poolState(pool).lastSwitch}
+			others[pool] = status.PoolAuto{Decision: pub.Decision, UserChosen: pub.UserChosen, LastSwitch: a.poolState(pool).lastSwitch, Next: pub.Next}
 		}
 	}
-	a.published = status.Auto{
-		Mode: string(params.Mode), Decision: def.Decision, LastSwitch: a.lastSwitch,
-		UserChosen: def.UserChosen, BurnRate: a.burn.Rate(), Pools: others,
+	// The serial burn feeds the card's and `next --pool`'s continuity, so it
+	// stays whenever any pool is serial; only when every pool spreads is the
+	// rate the sum of the default pool's members' 5h pace (R192, spec §10).
+	burn := a.burn.Rate()
+	allSpread := a.spread != nil
+	for _, pool := range st.PoolNames() {
+		allSpread = allSpread && poolSpread(st, pool)
 	}
+	if allSpread {
+		burn = def.BurnRate
+	}
+	a.published = status.Auto{
+		Mode: string(params.Mode), Decision: def.Decision, Next: def.Next, LastSwitch: a.lastSwitch,
+		UserChosen: def.UserChosen, BurnRate: burn, Pools: others,
+	}
+	a.sink.setPaces(a.pacePub)
 	a.sink.setAuto(a.published, anySw)
 	return wantSw, a.wait
 }
@@ -1033,6 +1064,18 @@ func (c *statusSink) setAuto(a status.Auto, flush bool) {
 	case changed && flush:
 		c.flush()
 	case changed:
+		c.maybeSave()
+	}
+}
+
+// setPaces publishes each spread candidate's pace (R192) on its account row,
+// and clears every other row's. Only a change is written, within the sink's
+// usual coalescing window.
+func (c *statusSink) setPaces(p map[string]status.Pace) {
+	c.mu.Lock()
+	changed := c.file.SetPaces(p)
+	c.mu.Unlock()
+	if changed {
 		c.maybeSave()
 	}
 }

@@ -26,6 +26,7 @@ commands:
   logout NAME [--force] [--yes] revoke a slot's login and remove it
   tag [NAME] [--force] [--pool P] set the serving account (no NAME: next in rotation); under spread, also pin new sessions to NAME
   tag --unpin [--pool P]        under spread, clear the pin
+  move NAME [--session SID] [--force]  under spread, put a running session on NAME (default: this session); it switches at its next request
   next [--force] [--pool P]     serving account -> next in rotation (refused under spread)
   policy [serial|spread] [--pool P]  show or set how new sessions are placed: one serving account, or spread over accounts
   remote [NAME] [--pool P]      set or show the account that owns claude.ai objects
@@ -239,6 +240,8 @@ func dispatch(args []string, r *reporter) int {
 		return runLogout(args[1:], os.Stdin, r)
 	case "tag":
 		return runTag(args[1:], r)
+	case "move":
+		return runMove(args[1:], r)
 	case "next":
 		return runNextCmd(args[1:], r)
 	case "remote", "rc", "remote-control":

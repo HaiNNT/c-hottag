@@ -46,6 +46,43 @@ func TestSetAutoReportsOnlyAChange(t *testing.T) {
 	}
 }
 
+// A published next is compared by value, not by pointer: an idle spread
+// daemon builds a fresh pointer every evaluation and must not rewrite the file.
+func TestSetAutoComparesNextByValue(t *testing.T) {
+	str := func(s string) *string { return &s }
+	var f File
+	mk := func(top, pool *string) Auto {
+		return Auto{Mode: "balanced", Next: top, Pools: map[string]PoolAuto{"work": {Next: pool}}}
+	}
+	if !f.SetAuto(mk(str("B"), str("D"))) {
+		t.Fatal("first SetAuto reported no change")
+	}
+	if f.SetAuto(mk(str("B"), str("D"))) {
+		t.Fatal("equal values behind distinct pointers reported a change")
+	}
+	if !f.SetAuto(mk(str("C"), str("D"))) {
+		t.Fatal("a changed default next reported no change")
+	}
+	if !f.SetAuto(mk(str("C"), str("E"))) {
+		t.Fatal("a changed pool next reported no change")
+	}
+	if !f.SetAuto(mk(str("C"), nil)) {
+		t.Fatal("pool next published -> absent reported no change")
+	}
+	if !f.SetAuto(mk(str("C"), str(""))) {
+		t.Fatal("pool next absent -> \"\" reported no change")
+	}
+	if f.SetAuto(mk(str("C"), str(""))) {
+		t.Fatal("equal empty picks reported a change")
+	}
+	if !f.SetAuto(mk(nil, str(""))) {
+		t.Fatal("default next published -> absent reported no change")
+	}
+	if f.SetAuto(mk(nil, str(""))) {
+		t.Fatal("nil == nil reported a change")
+	}
+}
+
 // TestAutoRoundTripsWithTheSpecKeys pins spec §7's status.json keys and
 // omitzero on the switch time (F25).
 func TestAutoRoundTripsWithTheSpecKeys(t *testing.T) {

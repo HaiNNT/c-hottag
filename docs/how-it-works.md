@@ -201,19 +201,65 @@ serving account. `chottag policy spread` instead places each session on its
 own account, so several sessions at once share the load of several accounts.
 
 - **Placement.** A session is placed on its first inference request: of the
-  accounts that can take it, the one with the highest headroom ÷ (1 + the
-  sessions already on it). Headroom is the distance to the account's switch
-  point in the tighter of its 5h and 7d windows, times the plan size. An
-  account with no usage reading yet counts as fresh. Ties go to the earlier
-  registered account. The account `chottag tag NAME` pinned wins outright
-  while it can take a session. The pin is for new sessions only: it is never
-  used to move one.
+  accounts that can take it, the one with the highest pace score, the account
+  whose windows the sessions already on it use up the slowest. Burn is counted
+  in units per hour: a percentage point of a window times the account's plan
+  units, so a max20x 5-hour window is 2000 units and a pro one 100. The 5h
+  burn of an account is the larger of its measured account burn and the sum of
+  the rates of its live sessions; the 7d burn is the measured account burn
+  only. For the 5-hour window chottag asks how long the account's room (up to
+  its switch point) lasts at that burn, plus the new session's. If that is
+  shorter than the wait for the window's reset, that is the horizon; if the
+  account reaches its reset first, the horizon is the wait plus a whole window
+  at that burn (the refill counts, so an account about to reset does not
+  attract every new session). `r5h` is the horizon divided by 5 hours. For the
+  7-day window `r7d` is the time the room lasts divided by the time left until
+  the reset. The score is `min(r5h, 3) × min(r7d, 1)`: the 5-hour ratio counts
+  up to 3 (15 hours), and the 7-day one only lowers the score, when the week's
+  room would run out before its reset, and adds nothing above 1. The weekly
+  factor uses only the account's measured 7-day burn, and is neutral (1) until
+  one has been measured. A session that has not shown its burn yet counts as
+  the median of the measured live sessions that were active in the last 30
+  minutes, and at least 100 units per hour; with none measured it counts as
+  200 units per hour (a tenth of a max20x 5-hour window). An account with no
+  usage reading yet counts as fresh. Ties go to the account whose 5-hour
+  window resets soonest, then the one with fewer sessions, then the earlier
+  registered one. An account whose 5-hour limit is less than 15 minutes away
+  (while its reset is further off) is left out while another can take the
+  session. The account `chottag tag NAME` pinned wins outright while it can
+  take a session. The pin is for new sessions only: it is never used to move
+  one.
+- **Measurements.** Every response from an account feeds a pace meter: the
+  rise of its 5h and 7d utilization between readings, in the units above,
+  averaged with a decay time constant of 30 minutes for the 5-hour burn and 6
+  hours for the 7-day burn (an observation that old weighs 1/e, about 37%, of a
+  fresh one; these are not half-lives). A rise in the 5h window is credited to
+  the session whose inference response observed it, not spread over the
+  active sessions; a session's own rate decays with a 30-minute constant too.
+  The meter is kept in `run/pace.json` (see [configuration](configuration.md))
+  so a restart keeps it. `chottag status --json` shows the result as each
+  candidate's `pace` and the pick as `auto.next`.
 - **Sticky.** A session stays on its account, so its prompt cache stays
   warm. It moves only on three triggers: its account reaches a switch point
   (`chottag auto set`), its account is limited, or its prompt cache is
   already cold (the conversation changed) and another account is clearly
   better (1.5 times the score). A request that hits a limit is retried once
-  on a new account, as with auto-switch.
+  on a new account, as with auto-switch. A session you put on an account with
+  `chottag move` is chosen: it stays through a switch point and the cold-cache
+  rebalance (at a switch point the spread notice for its account does not
+  count it), and leaves only when its account is limited, has rotation off,
+  needs a login, is gone or left the session's pool, or on a limit-hit retry.
+  Then it is back under normal balancing. It still counts as load.
+- **Moving a session.** `chottag move` writes a request into `state.json`;
+  the daemon applies it once, at the session's next inference request: the
+  target is checked (it must be in the session's pool and able to serve), the
+  placement changes, and the session is marked chosen. A request whose target
+  cannot serve is dropped with one line in `daemon.log` (session and account
+  only) and not retried. The requests already applied are remembered in
+  `run/moves-applied.json`, so a restart, or a placement that was dropped and
+  made again, never applies one twice. The prompt cache starts cold on the
+  new account. `status.json` publishes each session's `placed` account and
+  `chosen` flag.
 - **No flapping.** A move for a switch point or a cold cache happens at most
   once in 10 minutes per session, and never straight back to the account the
   session just left. If no other account can take it, the session stays where
@@ -267,8 +313,9 @@ own account, so several sessions at once share the load of several accounts.
   before one needing a login, then the lowest usage);
   only when no account rotates is it `serving` anyway. A rotation-off account
   is never the fallback while a rotating one exists. `chottag next` is refused, and
-  `chottag status` shows the policy, the pin and, per account, how many
-  sessions it carries.
+  `chottag status` shows the policy, the pin and, in its first line, every
+  account that carries sessions with its count (`serving: A 5 · B 5
+  fallback: B   remote: C`).
 
 ```mermaid
 flowchart LR

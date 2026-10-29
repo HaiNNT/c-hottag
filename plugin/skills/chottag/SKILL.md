@@ -2,7 +2,7 @@
 name: chottag
 description: Switch which Claude account Claude Code uses on this machine, with chottag (c-hottag). Use when the user wants to switch Claude accounts, change the serving or remote account, add or log in an account, check usage or limits across accounts, or fix a chottag install, or mentions chottag or hottag. Runs chottag with --json and never edits ~/.claude.
 argument-hint: "[chottag command and arguments, e.g. tag B]"
-allowed-tools: Bash(chottag status:*), Bash(chottag doctor --json), Bash(chottag update --check --json), Bash(chottag version:*), Bash(chottag tag:*), Bash(chottag next:*), Bash(chottag remote:*), Bash(chottag rotate:*), Bash(chottag auto:*), Bash(chottag notify:*), Bash(chottag plan:*), Bash(chottag sessions:*), Bash(chottag names), Bash(chottag names --json)
+allowed-tools: Bash(chottag status:*), Bash(chottag doctor --json), Bash(chottag update --check --json), Bash(chottag version:*), Bash(chottag tag:*), Bash(chottag next:*), Bash(chottag move:*), Bash(chottag remote:*), Bash(chottag rotate:*), Bash(chottag auto:*), Bash(chottag notify:*), Bash(chottag plan:*), Bash(chottag sessions:*), Bash(chottag names), Bash(chottag names --json)
 ---
 
 # chottag: switch Claude accounts
@@ -76,7 +76,7 @@ Without arguments, work out what the user wants and use "Common tasks".
    `help`. The daemon starts by itself when `claude` runs.
 8. **Only read-only commands and everyday switches run without a permission
    prompt**: `status`, `doctor --json`, `update --check --json`, `version`,
-   `tag`, `next`, `remote`, `rotate`, `auto`, `notify`, `plan`, `sessions`
+   `tag`, `next`, `move`, `remote`, `rotate`, `auto`, `notify`, `plan`, `sessions`
    (it only reads) and `names` with no mode (`names --json` shows it). Setting
    a names mode (`names on|off`) asks first, as does everything
    else (`login`, `logout`, `doctor --fix`, `update`, `rename`, `uninstall`,
@@ -87,10 +87,13 @@ Without arguments, work out what the user wants and use "Common tasks".
 ## Spreading sessions over accounts
 
 By default every session uses the one serving account. `chottag policy spread`
-places each new session on the account with the most headroom and keeps it
-there, moving it only near a switch point, on a limit, or when its prompt
-cache is already cold and another account is clearly better (`policy: spread`, and
-`pin: <name>` if one is pinned, show on `chottag status`). Offer it to a user
+places each new session on the account whose windows its sessions use up the
+slowest (pace) and keeps it there, moving it only near a switch point, on a
+limit, or when its prompt cache is already cold and another account is clearly
+better. `chottag status` shows `policy: spread` (and `pin: <name>` if one is
+pinned); its first line lists every account with live sessions, as in
+`serving: A 5 · B 5   fallback: B`, and its decision names the account the
+next session would get (`auto.next` in `status --json`). Offer it to a user
 with several accounts who runs many sessions at once. Ask before running
 `chottag policy spread`: it changes how every new session is placed. After
 `chottag update`, run `chottag daemon restart` before turning spread on: an
@@ -100,7 +103,8 @@ warns `daemon_predates_spread` when it finds one. Under it
 `pin: <name> (not a candidate now)` means the pinned account can't take new
 sessions at the moment (limited, at a switch point, rotation off or needing a
 login), so they are placed normally. `bad_policy` means a value other than
-`serial` or `spread`.
+`serial` or `spread`. `chottag move <name>` puts one running session on a chosen
+account (see the task table below).
 
 ## Pools
 
@@ -193,6 +197,7 @@ the `pool add`). Once a pool exists the shim also refuses every session,
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |
 | spread sessions over accounts / pin new sessions | `chottag policy spread --json` (asks first: it changes how every new session is placed, and is not pre-approved); `chottag tag <name> --json` then pins new sessions to it (the pin is for new sessions only; on a rotation-off account it warns and is ignored); `chottag tag --unpin --json` clears the pin; `chottag policy serial --json` goes back to one serving account. Under spread `chottag next` is refused (`spread_next`) |
+| move this session (or one named session) to an account, under spread | `chottag move <name> --json` from inside the session ("move this session to B"; `--session <sid>` from outside, a sid prefix of 4 or more characters from `chottag status --json`, `sessions[]`). The session switches at its next request and its prompt cache starts cold there, so say so. It is then *chosen*: only a limit, rotation off, a needs-login state, its account going or leaving the session's pool, or a limit-hit retry moves it again. Refused (`move_refused`, exit 2, `error.reason`) when the account is out of rotation, needs a login or is limited; above a switch point only `--force` moves it. `move_serial` under serial, `no_session` outside a chottag session without `--session`, `session_ambiguous` for a prefix matching several. Warns `daemon_not_running` or `daemon_predates_move` (then `chottag daemon restart`) |
 | pools: list, create, put an account in one, take it out, remove one | `chottag pool --json`; `chottag pool add <name> --json`, `chottag pool join <account> <pool> --json`, `chottag pool leave <account> <pool> --json`, `chottag pool rm <name> --json` (the last four ask first; explain the shared-account down-side above before a join that shares) |
 | add or re-login an account | `chottag login <name> --json` (timeout 600000) |
 | set the account that owns new remote-control sessions, artifacts, routines | `chottag remote <name> --json` |

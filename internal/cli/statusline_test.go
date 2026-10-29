@@ -32,7 +32,7 @@ func statuslineEnv(t *testing.T, up bool, chain map[int]int) (home string, port 
 	t.Setenv("HTTPS_PROXY", "")
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("CMUX_WORKSPACE_ID", "")
-	t.Cleanup(cli.SetStatuslineProbeForTest(func(int) bool { return up }))
+	t.Cleanup(cli.SetStatuslineProbeForTest(func(int) (bool, string) { return up, "0.10.10" }))
 	t.Cleanup(cli.SetParentPIDForTest(func(pid int) (int, error) {
 		p, ok := chain[pid]
 		if !ok {
@@ -232,9 +232,9 @@ func TestStatuslineCycleInChainIsOff(t *testing.T) {
 func TestStatuslineProxyEnvWrongHostOrUserIsOffAndUnprobed(t *testing.T) {
 	for _, v := range []string{"http://chottag:x@10.0.0.5:%d", "http://alice:x@127.0.0.1:%d"} {
 		home, port := statuslineEnv(t, true, nil)
-		t.Cleanup(cli.SetStatuslineProbeForTest(func(int) bool {
+		t.Cleanup(cli.SetStatuslineProbeForTest(func(int) (bool, string) {
 			t.Fatal("probed although the session is not routed")
-			return false
+			return false, ""
 		}))
 		t.Setenv("HTTPS_PROXY", fmt.Sprintf(v, port))
 		code, out, _ := runHome(t, home, "statusline")
@@ -360,7 +360,7 @@ func TestStatuslineLabelStates(t *testing.T) {
 	if want := "c» dev · work · 5h – · 7d – · 2/2 ok\n"; out != want {
 		t.Fatalf("got %q", out)
 	}
-	t.Cleanup(cli.SetStatuslineProbeForTest(func(int) bool { return false }))
+	t.Cleanup(cli.SetStatuslineProbeForTest(func(int) (bool, string) { return false, "" }))
 	if _, out, _ = runHome(t, home, "statusline"); out != "c» dev down\n" {
 		t.Fatalf("got %q", out)
 	}
@@ -748,3 +748,82 @@ func TestStatuslineJSONCarriesTheNextAccount(t *testing.T) {
 		t.Fatalf("spread names no next account: %s", out)
 	}
 }
+
+// Under spread the card's next is the pick the daemon published (R192), and
+// is left out when the daemon predates the pick or its version cannot be ordered.
+func TestStatuslineNextUnderSpread(t *testing.T) {
+	publish := func(t *testing.T, home string, a status.Auto) {
+		t.Helper()
+		f, err := status.Load(status.Path(home))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.SetAuto(a)
+		b, err := status.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := status.WriteBytes(status.Path(home), b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setup := func(t *testing.T, version string, a status.Auto) string {
+		home, now := v2Env(t)
+		if _, err := (store.Store{Dir: home}).Update(func(st *store.State) error {
+			return st.SetPoolPolicy(store.DefaultPool, store.PolicySpread)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		writeCache(t, home,
+			status.Account{Name: "work", Usage: usageOf(now, 10, 20, now.Add(time.Hour), time.Time{})},
+			status.Account{Name: "other", Usage: usageOf(now, 10, 20, now.Add(time.Hour), time.Time{})})
+		publish(t, home, a)
+		t.Cleanup(cli.SetStatuslineProbeForTest(func(int) (bool, string) { return true, version }))
+		_, out, _ := runHome(t, home, "statusline", "--json")
+		return out
+	}
+	if out := setup(t, "0.10.10", status.Auto{Mode: "balanced", Next: ptr("other")}); !strings.Contains(out, `"next": "other"`) {
+		t.Fatalf("new daemon with a pick: %s", out)
+	}
+	if out := setup(t, "0.10.11", status.Auto{Mode: "balanced", Next: new(string)}); !strings.Contains(out, `"next": ""`) {
+		t.Fatalf("new daemon, no pick: %s", out)
+	}
+	for _, v := range []string{"0.10.9", "", "dev"} {
+		if out := setup(t, v, status.Auto{Mode: "balanced", Next: ptr("other")}); strings.Contains(out, `"next"`) {
+			t.Fatalf("daemon %q: next must be left out: %s", v, out)
+		}
+	}
+}
+
+func TestStatuslineNextUnderSpreadPool(t *testing.T) {
+	home, port := poolStatuslineEnv(t)
+	if _, err := (store.Store{Dir: home}).Update(func(st *store.State) error {
+		return st.SetPoolPolicy("work", store.PolicySpread)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var f status.File
+	f.SetAuto(status.Auto{Mode: "balanced", Next: ptr("other"), Pools: map[string]status.PoolAuto{"work": {Next: ptr("D")}}})
+	b, err := status.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := status.WriteBytes(status.Path(home), b); err != nil {
+		t.Fatal(err)
+	}
+	probes := 0
+	t.Cleanup(cli.SetStatuslineProbeForTest(func(int) (bool, string) { probes++; return true, "0.10.10" }))
+	t.Setenv("HTTPS_PROXY", fmt.Sprintf("http://chottag.work.%s:x@127.0.0.1:%d", poolSID, port))
+	_, out, _ := runHome(t, home, "--json", "statusline")
+	if !strings.Contains(out, `"next": "D"`) {
+		t.Fatalf("json = %s", out)
+	}
+	if probes != 1 {
+		t.Fatalf("%d health probes for one redraw, want 1", probes)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

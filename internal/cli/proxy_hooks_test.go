@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/creds"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/proxy/proxytest"
 	"github.com/HaiNNT/c-hottag/internal/router"
 	"github.com/HaiNNT/c-hottag/internal/selector"
@@ -38,7 +39,7 @@ func TestUsageHookSeedsTheConfiguredRosterBeforeObserving(t *testing.T) {
 	hdr.Set("Anthropic-Ratelimit-Unified-Representative-Claim", "seven_day")
 	hdr.Set("Anthropic-Ratelimit-Unified-7d-Status", "rejected")
 	hdr.Set("Anthropic-Ratelimit-Unified-7d-Reset", strconv.FormatInt(until.Unix(), 10))
-	hook("D", 429, hdr)
+	hook("D", 429, hdr, proxy.UsageRequest{})
 	sink.Close()
 
 	f, err := status.Load(status.Path(home))

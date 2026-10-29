@@ -208,3 +208,13 @@ func TestNativesLatestPerSID(t *testing.T) {
 		t.Fatalf("Natives = %v", got)
 	}
 }
+
+func TestActivityPlacedChosenOmitted(t *testing.T) {
+	b, err := json.Marshal(Activity{SID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "placed") || strings.Contains(string(b), "chosen") {
+		t.Errorf("zero Activity marshals %s, want no placed/chosen", b)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/proxy/proxytest"
 	"github.com/HaiNNT/c-hottag/internal/router"
 )
@@ -97,7 +98,7 @@ func TestWallRetryEndToEnd(t *testing.T) {
 	var done []string
 	h := proxytest.Start(t, up, proxytest.Options{
 		Choose: st,
-		OnUsage: func(account string, status int, _ http.Header) {
+		OnUsage: func(account string, status int, _ http.Header, _ proxy.UsageRequest) {
 			mu.Lock()
 			usage = append(usage, account)
 			mu.Unlock()

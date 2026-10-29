@@ -59,7 +59,7 @@ chottag own artifact <artifact-id> B  # move one object that already exists to B
 claude                 # Claude Code, through chottag (the daemon starts by itself)
 chottag status         # usage and limits per account; `chottag statusline` for a status line
 chottag next           # serving -> the next account that is not limited
-chottag policy spread  # or: spread new sessions over accounts (`chottag tag NAME` pins)
+chottag policy spread  # or: spread new sessions over accounts (`chottag tag NAME` pins; `chottag move B` puts a running session on B)
 chottag pool add work  # a separate pool of accounts: `chottag login C --pool work`, `CHOTTAG_POOL=work claude`
 chottag resume         # after cmux quits or the Mac crashes: relaunch the lost sessions (`chottag sessions` lists them)
 chottag doctor         # check the install; --fix repairs what it safely can

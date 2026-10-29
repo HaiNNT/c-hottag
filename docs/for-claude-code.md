@@ -114,8 +114,8 @@ can change later through the skill.
    least two accounts will pay for prompts. Default: no, which keeps
    `serial`: every session uses one serving account, and auto-switch moves
    them all together. Yes turns on `spread`: each new session goes to the
-   account with the most room left and stays there, so its prompt cache
-   stays warm, and only that session moves when its account nears a limit.
+   account whose windows its sessions use up the slowest and stays there,
+   so its prompt cache stays warm, and only that session moves when its account nears a limit.
 6. **Should chottag install its own updates?** Default: no. chottag checks
    for a new release about four times a day either way and says so in `chottag status`,
    on the status line and in one notification. Yes lets the daemon install
@@ -323,6 +323,7 @@ chottag next --json                      # switch to the next account that is no
 chottag remote <name> --json             # set who owns new remote-control sessions, artifacts, routines
 chottag auto --json                      # auto-switch settings and last decision
 chottag policy spread --json              # one account per session, only if the user agrees
+chottag move <name> --json                # under spread, put this running session (or --session <sid>) on <name>
 chottag pool --json                      # the pools and who is in each (add, join, leave, rm ask the user first)
 chottag doctor --json                    # check the install
 chottag update --check --json            # is a newer release available

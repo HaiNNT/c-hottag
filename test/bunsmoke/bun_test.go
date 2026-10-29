@@ -119,13 +119,17 @@ func TestBunSendsProxyAuthorizationFromUserinfo(t *testing.T) {
 		t.Fatalf("with userinfo: err %v out %q", err, out)
 	}
 	out, err = runBun(t, "HTTPS_PROXY="+h.PlainProxyURL.String(), "NODE_EXTRA_CA_CERTS="+h.CAFile)
-	if err != nil {
+	// Up to Bun 1.4.2, fetch() surfaces the CONNECT's own 407 response as
+	// if it were the answer to the request: the script's
+	// console.log(r.status, ...) print is what reaches out. From 1.4.4 it
+	// rejects instead, with ERR_PROXY_TUNNEL naming the 407 (F295). Either
+	// way the CONNECT got 407; anything else is a real failure.
+	switch {
+	case err == nil && strings.HasPrefix(out, "407 "):
+	case err != nil && strings.Contains(out, "ERR_PROXY_TUNNEL") && strings.Contains(out, "407"):
+	case err != nil:
 		t.Fatalf("without userinfo: bun failed to run at all: %v out %q", err, out)
-	}
-	// fetch() surfaces the CONNECT's own 407 response as if it were the
-	// answer to the request: the script's console.log(r.status, ...) print
-	// is what actually reaches out, not a rejected promise.
-	if !strings.HasPrefix(out, "407 ") {
+	default:
 		t.Fatalf("without userinfo the CONNECT must get 407; got %q", out)
 	}
 	recs := h.Records(t, "tunnel", 1)

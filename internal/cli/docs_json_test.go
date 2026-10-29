@@ -32,6 +32,7 @@ var docsResultTypes = map[string]any{
 	"logout":         logoutResult{},
 	"tag":            tagResult{},
 	"next":           nextResult{},
+	"move":           moveResult{},
 	"remote":         remoteResult{},
 	"own":            ownResult{},
 	"rotate":         rotateResult{},

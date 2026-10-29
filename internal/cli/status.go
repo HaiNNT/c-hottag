@@ -14,6 +14,7 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/autoswitch"
 	"github.com/HaiNNT/c-hottag/internal/creds"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/session"
 	"github.com/HaiNNT/c-hottag/internal/sessions"
@@ -235,11 +236,16 @@ func runStatus(home string, args []string, r *reporter) int {
 		doc := statusDocument{File: f, Sessions: rows, Updates: updateSwitchesOf(st), Pools: poolStatuses(st, f, rows), LostSessions: lost, Names: st.NamesMode()}
 		if st.PolicySpread() {
 			doc.Policy, doc.Pin = store.PolicySpread, st.Pin
+			doc.ServingAccounts = servingAccountsOf(poolView(st, store.DefaultPool), st, rows, store.DefaultPool)
 		}
 		return r.OK(doc)
 	}
 
-	renderStatusWith(r.Stdout(), f, now, accountCounts(rows))
+	var spreadServing *[]servingAccount
+	if st.PolicySpread() {
+		spreadServing = servingAccountsOf(poolView(st, store.DefaultPool), st, rows, store.DefaultPool)
+	}
+	renderStatusSpread(r.Stdout(), f, now, accountCounts(rows), spreadServing)
 	for _, line := range poolStatusLines(st, f, rows, now) {
 		fmt.Fprintln(r.Stdout(), line)
 	}
@@ -327,6 +333,14 @@ func renderStatus(out io.Writer, f status.File, now time.Time) {
 // renderStatusWith is renderStatus with the per-account session counts the
 // live-sessions line carries, e.g. " (A 2, B 1)"; "" adds nothing.
 func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string) {
+	renderStatusSpread(out, f, now, counts, nil)
+}
+
+// renderStatusSpread is renderStatusWith with the default pool's serving
+// accounts when it spreads (R192): the first line then lists every account
+// carrying a live session, with its count, and the separate live-sessions
+// line (whose counts moved there) is dropped. nil is serial.
+func renderStatusSpread(out io.Writer, f status.File, now time.Time, counts string, spread *[]servingAccount) {
 	label := ""
 	if f.Label != "" {
 		label = "   (" + f.Label + ")"
@@ -337,7 +351,11 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 	if pooled {
 		serving, remote = orNone(serving), orNone(remote)
 	}
-	fmt.Fprintf(out, "serving: %s   remote: %s%s\n\n", serving, remote, label)
+	if spread != nil {
+		fmt.Fprintf(out, "serving: %s   fallback: %s   remote: %s%s\n\n", servingList(*spread), serving, remote, label)
+	} else {
+		fmt.Fprintf(out, "serving: %s   remote: %s%s\n\n", serving, remote, label)
+	}
 	// The daemon version-mismatch line (public release design §2.4): shown
 	// only when the overlay above (runStatus) found a running daemon whose
 	// health version differs from this binary's. VersionMismatch is never
@@ -385,7 +403,7 @@ func renderStatusWith(out io.Writer, f status.File, now time.Time, counts string
 			fmt.Fprintf(out, "Home's login was refused since %s: run /login in a Claude Code session\n\n", since.Local().Format("15:04"))
 		}
 	}
-	if f.Daemon != nil && (f.Daemon.Running || f.Daemon.LiveSessions > 0) {
+	if spread == nil && f.Daemon != nil && (f.Daemon.Running || f.Daemon.LiveSessions > 0) {
 		fmt.Fprintf(out, "live sessions: %d%s\n\n", f.Daemon.LiveSessions, counts)
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 3, ' ', 0)
@@ -501,6 +519,9 @@ type statusDocument struct {
 	Pin    string `json:"pin,omitempty"`
 	// Names is the session-naming mode (R174), always present.
 	Names string `json:"names"`
+	// ServingAccounts is every account carrying a live session under a spread
+	// default pool (R192); absent under serial.
+	ServingAccounts *[]servingAccount `json:"servingAccounts,omitempty"`
 	// Pools is one entry per pool, present only while the install has more
 	// than one (M8): the top-level serving, remote, policy, pin and auto are
 	// the default pool's, in place.
@@ -519,6 +540,8 @@ type poolStatus struct {
 	Pin          string   `json:"pin,omitempty"`
 	Accounts     []string `json:"accounts"`
 	LiveSessions int      `json:"liveSessions"`
+	// ServingAccounts is the pool's, as the top level's, when it spreads.
+	ServingAccounts *[]servingAccount `json:"servingAccounts,omitempty"`
 	// Decision and LastSwitch are the daemon's auto-switch view of the pool
 	// (status.json's auto, per pool).
 	Decision   string             `json:"decision,omitempty"`
@@ -558,6 +581,7 @@ func poolStatuses(st store.State, f status.File, rows []sessionRow) []poolStatus
 		p := poolStatus{Name: name, Serving: v.Serving, Remote: v.Remote, Policy: policyName(v), Accounts: []string{}, LiveSessions: live[name]}
 		if v.PolicySpread() {
 			p.Pin = v.Pin
+			p.ServingAccounts = servingAccountsOf(v, st, rows, name)
 		}
 		for _, a := range v.Accounts {
 			p.Accounts = append(p.Accounts, a.Name)
@@ -587,6 +611,9 @@ func poolStatusLines(st store.State, f status.File, rows []sessionRow, now time.
 			noun = "live session"
 		}
 		parts := []string{"pool " + p.Name, "serving " + orNone(p.Serving), "remote " + orNone(p.Remote), p.Policy}
+		if p.ServingAccounts != nil {
+			parts = []string{"pool " + p.Name, "serving " + servingList(*p.ServingAccounts), "fallback " + orNone(p.Serving), "remote " + orNone(p.Remote), p.Policy}
+		}
 		if p.Pin != "" {
 			parts = append(parts, "pin "+p.Pin)
 		}
@@ -633,6 +660,9 @@ type sessionRow struct {
 	LastSeen      *time.Time `json:"lastSeen,omitempty"`
 	Requests      *int       `json:"requests,omitempty"`
 	Conversations *int       `json:"conversations,omitempty"`
+	// Chosen: the user put this session on its account with `chottag move`.
+	Chosen bool   `json:"chosen,omitempty"`
+	placed string // the daemon's placement, for the counts only
 }
 
 // sessionRows joins the live registry entries with the cache's activity by
@@ -664,6 +694,8 @@ func sessionRows(live []session.Session, cached []sessions.Activity) []sessionRo
 			row.Pool = s.Pool
 			if a, ok := bySID[s.SID]; ok {
 				row.Account = a.Account
+				row.Chosen = a.Chosen
+				row.placed = a.Placed
 				seen, req, conv := a.LastSeen, a.Requests, a.Conversations
 				row.LastSeen, row.Requests, row.Conversations = &seen, &req, &conv
 			}
@@ -671,6 +703,63 @@ func sessionRows(live []session.Session, cached []sessions.Activity) []sessionRo
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// servingAccount is one account carrying live sessions under a spread pool.
+type servingAccount struct {
+	Name     string `json:"name"`
+	Sessions int    `json:"sessions"`
+	// Chosen counts the sessions the user put here with `chottag move`.
+	Chosen int `json:"chosen,omitempty"`
+}
+
+// servingAccountsOf is the accounts of view (a pool's view) carrying live
+// sessions of pool, in registration order: a session counts where the daemon
+// placed it, else where it was last used. A session of a removed pool counts
+// in default, as it routes there. Never nil.
+func servingAccountsOf(view, st store.State, rows []sessionRow, pool string) *[]servingAccount {
+	counts, chosen := map[string]int{}, map[string]int{}
+	for _, r := range rows {
+		name := poolOrDefault(r.Pool)
+		if !st.HasPool(name) {
+			name = store.DefaultPool
+		}
+		if name != pool {
+			continue
+		}
+		acct := r.placed
+		if acct == "" {
+			acct = r.Account
+		}
+		if acct != "" {
+			counts[acct]++
+			if r.Chosen {
+				chosen[acct]++
+			}
+		}
+	}
+	out := []servingAccount{}
+	for _, a := range view.Accounts {
+		if n := counts[a.Name]; n > 0 {
+			out = append(out, servingAccount{Name: a.Name, Sessions: n, Chosen: chosen[a.Name]})
+		}
+	}
+	return &out
+}
+
+// servingList is "A 5 · B 5", or "none" with no live session.
+func servingList(s []servingAccount) string {
+	if len(s) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(s))
+	for i, a := range s {
+		parts[i] = fmt.Sprintf("%s %d", a.Name, a.Sessions)
+		if a.Chosen > 0 {
+			parts[i] += fmt.Sprintf(" (%d chosen)", a.Chosen)
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 // accountCounts is " (A 2, B 1, – 1)": sessions per account in name order,
@@ -681,13 +770,22 @@ func accountCounts(rows []sessionRow) string {
 		return ""
 	}
 	counts := map[string]int{}
+	chosen := map[string]int{}
 	none := 0
 	for _, r := range rows {
-		if r.Account == "" {
+		// A session counts where the daemon placed it, else where it was last used.
+		acct := r.placed
+		if acct == "" {
+			acct = r.Account
+		}
+		if acct == "" {
 			none++
 			continue
 		}
-		counts[r.Account]++
+		counts[acct]++
+		if r.Chosen {
+			chosen[acct]++
+		}
 	}
 	names := make([]string, 0, len(counts))
 	for n := range counts {
@@ -696,7 +794,11 @@ func accountCounts(rows []sessionRow) string {
 	sort.Strings(names)
 	parts := make([]string, 0, len(names)+1)
 	for _, n := range names {
-		parts = append(parts, fmt.Sprintf("%s %d", n, counts[n]))
+		part := fmt.Sprintf("%s %d", n, counts[n])
+		if chosen[n] > 0 {
+			part += fmt.Sprintf(" (%d chosen)", chosen[n])
+		}
+		parts = append(parts, part)
 	}
 	if none > 0 {
 		parts = append(parts, fmt.Sprintf("– %d", none))
@@ -1261,10 +1363,18 @@ func liveKeep(home string) func(sid string) bool {
 // stampSessions forgets the tracker's dead sessions past their grace, keeping
 // every sid a live registry entry of home names (a registry that cannot be
 // read keeps everything), then hands the snapshot to the sink. It returns the
-// snapshot.
-func stampSessions(sink *statusSink, tr *sessions.Tracker, home string, now time.Time) []sessions.Activity {
+// snapshot. place, when non-nil, is the spread engine's view (R191): each row
+// gets the account its session is placed on and whether the user chose it.
+func stampSessions(sink *statusSink, tr *sessions.Tracker, home string, now time.Time, place func(sid, pool string) (string, bool, bool)) []sessions.Activity {
 	tr.Forget(liveKeep(home), now, sessions.Grace)
 	snap := tr.Snapshot()
+	if place != nil {
+		for i := range snap {
+			if acct, chosen, ok := place(snap[i].SID, snap[i].Pool); ok {
+				snap[i].Placed, snap[i].Chosen = acct, chosen
+			}
+		}
+	}
 	sink.setSessions(snap)
 	return snap
 }
@@ -1358,8 +1468,8 @@ func seedRosterAtStartup(state func() (store.State, error), sink *statusSink) {
 // dn, if non-nil, also gets every call (M2b T5): a 2xx is the account's
 // "seen ok", which re-arms its needs-login notice (notifyUsageHook's doc).
 // nil is what every pre-M2b caller passes, and behaves exactly as before.
-func newUsageHook(state func() (store.State, error), sink *statusSink, dn *daemonNotify) func(account string, code int, hdr http.Header) {
-	return notifyUsageHook(dn, func(account string, code int, hdr http.Header) {
+func newUsageHook(state func() (store.State, error), sink *statusSink, dn *daemonNotify) func(account string, code int, hdr http.Header, req proxy.UsageRequest) {
+	return notifyUsageHook(dn, func(account string, code int, hdr http.Header, _ proxy.UsageRequest) {
 		now := time.Now()
 		seedRosterAtStartup(state, sink)
 		sink.observe(account, usagehdr.Parse(hdr, now), usagehdr.Classify(code, hdr, now))

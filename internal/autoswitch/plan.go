@@ -110,10 +110,24 @@ func Eligible(a Account, p Params, now time.Time) string {
 	case a.Limited:
 		return ReasonLimited
 	}
-	if _, _, over := targetOverPoint(a, p, now); over {
+	if _, _, _, over := TargetOver(a, p, now); over {
 		return ReasonAboveSwitch
 	}
 	return ""
+}
+
+// TargetOver is the check Eligible makes for a target's usage: the window
+// that is over its switch point (5h first), that point, and the utilization
+// that put it over (a window whose reset has passed counts as 0%, so it is
+// never the one returned). over is false when no window is. Eligible calls it,
+// so a message built from it names the window Eligible refused on.
+func TargetOver(a Account, p Params, now time.Time) (w Window, point int, pct float64, over bool) {
+	w, point, over = targetOverPoint(a, p, now)
+	if !over {
+		return "", 0, 0, false
+	}
+	pct, _ = a.effective(w, now)
+	return w, point, pct, true
 }
 
 // overPoint returns the first window (5h, then 7d) whose fresh utilization

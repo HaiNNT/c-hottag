@@ -56,7 +56,7 @@ func newSpreadRig(t *testing.T, names ...string) *spreadRig {
 }
 
 func (r *spreadRig) newEngine() *spreadEngine {
-	return newSpreadEngine(r.path, func() (store.State, error) { return r.st, nil }, r.file,
+	return newSpreadEngine(r.path, r.appliedPath(), func() (store.State, error) { return r.st, nil }, r.file,
 		func(sid, _ string) int { return r.convs[sid] }, r.log, r.now)
 }
 
@@ -758,7 +758,7 @@ func TestSpreadChooserColdPathUsesTheTrackerEndToEnd(t *testing.T) {
 	c := newChooseRig(t, "B", "work")
 	tr := sessions.NewTracker()
 	c.ch.tracker = tr
-	c.eng = newSpreadEngine(c.path, func() (store.State, error) { return c.st, nil }, c.file, tr.Peek, c.log, c.now)
+	c.eng = newSpreadEngine(c.path, filepath.Join(filepath.Dir(c.path), "moves-applied.json"), func() (store.State, error) { return c.st, nil }, c.file, tr.Peek, c.log, c.now)
 	c.ch.spread = c.eng
 	ctx := func(native string) context.Context {
 		return proxy.ContextWithIdentityForTest(context.Background(), proxy.Identity{
@@ -930,4 +930,10 @@ func TestSpreadLoadIgnoresEndedSessionsOnceTheRegistryIsKnown(t *testing.T) {
 	if !r.eng.counts("fresh", r.now) {
 		t.Fatal("a session seen just now did not count")
 	}
+}
+
+// appliedPath is where the rig's engine keeps its applied-moves file, next to
+// placements.json.
+func (r *spreadRig) appliedPath() string {
+	return filepath.Join(filepath.Dir(r.path), "moves-applied.json")
 }

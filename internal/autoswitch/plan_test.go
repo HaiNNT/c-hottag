@@ -740,3 +740,21 @@ func TestNext(t *testing.T) {
 		t.Fatal("Next with an unknown serving account found one")
 	}
 }
+
+func TestTargetOverNamesTheWindowEligibleRefusedOn(t *testing.T) {
+	p := Preset(ModeBalanced)
+	a := Account{Name: "B", Tier: TierMax5x, Rotates: true, Fresh: true,
+		Has5h: true, Pct5h: 97, Reset5h: t0.Add(-time.Minute), // refilled: effectively 0%
+		Has7d: true, Pct7d: 99, Reset7d: t0.Add(time.Hour)}
+	w, pt, pct, over := TargetOver(a, p, t0)
+	if !over || w != Win7d || pct != 99 || pt != p.SwitchPoint(Win7d, TierMax5x) {
+		t.Fatalf("TargetOver = %v %d %v %v", w, pt, pct, over)
+	}
+	if r := Eligible(a, p, t0); r != ReasonAboveSwitch {
+		t.Fatalf("Eligible = %q", r)
+	}
+	below := Account{Name: "C", Tier: TierMax5x, Rotates: true, Fresh: true, Has5h: true, Pct5h: 10}
+	if _, _, _, over := TargetOver(below, p, t0); over {
+		t.Fatal("a low account is over its point")
+	}
+}

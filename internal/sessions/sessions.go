@@ -20,6 +20,10 @@ type Activity struct {
 	LastSeen      time.Time `json:"lastSeen"`
 	Requests      int       `json:"requests"`
 	Conversations int       `json:"conversations"`
+	// Placed and Chosen are overlaid by the daemon (R191), never set by the
+	// tracker: the account a session was placed on, and whether the user chose it.
+	Placed string `json:"placed,omitempty"`
+	Chosen bool   `json:"chosen,omitempty"`
 }
 
 type entry struct {

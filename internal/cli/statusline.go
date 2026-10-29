@@ -21,6 +21,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/shim"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
+	"github.com/HaiNNT/c-hottag/internal/updatecheck"
 )
 
 // statuslineMaxDepth bounds the ancestor walk: a Claude Code status line
@@ -48,10 +49,15 @@ var parentPID = func(pid int) (int, error) {
 }
 
 // statuslineProbe reports whether chottag's daemon answers on port, within a
-// short timeout. A var for the same reason as statusProbe.
-var statuslineProbe = func(port int) bool {
-	return shim.ProbeHealthWithin(port, statuslineProbeTimeout)
+// short timeout, and the version it reports (one probe per redraw). A var for
+// the same reason as statusProbe.
+var statuslineProbe = func(port int) (bool, string) {
+	return shim.ProbeHealthVersionWithin(port, statuslineProbeTimeout)
 }
+
+// paceSince is the first release whose daemon publishes the spread pick
+// (`next`, R192).
+const paceSince = "0.10.10"
 
 // SetParentPIDForTest swaps parentPID and returns a func that restores what
 // was installed at the moment of the call (F130).
@@ -62,7 +68,7 @@ func SetParentPIDForTest(fn func(pid int) (int, error)) (restore func()) {
 }
 
 // SetStatuslineProbeForTest swaps statuslineProbe likewise.
-func SetStatuslineProbeForTest(fn func(port int) bool) (restore func()) {
+func SetStatuslineProbeForTest(fn func(port int) (bool, string)) (restore func()) {
 	orig := statuslineProbe
 	statuslineProbe = fn
 	return func() { statuslineProbe = orig }
@@ -325,7 +331,8 @@ func statuslineCheck(h string) statuslineResult {
 		return rep
 	}
 	rep.Session = "routed"
-	if !statuslineProbe(port) {
+	up, daemonVersion := statuslineProbe(port)
+	if !up {
 		rep.Daemon = "down"
 		return rep
 	}
@@ -338,7 +345,7 @@ func statuslineCheck(h string) statuslineResult {
 	rep.Account = sessionAccount(f, sid, serving)
 	fillUsage(&rep, st, pool, f)
 	fillNotices(&rep, st, pool, f)
-	fillNext(&rep, st, pool, f)
+	fillNext(&rep, st, pool, f, daemonVersion)
 	if rep.Account != "" {
 		rep.UpdateAvailable = availableUpdate(f)
 		if f.Daemon != nil {
@@ -395,9 +402,27 @@ func fillNotices(rep *statuslineResult, st store.State, pool string, f status.Fi
 
 // fillNext adds the account that would serve the pool next: the one
 // auto-switch would move to on a limit, or `chottag next`'s pick while
-// auto-switch is off. Under spread there is none to name.
-func fillNext(rep *statuslineResult, st store.State, pool string, f status.File) {
+// auto-switch is off. Under spread it is the pick the daemon published for
+// the pool's next new session (R192), "" when it published none.
+func fillNext(rep *statuslineResult, st store.State, pool string, f status.File, daemonVersion string) {
 	if poolSpread(st, pool) {
+		if f.Auto == nil {
+			return
+		}
+		// A daemon that predates the pick, or whose version cannot be ordered,
+		// publishes none: leave `next` out rather than claim there is none.
+		if ver := daemonVersion; !updatecheck.Parses(ver) || updatecheck.Newer(paceSince, ver) {
+			return
+		}
+		next := f.Auto.Next
+		if pool != store.DefaultPool {
+			next = f.Auto.Pools[pool].Next
+		}
+		if next == nil {
+			// the daemon has not published a pick for this pool yet
+			return
+		}
+		rep.Next = next
 		return
 	}
 	view := poolView(st, pool)

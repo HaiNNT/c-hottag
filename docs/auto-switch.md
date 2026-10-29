@@ -84,7 +84,11 @@ this works per session, not on `serving`: the refused request's session is
 moved to another account and resent once, whether or not auto-switch is on,
 and the notices are the spread ones (`chottag: moved N sessions from A to B,
 C`, or `N sessions on A have no account to move to`, plus the usual switched
-notice on a retry), also controlled by `chottag notify`.
+notice on a retry), also controlled by `chottag notify`. New sessions are
+placed by pace (the account whose windows its sessions use up the slowest; see
+[how it works](how-it-works.md#spreading-sessions-spread)), and `chottag status`
+shows the account the next session would get, as the `decision`
+(`spread: next session → B (5h 74% left, resets in 45m)`) and `auto.next`.
 
 ## Before it switches
 

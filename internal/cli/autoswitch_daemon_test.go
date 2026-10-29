@@ -14,6 +14,7 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/autoswitch"
 	"github.com/HaiNNT/c-hottag/internal/creds"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
 )
@@ -290,7 +291,7 @@ func TestAutoHookAndTickNeverDoubleSwitch(t *testing.T) {
 			if i%2 == 0 {
 				r.as.tick(eligNow)
 			} else {
-				r.as.onUsage("A", 200, http.Header{})
+				r.as.onUsage("A", 200, http.Header{}, proxy.UsageRequest{})
 			}
 		}()
 	}
@@ -729,7 +730,7 @@ func TestAutoFallbackTargetSilencesTheThresholdReEvaluationBeforeDone(t *testing
 	// The resend landed on B; its usage hook runs synchronously, before
 	// done() — the reviewer's own interleaving (wallRetry(A), onUsage(B,
 	// 95%), done(B, 200)).
-	r.as.onUsage("B", 200, http.Header{})
+	r.as.onUsage("B", 200, http.Header{}, proxy.UsageRequest{})
 	if got := r.notices(); len(got) != 0 {
 		t.Fatalf("notices = %+v, want none: B's own threshold re-evaluation must stay silent while it is the fallback target", got)
 	}
@@ -905,8 +906,8 @@ func TestAutoBurnRateFromTheServingAccount(t *testing.T) {
 		r.now = eligNow.Add(time.Duration(i) * time.Minute)
 		h := http.Header{}
 		h.Set("Anthropic-Ratelimit-Unified-5h-Utilization", strconv.FormatFloat(float64(10+2*i)/100, 'f', 2, 64))
-		r.as.onUsage("A", 200, h)
-		r.as.onUsage("B", 200, h) // not serving: ignored
+		r.as.onUsage("A", 200, h, proxy.UsageRequest{})
+		r.as.onUsage("B", 200, h, proxy.UsageRequest{}) // not serving: ignored
 	}
 	if got := r.published().BurnRate; got < 599 || got > 601 {
 		t.Fatalf("burn = %v, want 600", got)
@@ -929,11 +930,11 @@ func TestAutoUsageHookClearsNeedsLoginOnSuccess(t *testing.T) {
 		}
 		return ""
 	}
-	r.as.onUsage("B", 401, http.Header{})
+	r.as.onUsage("B", 401, http.Header{}, proxy.UsageRequest{})
 	if token() != creds.StateNeedsLogin {
 		t.Fatal("a 401 cleared needs-login")
 	}
-	r.as.onUsage("B", 200, http.Header{})
+	r.as.onUsage("B", 200, http.Header{}, proxy.UsageRequest{})
 	if token() == creds.StateNeedsLogin {
 		t.Fatal("a 2xx left needs-login")
 	}

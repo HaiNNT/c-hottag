@@ -89,8 +89,8 @@ has built in. claude-swap itself does not ship it: [PR #210](https://github.com/
 which would add it as an optional extra, is still open (checked 2026-09-29).
 
 **Spreading parallel sessions over accounts** (checked 2026-10-01). chottag's `chottag policy
-spread` places each new Claude Code session on the account with the most room before its switch
-point, divided by the sessions already on it, and keeps it there so its prompt cache stays warm;
+spread` places each new Claude Code session on the account whose windows its sessions use up the slowest
+(pace: measured burn against the room left and the time to the reset), and keeps it there so its prompt cache stays warm;
 it moves a session only at a switch point, a limit, or when its cache is already cold. It pays off most
 with more than three accounts and several sessions at once: under serial switching every session
 sits on the one serving account, so a switch moves them all and every prompt cache goes cold

@@ -741,7 +741,7 @@ func TestAutoALimitOnASharedAccountSeenViaOnePoolMovesTheOther(t *testing.T) {
 
 func TestAutoSpreadPoolKeepsItsServingInsideItsMembers(t *testing.T) {
 	r := poolAutoRig(t)
-	r.as.spread = newSpreadEngine(r.home+"/run/placements.json", r.state, r.sink.fileCopy,
+	r.as.spread = newSpreadEngine(r.home+"/run/placements.json", r.home+"/run/moves-applied.json", r.state, r.sink.fileCopy,
 		func(string, string) int { return 0 }, r.log, r.now)
 	r.update(func(st *store.State) {
 		mustPools(t, st, func(st *store.State) error { return st.SetPoolPolicy("work", store.PolicySpread) })
@@ -836,7 +836,7 @@ func TestAutoConcurrentJoinAndLeaveNeverLeavesServingOutsideThePool(t *testing.T
 // R72 for a spread pool: the session re-places within its pool.
 func TestAutoSpreadWallRetryReplacesWithinTheSessionsPool(t *testing.T) {
 	r := poolAutoRig(t)
-	r.as.spread = newSpreadEngine(r.home+"/run/placements.json", r.state, r.sink.fileCopy,
+	r.as.spread = newSpreadEngine(r.home+"/run/placements.json", r.home+"/run/moves-applied.json", r.state, r.sink.fileCopy,
 		func(string, string) int { return 0 }, r.log, r.now)
 	r.update(func(st *store.State) {
 		mustPools(t, st, func(st *store.State) error {

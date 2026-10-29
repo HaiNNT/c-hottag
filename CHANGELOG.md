@@ -7,6 +7,20 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.10] - 2026-10-29
+
+### Added
+
+- `chottag move NAME [--session SID] [--force]` puts one running session on a chosen account under `spread`: from inside the session, or by its sid from outside. The session switches at its next request (its prompt cache starts cold on the new account) and stays there until a hard trigger moves it. `chottag status` marks such sessions `chosen`. New error codes `move_refused`, `no_session`, `session_ambiguous`, `move_serial`; new warnings `daemon_not_running`, `daemon_predates_move`.
+
+### Changed
+
+- `spread` places each new session by pace: on the account whose 5-hour and 7-day windows its sessions use up the slowest (measured burn, kept in `run/pace.json`), with ties to the soonest 5-hour reset. `chottag status` lists every account carrying sessions (`serving: A 5 · B 5   fallback: B   remote: C`) and the decision names the real next pick; `status --json` gains `servingAccounts`, `auto.next`, pool `next` and per-account `pace`, and the mod's card shows that pick as `next`.
+
+### Fixed
+
+- `auto.burnRate` under `spread` was never fed; when every pool spreads it is now the sum of the default pool's members' measured 5-hour burn, and with any serial pool it stays the serial burn.
+
 ## [0.10.9] - 2026-10-26
 
 ### Added
@@ -499,6 +513,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.10]: docs/release-notes/v0.10.10.md
 [0.10.9]: docs/release-notes/v0.10.9.md
 [0.10.8]: docs/release-notes/v0.10.8.md
 [0.10.7]: docs/release-notes/v0.10.7.md

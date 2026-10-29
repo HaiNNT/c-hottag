@@ -77,6 +77,14 @@ type PoolGuard interface {
 	Guarded() bool
 }
 
+// UsageRequest is what the usage hook learns about the request whose response
+// it is handed: the caller's session id ("" when unidentified) and whether it
+// was an inference request. Ids and a flag only, never a body.
+type UsageRequest struct {
+	SID       string
+	Inference bool
+}
+
 type Config struct {
 	CA        *ca.Authority
 	Intercept func(host string) bool // host without port; nil = intercept nothing
@@ -130,7 +138,11 @@ type Config struct {
 	// request goroutine, and it runs before any byte reaches the client: the
 	// callback must do its own locking, and must not block or panic. Treat h
 	// as read-only and do not retain it past the call.
-	OnUsage func(account string, status int, h http.Header)
+	//
+	// req carries what the request said about itself: its session id ("" when
+	// unidentified) and whether it was an inference request, so the pace
+	// meter (R192) can credit a session's spend. Numbers and ids only.
+	OnUsage func(account string, status int, h http.Header, req UsageRequest)
 
 	// WallRetry, if set, arms the wall retry (M4 spec §4a) for a swapped
 	// serving-class request that no object owner routes. It is called at

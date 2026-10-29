@@ -69,6 +69,10 @@ const (
 	codePoolsBlockRollback        errCode = "pools_block_rollback"
 	codeResumeFailed              errCode = "resume_failed"
 	codeResumeBusy                errCode = "resume_busy"
+	codeMoveRefused               errCode = "move_refused"
+	codeNoSession                 errCode = "no_session"
+	codeSessionAmbiguous          errCode = "session_ambiguous"
+	codeMoveSerial                errCode = "move_serial"
 )
 
 // errCodes is the closed list. TestCodeConstantsMatchTheClosedLists keeps
@@ -91,6 +95,7 @@ var errCodes = []errCode{
 	codeNoPool, codeBadPool, codePoolExists, codePoolNotEmpty, codePoolDefault,
 	codeLastPool, codeDaemonPredatesPools, codeNotInPool, codePoolAmbiguous, codePoolsBlockRollback,
 	codeResumeFailed, codeResumeBusy,
+	codeMoveRefused, codeNoSession, codeSessionAmbiguous, codeMoveSerial,
 }
 
 // warnCode is a warnings[].code: a line that reports something beyond the
@@ -125,6 +130,8 @@ const (
 	warnPoolNotChanged            warnCode = "pool_not_changed"
 	warnDaemonPredatesPools       warnCode = "daemon_predates_pools"
 	warnIdentitySuspect           warnCode = "identity_suspect"
+	warnDaemonNotRunning          warnCode = "daemon_not_running"
+	warnDaemonPredatesMove        warnCode = "daemon_predates_move"
 )
 
 var warnCodes = []warnCode{
@@ -137,6 +144,7 @@ var warnCodes = []warnCode{
 	warnAttestationSkipped, warnPreAttestation, warnUpdateCache,
 	warnDaemonPredatesSpread, warnSharedAccount, warnPoolNotChanged,
 	warnDaemonPredatesPools, warnIdentitySuspect,
+	warnDaemonNotRunning, warnDaemonPredatesMove,
 }
 
 func validErrCode(c errCode) bool   { return slices.Contains(errCodes, c) }

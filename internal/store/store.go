@@ -153,6 +153,9 @@ type State struct {
 	// Pools holds every pool other than default (M8). The file is version 2
 	// only while this is non-empty.
 	Pools map[string]Pool `json:"pools,omitempty"`
+	// Moves holds pending requests to put a running session on a chosen
+	// account (R191), keyed by full sid. See moves.go.
+	Moves map[string]Move `json:"moves,omitempty"`
 
 	// extra holds top-level keys a newer chottag wrote that this one does not
 	// know (see extra.go); they are written back unchanged.

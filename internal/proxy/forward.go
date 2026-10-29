@@ -189,7 +189,11 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 			// (F26): `account` says who chottag meant to be, only !Drift
 			// says who actually answered.
 			if s.cfg.OnUsage != nil && account != "" && !rec.Drift && !viaHome {
-				s.notifyUsage(account, resp.StatusCode, resp.Header)
+				var req UsageRequest
+				if id, ok := IdentityFrom(r.Context()); ok {
+					req = UsageRequest{SID: id.Caller.SID, Inference: id.Inference}
+				}
+				s.notifyUsage(account, resp.StatusCode, resp.Header, req)
 			}
 
 			// A limit fingerprint is observation only (never affects what
@@ -323,7 +327,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 // reaching an older caller that only ever wired OnLogError — see Config's
 // doc comment — but a caller with both wired must never have this land as a
 // trace-log failure, which is a different subsystem entirely.
-func (s *Server) notifyUsage(account string, status int, h http.Header) {
+func (s *Server) notifyUsage(account string, status int, h http.Header, req UsageRequest) {
 	defer func() {
 		if recover() == nil {
 			return
@@ -340,7 +344,7 @@ func (s *Server) notifyUsage(account string, status int, h http.Header) {
 			report(errors.New("OnUsage callback panicked"))
 		}
 	}()
-	s.cfg.OnUsage(account, status, h.Clone())
+	s.cfg.OnUsage(account, status, h.Clone(), req)
 }
 
 func isJSON(ct string) bool { return strings.Contains(ct, "json") }

@@ -16,6 +16,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/notify"
 	"github.com/HaiNNT/c-hottag/internal/owners"
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/selector"
 	"github.com/HaiNNT/c-hottag/internal/status"
 	"github.com/HaiNNT/c-hottag/internal/store"
@@ -173,13 +174,13 @@ func TestNotifyUsageHookReArmsNeedsLoginOnlyOnASuccess(t *testing.T) {
 	dn := newDaemonNotify(notifyTestState("A", "B"), n)
 	defer dn.Close()
 	var forwarded atomic.Int32
-	usage := notifyUsageHook(dn, func(string, int, http.Header) { forwarded.Add(1) })
+	usage := notifyUsageHook(dn, func(string, int, http.Header, proxy.UsageRequest) { forwarded.Add(1) })
 	hook := notifyEventHook(dn, func(selector.Event) {})
 
 	hook(needsLoginEvent("B"))
 	dn.beginChoose("B") // a fresh Choose right after the notice: unblocks B for the refused calls below
-	usage("B", 429, http.Header{})
-	usage("B", 401, http.Header{})
+	usage("B", 429, http.Header{}, proxy.UsageRequest{})
+	usage("B", 401, http.Header{}, proxy.UsageRequest{})
 	hook(needsLoginEvent("B")) // re-blocks B: it still needs login as of this rediscovery
 	if got := drainNotices(t, dn, n); len(got) != 1 {
 		t.Fatalf("notices = %+v, want 1: a refused response is not a sign the login works", got)
@@ -188,7 +189,7 @@ func TestNotifyUsageHookReArmsNeedsLoginOnlyOnASuccess(t *testing.T) {
 	// rediscovery above re-blocked B: its own Choose is what clears the
 	// flag this time, exactly as production requires.
 	dn.beginChoose("B")
-	usage("B", 200, http.Header{})
+	usage("B", 200, http.Header{}, proxy.UsageRequest{})
 	hook(needsLoginEvent("B"))
 	if got := drainNotices(t, dn, n); len(got) != 1 || got[0].title != "chottag: B needs login" {
 		t.Fatalf("notices = %+v, want a second needs-login after a 2xx re-armed B", got)
@@ -209,7 +210,7 @@ func TestNotifyUsageHookIgnoresA2xxFromARequestInFlightBeforeNeedsLogin(t *testi
 	n := newRecordingNotifier()
 	dn := newDaemonNotify(notifyTestState("A", "B"), n)
 	defer dn.Close()
-	usage := notifyUsageHook(dn, func(string, int, http.Header) {})
+	usage := notifyUsageHook(dn, func(string, int, http.Header, proxy.UsageRequest) {})
 	hook := notifyEventHook(dn, func(selector.Event) {})
 
 	hook(needsLoginEvent("B"))
@@ -220,7 +221,7 @@ func TestNotifyUsageHookIgnoresA2xxFromARequestInFlightBeforeNeedsLogin(t *testi
 	// The request already in flight when the notice above fired (chosen
 	// before it, so blocked[B] was still false at Choose time) finally
 	// completes with a 2xx. B stays blocked, so it must not re-arm.
-	usage("B", 200, http.Header{}) // the stale request's late success
+	usage("B", 200, http.Header{}, proxy.UsageRequest{}) // the stale request's late success
 	hook(needsLoginEvent("B"))
 	if got := drainNotices(t, dn, n); len(got) != 0 {
 		t.Fatalf("notices = %+v, want none: the 2xx belonged to a request chosen before the needs-login notice, so it must not re-arm B", got)
@@ -229,7 +230,7 @@ func TestNotifyUsageHookIgnoresA2xxFromARequestInFlightBeforeNeedsLogin(t *testi
 	// A fresh request, chosen after B recovers, clears blocked[B] and
 	// legitimately re-arms on its own 2xx.
 	dn.beginChoose("B")
-	usage("B", 200, http.Header{})
+	usage("B", 200, http.Header{}, proxy.UsageRequest{})
 	hook(needsLoginEvent("B"))
 	if got := drainNotices(t, dn, n); len(got) != 1 || got[0].title != "chottag: B needs login" {
 		t.Fatalf("notices = %+v, want B re-armed by the fresh success", got)
@@ -248,7 +249,7 @@ func TestNotifyUsageHookBlockedFlagDoesNotLeakWhenAChosenRequestNeverCompletes(t
 	n := newRecordingNotifier()
 	dn := newDaemonNotify(notifyTestState("A", "B"), n)
 	defer dn.Close()
-	usage := notifyUsageHook(dn, func(string, int, http.Header) {})
+	usage := notifyUsageHook(dn, func(string, int, http.Header, proxy.UsageRequest) {})
 	hook := notifyEventHook(dn, func(selector.Event) {})
 
 	hook(needsLoginEvent("B"))
@@ -262,7 +263,7 @@ func TestNotifyUsageHookBlockedFlagDoesNotLeakWhenAChosenRequestNeverCompletes(t
 
 	// A later request is chosen again and succeeds.
 	dn.beginChoose("B")
-	usage("B", 200, http.Header{})
+	usage("B", 200, http.Header{}, proxy.UsageRequest{})
 	hook(needsLoginEvent("B"))
 	if got := drainNotices(t, dn, n); len(got) != 1 || got[0].title != "chottag: B needs login" {
 		t.Fatalf("notices = %+v, want a second needs-login: the completed request's 2xx re-armed B, and nothing leaked", got)

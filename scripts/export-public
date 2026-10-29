@@ -2,8 +2,8 @@
 # export-public: turn a release tag of this (private) repo into ONE commit
 # in a separate local clone of the public repo, and tag it (R83, spec §4).
 #
-#   usage: scripts/export-public [-p PATTERNS] TAG PUBLIC_CLONE
-#          scripts/export-public [-p PATTERNS] --sync REV PUBLIC_CLONE
+#   usage: scripts/export-public [-p PATTERNS] [--no-gate] TAG PUBLIC_CLONE
+#          scripts/export-public [-p PATTERNS] [--no-gate] --sync REV PUBLIC_CLONE
 #          scripts/export-public [-p PATTERNS] --check REV
 #          scripts/export-public [-p PATTERNS] --check-index
 #
@@ -19,6 +19,12 @@
 # offending path (sorted) is named. An identical snapshot is refused
 # ("nothing to sync"). Exit 0 = exactly one new commit, no tag; non-zero =
 # the clone exactly as found.
+#
+# --no-gate (R190) skips only step 6's gate commands: the gate copy is
+# still built and checked, the gate block must still exist, and every
+# other step runs. The public repo's release.yml runs the same gate before
+# it builds, so a release need not run it on the owner's machine too; a
+# snapshot that fails there is public as a commit and tag, with no release.
 #
 # --check REV runs steps 1-5 below on REV's tree (no clone, no gate) and
 # commits nothing anywhere: `--check HEAD` checks the LAST commit.
@@ -150,7 +156,7 @@ die() {
 	exit 1
 }
 usage() {
-	printf 'export-public: %s\nusage: scripts/export-public [-p PATTERNS] TAG PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] --sync REV PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] --check REV\n       scripts/export-public [-p PATTERNS] --check-index\n' "$*" >&2
+	printf 'export-public: %s\nusage: scripts/export-public [-p PATTERNS] [--no-gate] TAG PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] [--no-gate] --sync REV PUBLIC_CLONE\n       scripts/export-public [-p PATTERNS] --check REV\n       scripts/export-public [-p PATTERNS] --check-index\n' "$*" >&2
 	exit 2
 }
 
@@ -343,6 +349,7 @@ main() {
 	op=export
 	index=0
 	sync=0
+	nogate=0
 	while [ $# -gt 0 ]; do
 		case $1 in
 		-p)
@@ -350,6 +357,10 @@ main() {
 			patterns_given=1
 			patterns=$2
 			shift 2
+			;;
+		--no-gate)
+			nogate=1
+			shift
 			;;
 		--sync)
 			[ "$op" = export ] && [ "$sync" -eq 0 ] || usage "give only one of --sync, --check and --check-index"
@@ -366,6 +377,7 @@ main() {
 		*) break ;;
 		esac
 	done
+	[ "$op" = export ] || [ "$nogate" -eq 0 ] || usage "--no-gate is for an export or --sync (--check runs no gate)"
 	if [ "$index" -eq 1 ]; then
 		[ $# -eq 0 ] || usage "--check-index takes no argument"
 		label="the index"
@@ -1093,6 +1105,10 @@ main() {
 	IFS='
 '
 	set -f
+	[ "$nogate" -eq 0 ] || {
+		say "gate: skipped (--no-gate): the public repo's release.yml runs it"
+		gatelist=""
+	}
 	for cmd in $gatelist; do
 		IFS=$oldifs
 		set +f

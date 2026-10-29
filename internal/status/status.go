@@ -143,6 +143,17 @@ type Account struct {
 	// right; the JSON kept the raw percentages with nothing saying not to
 	// trust them.
 	Stale bool `json:"stale"`
+	// Pace is the account's placement score and measured 5h burn under spread
+	// (R192), for a candidate only. Written by the daemon.
+	Pace *Pace `json:"pace,omitempty"`
+}
+
+// Pace is one spread candidate's pace: the score a new session would see
+// (at most autoswitch.RCap, 2 decimals) and its measured 5h burn in plan units
+// per hour (1 decimal).
+type Pace struct {
+	Ratio  float64 `json:"ratio"`
+	Burn5h float64 `json:"burn5h"`
 }
 
 // Limits is the roll-up across accounts. AllLimited is only meaningful after
@@ -444,7 +455,10 @@ type Auto struct {
 	Mode string `json:"mode"`
 	// Decision is the planner's last one-line summary, e.g. "holding A
 	// (5h 96%, resets in 9m)".
-	Decision   string      `json:"decision,omitempty"`
+	Decision string `json:"decision,omitempty"`
+	// Next is the account the next new session will get under spread (R192),
+	// "" when none can take one; absent (nil) under serial.
+	Next       *string     `json:"next,omitempty"`
 	LastSwitch *AutoSwitch `json:"lastSwitch,omitempty"`
 	// UserChosen: the serving account was put there by the user while at
 	// or above a switch point, so only a hard limit moves it (S6).
@@ -461,6 +475,7 @@ type Auto struct {
 // PoolAuto is one non-default pool's auto-switch view.
 type PoolAuto struct {
 	Decision   string      `json:"decision,omitempty"`
+	Next       *string     `json:"next,omitempty"` // as Auto.Next
 	LastSwitch *AutoSwitch `json:"lastSwitch,omitempty"`
 	UserChosen bool        `json:"userChosen"`
 }
@@ -507,8 +522,26 @@ func (f *File) SetAuto(a Auto) bool {
 	return true
 }
 
+// SetPaces sets the pace of every account named in p and clears it on the
+// rest, and reports whether anything changed.
+func (f *File) SetPaces(p map[string]Pace) bool {
+	changed := false
+	for i := range f.Accounts {
+		a := &f.Accounts[i]
+		want, ok := p[a.Name]
+		switch {
+		case !ok && a.Pace != nil:
+			a.Pace, changed = nil, true
+		case ok && (a.Pace == nil || *a.Pace != want):
+			w := want
+			a.Pace, changed = &w, true
+		}
+	}
+	return changed
+}
+
 func sameAuto(x, y Auto) bool {
-	if x.Mode != y.Mode || x.Decision != y.Decision || x.UserChosen != y.UserChosen || x.BurnRate != y.BurnRate {
+	if x.Mode != y.Mode || x.Decision != y.Decision || !sameNext(x.Next, y.Next) || x.UserChosen != y.UserChosen || x.BurnRate != y.BurnRate {
 		return false
 	}
 	if !sameSwitch(x.LastSwitch, y.LastSwitch) || len(x.Pools) != len(y.Pools) {
@@ -516,11 +549,20 @@ func sameAuto(x, y Auto) bool {
 	}
 	for name, p := range x.Pools {
 		q, ok := y.Pools[name]
-		if !ok || p.Decision != q.Decision || p.UserChosen != q.UserChosen || !sameSwitch(p.LastSwitch, q.LastSwitch) {
+		if !ok || p.Decision != q.Decision || !sameNext(p.Next, q.Next) || p.UserChosen != q.UserChosen || !sameSwitch(p.LastSwitch, q.LastSwitch) {
 			return false
 		}
 	}
 	return true
+}
+
+// sameNext compares two published picks by value: nil (none published) is
+// not "" (published, no pick).
+func sameNext(x, y *string) bool {
+	if x == nil || y == nil {
+		return x == y
+	}
+	return *x == *y
 }
 
 func sameSwitch(x, y *AutoSwitch) bool {

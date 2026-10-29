@@ -318,7 +318,7 @@ func TestRunDaemonWiresTheRealProxyConfigAndClosesRealUpstreamConnections(t *tes
 		Intercept: proxy.SuffixMatcher(proxy.DefaultTraceSuffixes),
 		Log:       lw,
 		Choose:    fixedServingChooser{account: "A", token: "swapped-token"},
-		OnUsage: func(account string, status int, h http.Header) {
+		OnUsage: func(account string, status int, h http.Header, _ proxy.UsageRequest) {
 			usageCalls.Add(1)
 		},
 		UpstreamRootCAs: upCA.Pool(),

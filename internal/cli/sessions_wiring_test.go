@@ -111,7 +111,7 @@ func TestStampSessionsKeepsLiveForgetsDeadPastGraceAndWritesThem(t *testing.T) {
 	tr.Seen("33333333333333333333333333333333", "default", "A", true, "", now) // dead, inside grace: kept
 	sink := newTestSink(t, home)
 
-	got := stampSessions(sink, tr, home, now)
+	got := stampSessions(sink, tr, home, now, nil)
 	if len(got) != 2 || got[0].SID != sidOne || got[1].SID != "33333333333333333333333333333333" {
 		t.Fatalf("snapshot = %+v", got)
 	}
@@ -134,7 +134,7 @@ func TestStampSessionsRegistryErrorKeepsEverything(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	tr.Seen(sidTwo, "default", "B", true, "", now.Add(-time.Hour))
 	sink := newTestSink(t, home)
-	got := stampSessions(sink, tr, home, now)
+	got := stampSessions(sink, tr, home, now, nil)
 	if len(got) != 1 {
 		t.Fatalf("a registry error dropped a session: %+v", got)
 	}

@@ -532,6 +532,65 @@ result outside `default` says `serving: NAME (pool POOL)`.
 `pin` appears only under spread; `tag --unpin` answers with `serving` only.
 `pool` is present only outside `default`.
 
+### `chottag move`
+
+```sh
+chottag move NAME [--session SID] [--force]
+```
+
+Under [`chottag policy spread`](#chottag-policy), puts one running session on
+`NAME`. Its next inference request goes out as `NAME`, and it stays there: a
+session you moved is *chosen*, and only a hard trigger (its account is limited,
+has rotation off, needs a login, is gone or left the pool) or a limit-hit
+retry moves it off. A switch point or the cold-cache rebalance does not. The
+command only writes a request into `state.json`; the daemon applies it once, at
+the session's next request. A request already in flight finishes on the old
+account, and the prompt cache starts cold on `NAME`.
+
+Without `--session` it moves the session it runs in (found as `chottag
+statusline` finds it), so `! chottag move B` works at a session's prompt, and
+so does asking Claude Code in that session to move it to B. With `--session SID`
+it moves a live session whose sid starts with `SID` (at least 4 characters; the
+sid `chottag status --json` lists under `sessions`). `NAME` is resolved like
+`tag NAME`, and must be in the session's pool (`not_in_pool`).
+
+`NAME` is refused (`move_refused`, exit 2, with the reason in the message and
+as `reason` in `--json`) when it is out of rotation, needs a login, or is
+limited, even with `--force`; and when it is above a switch point, unless
+`--force`. Under `serial` there is nothing to move (`move_serial`: use
+`chottag policy spread`, or `chottag tag NAME` to move every session). A
+session that is already on `NAME` exits 0 with a line saying so, and becomes
+chosen; the refusal is checked first, so a session already on `NAME` is still
+refused when `NAME` cannot take it (a switch point passes with `--force`).
+Writing the request also drops requests of sessions that have ended.
+
+If no daemon runs, the command succeeds with the warning `daemon_not_running`
+(the move applies when one starts and the session next makes a request). A
+daemon older than 0.10.10 ignores moves: the warning `daemon_predates_move`
+says to run `chottag daemon restart`.
+
+| Flag | Meaning |
+|---|---|
+| `--session SID` | the session to move: a sid prefix of at least 4 characters (default: the session this runs in) |
+| `--force` | move even to an account above its switch point (never past rotation, a login or a limit) |
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "session": "8cda02c0d5e44f6a9b1c2d3e4f5a6b7c",
+  "account": "B",
+  "from": "A",
+  "pool": "work"
+}
+```
+
+`from` is the account the daemon last placed the session on (`""` when
+unknown). `pool` is present only outside `default`. In a `move_refused` error
+`reason` is the autoswitch reason text (`out of rotation`, `needs login`,
+`limited`, `above switch point`).
+
 ### `chottag next`
 
 ```sh
@@ -700,7 +759,8 @@ unknown or already past, has no `↻`. `--json` already carries the times as
       "plan": "max5x",
       "pools": ["default", "personal"],
       "shared": true,
-      "stale": false
+      "stale": false,
+      "pace": {"ratio": 1.4, "burn5h": 320}
     }
   ],
   "serving": "work",
@@ -739,12 +799,14 @@ unknown or already past, has no `↻`. `--json` already carries the times as
       "account": "work",
       "lastSeen": "2026-09-28T14:00:10Z",
       "requests": 17,
-      "conversations": 1
+      "conversations": 1,
+      "chosen": true
     }
   ],
   "auto": {
     "mode": "balanced",
     "decision": "holding work (5h 42%, resets in 5h)",
+    "next": "work",
     "lastSwitch": {
       "from": "personal",
       "to": "work",
@@ -759,6 +821,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
     "pools": {
       "personal": {
         "decision": "holding work (5h 42%, resets in 5h)",
+        "next": "work",
         "lastSwitch": {
           "from": "dev",
           "to": "work",
@@ -793,6 +856,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
   },
   "policy": "spread",
   "pin": "work",
+  "servingAccounts": [{"name": "work", "sessions": 1, "chosen": 1}],
   "names": "on",
   "lostSessions": 2,
   "pools": [
@@ -804,6 +868,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
       "pin": "work",
       "accounts": ["work"],
       "liveSessions": 1,
+      "servingAccounts": [{"name": "work", "sessions": 1, "chosen": 1}],
       "decision": "holding work (5h 42%, resets in 5h)",
       "lastSwitch": {
         "from": "personal",
@@ -823,6 +888,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
       "pin": "dev",
       "accounts": ["dev", "work"],
       "liveSessions": 0,
+      "servingAccounts": [{"name": "dev", "sessions": 1, "chosen": 1}],
       "decision": "holding work (5h 42%, resets in 5h)",
       "lastSwitch": {
         "from": "dev",
@@ -851,6 +917,36 @@ two fields, and `userChosen`, for each pool other than `default`. An account's `
 lists the pools it is in, and `shared` is `true` when that is more than one:
 they then share its usage limit. A session's `pool` (in `sessions`) says which
 pool it runs in.
+
+**Spread display.** Under `spread` the first line of the text form lists every
+account that carries a live session, with its count, in registration order,
+then the fallback and the remote account:
+
+```text
+serving: A 5 · B 5   fallback: B   remote: C
+```
+
+`fallback` is the `serving` field (the account for unidentified sessions and
+for when no account can take a session), and `none` stands in for the list
+with no live session. A session counts on the account the daemon placed it on,
+else the account it last used; a session you moved shows `B 1 (1 chosen)`. The
+separate `live sessions:` line is dropped under spread, as its counts moved
+into this one; under `serial` the first line and that line are unchanged. A
+spread pool's line after the table has the same shape for that pool (`pool
+personal · serving A 2 · B 1 · fallback B · remote C · spread · ...`). In
+`--json`, `servingAccounts` is the same list as `{"name", "sessions"}` entries:
+at the top level for a spread `default` pool, and in the entry of each spread
+pool in `pools[]`. It is left out under `serial`, and `[]` with no live
+session. An entry also has `chosen`, the number of its sessions placed there
+with `chottag move`, when there is one. Each account that is a candidate
+under spread has `pace`: `ratio` is the score a new session would see (at most
+3) and `burn5h` the account's measured 5-hour burn in units per hour (a whole number: a percentage point of a window times the plan units, so a max20x 5-hour window is 2000).
+`auto.next` (and the `next` of each pool in `auto.pools`) is the account the
+next new session would get, `""` when none could take it, and left out under
+`serial`. `auto.burnRate` is the serial burn (units per active hour) whenever any pool is
+serial; only when every pool is spread is it the sum of the `default` pool's members' 5-hour
+pace burn. The decision names the same pick and why (see [`chottag
+auto`](#chottag-auto)).
 
 `names` is always present (`on`, `model` or `off`); the text form prints a
 `names:` line only when it is not `on`.
@@ -946,6 +1042,10 @@ that is still alive, ordered by `started`. It is left out when none is alive.
   chottag routed for it (each account choice counts, so a 429 retry counts
   twice), and how many times its conversation changed. They are left out
   until the daemon has seen the session.
+- `chosen` is `true` when the session was put on its account with
+  [`chottag move`](#chottag-move) and has not been moved off by a hard trigger
+  since; it is left out otherwise. The text form's live-sessions line marks
+  these: `live sessions: 3 (A 2, B 1 (1 chosen))`.
 
 ### `chottag statusline`
 
@@ -1100,8 +1200,11 @@ why (`reason`, `limit` or `threshold`) and when (`at`, RFC 3339).
 that is `stale` or `needs-login`. `next` is the account that would serve the
 pool next: the one auto-switch would move to on a limit, or the one
 `chottag next` would pick while auto-switch is off. It is `""` when no
-account could take over, and left out under `spread` (no one account serves
-next) and when not known.
+account could take over. Under `spread` it is the pick the daemon published
+for the pool's next new session (`auto.next`, or the pool's `next`), `""` when
+that daemon has none. It is left out when the
+running daemon is older than 0.10.10 or its version cannot
+be ordered, so an old daemon right after an update does not read as "none".
 
 ### `chottag doctor`
 
@@ -1250,7 +1353,8 @@ chottag policy [serial|spread] [--pool POOL]
 
 Shows or sets how new sessions are placed. `serial`, the default, is one
 serving account for every session. `spread` places each new session on the
-account with most headroom and keeps it there. With no value it prints the
+account whose windows its sessions use up the slowest (pace; see [how it
+works](how-it-works.md#spreading-sessions-spread)) and keeps it there. With no value it prints the
 policy, and the pin under `spread` (`pin: NAME`). Its only flag is
 `--pool`: each pool has its own policy (default: `default`; unknown is
 `no_pool`), and a result outside `default` says `policy: spread (pool work)`.
@@ -1746,10 +1850,11 @@ accepts and what each mode does. `auto` takes no flags.
 }
 ```
 
-Under `chottag policy spread` the `decision` is `spread: new sessions go to
-NAME` (the account a new session would get now, which is also `serving`), or
-`spread: no account can take a new session`. Auto-switch does not switch
-`serving` for a switch point then; see
+Under `chottag policy spread` the `decision` is `spread: next session → B (5h
+74% left, resets in 45m)` (the account a new session would get now and why: the
+binding window of the winner, or `soonest reset` when the tie-break decided),
+or `spread: no account can take a new session`. The pick is also `auto.next`.
+Auto-switch does not switch `serving` for a switch point then; see
 [how it works](how-it-works.md#spreading-sessions-spread).
 
 ## Daemon
@@ -2070,8 +2175,11 @@ is one line: `c» C → B · 5h 28% · 7d 68% · ↻ 3h20m`.
   not report its remote account, so the card leaves the segment out.
 - `→ next B` names the account that would serve next (`next` in
   [`chottag statusline`](#chottag-statusline)'s JSON), and `→ next: none
-  ready` (yellow) says no account could take over. Under `spread`, and with
-  a chottag older than 0.10.9, it is left out.
+  ready` (yellow) says no account could take over. Under `spread` it is the
+  account the next new session would get (the daemon's `auto.next`, or the
+  pool's `next`), or `→ next: none ready` when the daemon has none. It is left
+  out when the running daemon is older than 0.10.10 or its
+  version cannot be ordered, and with a chottag older than 0.10.9.
 - Each window shows the rounded percent (`–` when unknown), a 10-cell bar and
   its reset. The bar lays two bars over each other: the window's use, and how
   much of the window has gone by (from its reset; 5 hours, 7 days). Cells
@@ -2176,6 +2284,10 @@ result is not text, the same line is a toast.
 | `resume_busy` | 1 | another `chottag resume` is running (it holds `sessions/resume.lock`) |
 | `resume_failed` | 1 | `chottag resume` could not relaunch one or more sessions (a `cmux` error); `error.sessions` has every row, and a failed one stays in the batch |
 | `spread_next` | 2 | `next` (or a bare `tag`) under `chottag policy spread`: chottag places sessions itself; pin with `chottag tag NAME`, or `chottag policy serial` |
+| `move_refused` | 2 | `move`: the account is out of rotation, needs a login or is limited (always), or is above a switch point and `--force` was not given; `error.reason` says which |
+| `no_session` | 2 | `move` was not run in a chottag session and no live session matches `--session` (or the session has no sid); pass `--session SID` (the `sid` in `chottag status --json`, `sessions[]`) |
+| `session_ambiguous` | 2 | `move --session` matched more than one live session; give more of the sid |
+| `move_serial` | 2 | `move` in a pool under `serial`: there is nothing to place; `chottag policy spread` first, or `chottag tag NAME` to move every session |
 
 ## Warning codes
 
@@ -2208,3 +2320,5 @@ result is not text, the same line is a toast.
 | `shared_account` | `pool join` left an account in more than one pool (or `policy spread` found one in the pool): they share one usage limit, so the pools affect each other |
 | `daemon_predates_pools` | `pool join` found the running daemon older than 0.8.0 (or reporting no version): it cannot read a version-2 `state.json`, so its requests fall back to Home's own login; run `chottag daemon restart` (`pool add` refuses instead: see the error code) |
 | `daemon_predates_spread` | `chottag policy spread` (or `tag NAME` under spread) found the running daemon older than this binary: it ignores the policy and may reset it to serial; run `chottag daemon restart` first |
+| `daemon_not_running` | `move` found no daemon: the request applies when one starts and the session next makes a request |
+| `daemon_predates_move` | `move` found the running daemon older than 0.10.10 (or reporting no orderable version): it ignores move requests; run `chottag daemon restart` |

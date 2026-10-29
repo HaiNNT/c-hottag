@@ -9,7 +9,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/proxy/proxytest"
+	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/router"
 )
 
@@ -41,7 +43,7 @@ func TestOnUsageSeesHeadersOfASwappedResponse(t *testing.T) {
 		w.WriteHeader(200)
 	}), proxytest.Options{
 		Choose: servingSwap{},
-		OnUsage: func(account string, status int, hdr http.Header) {
+		OnUsage: func(account string, status int, hdr http.Header, _ proxy.UsageRequest) {
 			mu.Lock()
 			defer mu.Unlock()
 			got = append(got, seen{account, status, hdr.Get("Anthropic-Ratelimit-Unified-5h-Utilization")})
@@ -69,7 +71,7 @@ func TestOnUsageIsNotCalledForAnUnswappedRequest(t *testing.T) {
 	h := proxytest.Start(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	}), proxytest.Options{
-		OnUsage: func(string, int, http.Header) {
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) {
 			mu.Lock()
 			calls++
 			mu.Unlock()
@@ -102,7 +104,7 @@ func TestOnUsageNotCalledOnDriftedResponse(t *testing.T) {
 	})
 	h := proxytest.Start(t, up, proxytest.Options{
 		Choose: refusingRefreshChooser{},
-		OnUsage: func(string, int, http.Header) {
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) {
 			mu.Lock()
 			calls++
 			mu.Unlock()
@@ -129,7 +131,7 @@ func TestOnUsageIsNotCalledForAnUntouchedRouteWithChooserConfigured(t *testing.T
 		w.WriteHeader(200)
 	}), proxytest.Options{
 		Choose: servingSwap{},
-		OnUsage: func(string, int, http.Header) {
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) {
 			mu.Lock()
 			calls++
 			mu.Unlock()
@@ -152,7 +154,7 @@ func TestOnUsagePanicDoesNotHarmTheResponse(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}), proxytest.Options{
 		Choose:  servingSwap{},
-		OnUsage: func(string, int, http.Header) { panic("boom") },
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) { panic("boom") },
 	})
 	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader("{}"))
 	if err != nil {
@@ -182,7 +184,7 @@ func TestOnUsageCannotMutateTheClientsResponse(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}), proxytest.Options{
 		Choose:  servingSwap{},
-		OnUsage: func(_ string, _ int, hdr http.Header) { hdr.Set("Content-Type", "text/plain") },
+		OnUsage: func(_ string, _ int, hdr http.Header, _ proxy.UsageRequest) { hdr.Set("Content-Type", "text/plain") },
 	})
 	resp := do(t, h, "POST", "https://api.anthropic.com/v1/messages")
 	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
@@ -201,7 +203,7 @@ func TestOnUsageFiresOnceOnANonSuccessSwappedResponse(t *testing.T) {
 		w.WriteHeader(429)
 	}), proxytest.Options{
 		Choose: servingSwap{},
-		OnUsage: func(_ string, status int, _ http.Header) {
+		OnUsage: func(_ string, status int, _ http.Header, _ proxy.UsageRequest) {
 			mu.Lock()
 			got = append(got, status)
 			mu.Unlock()
@@ -232,7 +234,7 @@ func TestOnUsageFiresOnceForAStreamAndTheClientStillReceivesEveryChunk(t *testin
 		io.WriteString(w, "data: two\n\n")
 	}), proxytest.Options{
 		Choose: servingSwap{},
-		OnUsage: func(string, int, http.Header) {
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) {
 			mu.Lock()
 			calls++
 			mu.Unlock()
@@ -286,7 +288,7 @@ func TestOnUsagePanicIsReportedThroughOnLogError(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}), proxytest.Options{
 		Choose:  servingSwap{},
-		OnUsage: func(string, int, http.Header) { panic("boom") },
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) { panic("boom") },
 		OnLogError: func(err error) {
 			logMu.Lock()
 			logErrs = append(logErrs, err)
@@ -335,7 +337,7 @@ func TestPanickingUsageHookReportsThroughOnUsageError(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}), proxytest.Options{
 		Choose:  servingSwap{},
-		OnUsage: func(string, int, http.Header) { panic("boom") },
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) { panic("boom") },
 		OnUsageError: func(err error) {
 			mu.Lock()
 			usageErr = err
@@ -386,7 +388,7 @@ func TestPanickingUsageHookFallsBackToOnLogError(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}), proxytest.Options{
 		Choose:  servingSwap{},
-		OnUsage: func(string, int, http.Header) { panic("boom") },
+		OnUsage: func(string, int, http.Header, proxy.UsageRequest) { panic("boom") },
 		OnLogError: func(err error) {
 			mu.Lock()
 			logErr = err
@@ -408,5 +410,35 @@ func TestPanickingUsageHookFallsBackToOnLogError(t *testing.T) {
 	defer mu.Unlock()
 	if logErr == nil {
 		t.Fatal("with OnUsageError unset, the panic must still reach OnLogError")
+	}
+}
+
+// R192: the usage hook is told the request's session id and whether it was an
+// inference call, so the pace meter can credit a session's spend.
+func TestUsageHookCarriesSIDAndInference(t *testing.T) {
+	var mu sync.Mutex
+	var got []proxy.UsageRequest
+	home := t.TempDir()
+	s, err := proxyauth.LoadOrCreate(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := proxytest.Start(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }), proxytest.Options{
+		ProxyAuth: s,
+		Choose:    servingSwap{},
+		OnUsage: func(_ string, _ int, _ http.Header, req proxy.UsageRequest) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, req)
+		},
+	})
+	c := h.ClientVia(sessionURL(t, s, h.ProxyAddr))
+	sendAs(t, c, "POST", "https://api.anthropic.com/v1/messages", nil)
+	sendAs(t, c, "GET", "https://api.anthropic.com/v1/messages", nil)
+	mu.Lock()
+	defer mu.Unlock()
+	want := []proxy.UsageRequest{{SID: testSID, Inference: true}, {SID: testSID, Inference: false}}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("OnUsage saw %+v, want %+v", got, want)
 	}
 }

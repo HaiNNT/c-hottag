@@ -81,7 +81,7 @@ func TestStatusPoolLinesShowSpreadAndPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, out, _ := runChottag(t, "status")
-	if want := "\npool personal · serving B · remote C · spread · pin D · 0 live sessions (B shared with work)\n"; !strings.Contains(out, want) {
+	if want := "\npool personal · serving none · fallback B · remote C · spread · pin D · 0 live sessions (B shared with work)\n"; !strings.Contains(out, want) {
 		t.Errorf("status lacks %q:\n%s", want, out)
 	}
 }
