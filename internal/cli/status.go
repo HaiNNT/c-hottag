@@ -438,6 +438,9 @@ func renderStatusSpread(out io.Writer, f status.File, now time.Time, counts stri
 			five = withReset(five, a.Usage.FiveHourResetsAt, now)
 			seven = withReset(seven, a.Usage.SevenDayResetsAt, now)
 		}
+		if a.NoFiveHour {
+			five = "none" // R198: evidence of no 5-hour window, not a missing reading
+		}
 		state := "no reading"
 		switch {
 		case a.Passthrough != "":

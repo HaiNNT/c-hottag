@@ -827,3 +827,40 @@ func TestStatuslineNextUnderSpreadPool(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestStatuslineJSONCarriesNoFiveHourOnlyWhenMarked(t *testing.T) {
+	for _, marked := range []bool{true, false} {
+		home, now := v2Env(t)
+		u := usageOf(now, 10, 18.2, time.Time{}, now.Add(50*time.Hour))
+		u.FiveHourPct = nil
+		writeCache(t, home, status.Account{Name: "work", NoFiveHour: marked, Usage: u})
+		_, jout, _ := runHome(t, home, "statusline", "--json")
+		var got map[string]any
+		if err := json.Unmarshal([]byte(jout), &got); err != nil {
+			t.Fatal(err)
+		}
+		v, present := got["noFiveHour"]
+		if marked && v != true {
+			t.Fatalf("marked: json = %s", jout)
+		}
+		if !marked && present {
+			t.Fatalf("unmarked must omit noFiveHour: %s", jout)
+		}
+	}
+}
+
+func TestStatuslineTextDropsFiveHourOnlyWhenMarked(t *testing.T) {
+	for _, marked := range []bool{true, false} {
+		home, now := v2Env(t)
+		u := usageOf(now, 10, 18.2, time.Time{}, now.Add(50*time.Hour))
+		u.FiveHourPct = nil
+		writeCache(t, home, status.Account{Name: "work", NoFiveHour: marked, Usage: u})
+		_, out, _ := runHome(t, home, "statusline")
+		if has := strings.Contains(out, "5h"); has == marked {
+			t.Fatalf("marked=%v: line %q", marked, out)
+		}
+		if !strings.Contains(out, "7d 18%") {
+			t.Fatalf("marked=%v: weekly missing: %q", marked, out)
+		}
+	}
+}

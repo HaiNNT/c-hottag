@@ -9,7 +9,7 @@
 
 // MOD_VERSION is this plugin's version, set by `scripts/release bump` and tested
 // against plugin.json. A chottag newer than it means the plugin is behind.
-export const MOD_VERSION = '0.10.12'
+export const MOD_VERSION = '0.10.13'
 const VERSION_CHECK_MS = 600000
 const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]*)?/
 const CLEAN_VERSION = /^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,64}$/
@@ -325,7 +325,7 @@ export function layoutCard(doc, nowMs, columns, fmt, maxRows, behind) {
     const nr = legacy ? formatReset(doc.resetsAt, nowMs, fmt) : ''
     const next = nr ? [{ t: full ? 'next reset ' + nr : 'next ↻ ' + shortLeft(doc.resetsAt, nowMs, fmt), dim: true }] : []
     const plugin = behind ? [{ t: 'plugin ' + MOD_VERSION + ' · chottag ' + behind + ': update the plugin', color: 'yellow' }] : []
-    return [title, account, win(WINDOWS[0], reset5), win(WINDOWS[1], reset7), next, remote, ready, update, plugin]
+    return [title, account, doc.noFiveHour === true ? [] : win(WINDOWS[0], reset5), win(WINDOWS[1], reset7), next, remote, ready, update, plugin]
   }
   const rowLimit = cols >= WIDE_COLUMNS ? 2 : cols >= MEDIUM_COLUMNS ? 3 : 0
   if (rowLimit && (typeof maxRows !== 'number' || maxRows >= 1)) {
@@ -335,7 +335,7 @@ export function layoutCard(doc, nowMs, columns, fmt, maxRows, behind) {
     }
   }
   const left = shortLeft(doc.resetsAt, nowMs, fmt)
-  const line = [session + (doc.next ? ' → ' + doc.next : ''), '5h ' + pctText(doc.fiveHourPct), '7d ' + pctText(doc.sevenDayPct), ...(left ? ['↻ ' + left] : [])].join(' · ')
+  const line = [session + (doc.next ? ' → ' + doc.next : ''), ...(doc.noFiveHour === true ? [] : ['5h ' + pctText(doc.fiveHourPct)]), '7d ' + pctText(doc.sevenDayPct), ...(left ? ['↻ ' + left] : [])].join(' · ')
   return { mode: 'line', rows: [[{ t: 'c» ', bold: true, color: tone }, { t: line }]] }
 }
 

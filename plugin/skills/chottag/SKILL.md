@@ -192,7 +192,7 @@ the `pool add`). Once a pool exists the shim also refuses every session,
 | the user wants | run |
 |---|---|
 | which account is serving, usage, limits | `chottag status --json` |
-| which account is this session on, or what each live session uses | `chottag statusline --json` (`account`: this session's own account; `serving`: its pool's; `pool`: the pool, outside `default`; also `limited`, `lastSwitch` {`account`, `from`, `reason`}, `remote`, `remoteToken`, `fiveHourResetsAt`, `sevenDayResetsAt` and `nearWindow`, each left out when unknown); `chottag status --json` lists every live session in `sessions[]` |
+| which account is this session on, or what each live session uses | `chottag statusline --json` (`account`: this session's own account; `serving`: its pool's; `pool`: the pool, outside `default`; also `limited`, `lastSwitch` {`account`, `from`, `reason`}, `remote`, `remoteToken`, `fiveHourResetsAt`, `sevenDayResetsAt`, `nearWindow` and `noFiveHour` (the account has no 5-hour window: the card hides that bar), each left out when unknown); `chottag status --json` lists every live session in `sessions[]` |
 | show in a status line whether this session goes through chottag | `chottag statusline [--cmux]` (prints only, no side effect; `--cmux` also sets the cmux sidebar pill; one line: `c» <this session's account> · 5h 42% · 7d 18% · ↻ 3h20m · 2/3 ok`, `↻` the time left to the next reset (`42m`, `3h20m`, `Mon 18:00`, `Oct 9 18:00`), with `[pool]` after the account outside `default`, `c» down` or `c» off`; never fails) |
 | switch to a named account | `chottag tag <name> --json` |
 | switch to the next account that is not limited | `chottag next --json` |

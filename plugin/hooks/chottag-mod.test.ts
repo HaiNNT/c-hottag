@@ -929,3 +929,12 @@ test('a chottag pre-release, a dirty-text or a non-version answer does not flag 
     expect(h.out.toasts).toEqual([])
   }
 })
+
+test('noFiveHour hides the 5-hour segment and the compact 5h part; absent keeps them (R198)', () => {
+  const hidden = flat(layoutCard(doc({ noFiveHour: true, fiveHourPct: undefined, sevenDayPct: 68.4 }), 0, 140)).join('\n')
+  expect(hidden).not.toContain('5-hour')
+  expect(hidden).toContain('weekly 68%')
+  expect(flat(layoutCard(doc({ noFiveHour: true, next: 'B' }), 0, 59))).toEqual(['c» C → B · 7d 68%'])
+  expect(flat(layoutCard(doc({ fiveHourPct: undefined }), 0, 140)).join('\n')).toContain('5-hour')
+  expect(flat(layoutCard(doc({ noFiveHour: false }), 0, 59))).toEqual(['c» C · 5h 28% · 7d 68%'])
+})

@@ -713,7 +713,8 @@ accounts every 2 hours). A younger reading shows the plain number, so an
 age points to an account the poll cannot reach (`needs-login`, or a poll that
 keeps failing). A window that has reset since an old reading shows
 `unknown (reset since)`. `unknown` means chottag has never read the account's
-usage. In `--json` an account whose reading is older than 10 minutes, or never read, has
+usage. An account whose responses carry no 5-hour window (`noFiveHour` in
+`--json`) shows `none` in the 5h column. In `--json` an account whose reading is older than 10 minutes, or never read, has
 `stale: true` and the reading's time in `usage.updatedAt`; that contract does
 not change.
 
@@ -1129,7 +1130,8 @@ With an install label (`chottag setup --label dev`), the label follows the
 mark in every state: `c» dev off`, `c» dev · work · 5h 3% · …`.
 
 - `5h NN%` and `7d NN%` are this session's account's usage, rounded; an unknown
-  or stale value prints `–`.
+  or stale value prints `–`. For an account with no 5-hour window (`noFiveHour`
+  in `--json`) the `5h` part is left out and only `7d NN%` shows.
 - `↻ 3h20m` is its next reset, as time left: the 5 h reset when the 5 h use is
   at or above 80 %, otherwise the earlier of the two known resets. It reads
   `↻ 42m` under an hour (rounded down; `↻ <1m` under a minute), `↻ 3h20m`
@@ -1177,6 +1179,7 @@ failure is ignored. `--cmux` combines with `--json`.
   "fiveHourResetsAt": "2026-10-01T19:00:00+07:00",
   "sevenDayResetsAt": "2026-10-03T14:00:00+07:00",
   "nearWindow": "5h",
+  "noFiveHour": true,
   "limited": true,
   "lastSwitch": {
     "account": "work",
@@ -1205,12 +1208,16 @@ running (`daemon.restartPending` in `status`); the text form shows it as
 ` · ⟳0.6.1` after the update suffix. Both are shown only while the session is
 routed and the daemon is up.
 
-The last eight fields feed the [Claude Code mod](#claude-code-mod)'s card and
+The last nine fields feed the [Claude Code mod](#claude-code-mod)'s card and
 notices, and are left out when unknown. `fiveHourResetsAt` and
 `sevenDayResetsAt` (RFC 3339, local) are the two windows' own resets, each
 left out once it is past; `resetsAt` stays the one the text line shows.
 `nearWindow` is `5h` or `7d`: the window whose use is closer to the account's
-switch point (the card draws it bold). `limited` is `true` while the
+switch point (the card draws it bold). `noFiveHour` is `true`, and otherwise
+left out, when the account's responses carry no 5-hour window (the same mark as
+`status --json`'s `noFiveHour`): the card then leaves out its 5-hour segment and
+the status line's `5h` part in the compact form. A 5-hour figure that is merely
+unknown still shows as `-`. `limited` is `true` while the
 session's account is limited. `lastSwitch` is the session's pool's last
 auto-switch: the account it moved to (`account`), the one it left (`from`),
 why (`reason`, `limit` or `threshold`) and when (`at`, RFC 3339).

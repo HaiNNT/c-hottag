@@ -7,6 +7,12 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.13] - 2026-10-31
+
+### Changed
+
+- The card hides its 5-hour segment for an account whose responses carry no 5-hour window (the `noFiveHour` evidence 0.10.11 records, such as an Ultra account), and the compact line drops its `5h` part; the weekly segment is unchanged. `chottag statusline --json` gains `noFiveHour` (absent when false), and `chottag status` shows `none` in the 5h column for such an account. A 5-hour figure that is only unknown still shows as before.
+
 ## [0.10.12] - 2026-10-31
 
 ### Changed
@@ -529,6 +535,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.13]: docs/release-notes/v0.10.13.md
 [0.10.12]: docs/release-notes/v0.10.12.md
 [0.10.11]: docs/release-notes/v0.10.11.md
 [0.10.10]: docs/release-notes/v0.10.10.md

@@ -125,8 +125,11 @@ type statuslineResult struct {
 	FiveHourResetsAt string `json:"fiveHourResetsAt,omitempty"`
 	SevenDayResetsAt string `json:"sevenDayResetsAt,omitempty"`
 	NearWindow       string `json:"nearWindow,omitempty"`
-	OKAccounts       *int   `json:"okAccounts,omitempty"`
-	RotationAccounts *int   `json:"rotationAccounts,omitempty"`
+	// NoFiveHour is the account's R194 mark: its responses carry no 5-hour
+	// window, so the card hides that segment (R198). Absent when false.
+	NoFiveHour       bool `json:"noFiveHour,omitempty"`
+	OKAccounts       *int `json:"okAccounts,omitempty"`
+	RotationAccounts *int `json:"rotationAccounts,omitempty"`
 	// UpdateAvailable is the newer release the daemon found, shown only
 	// while this session is routed and the daemon is up.
 	UpdateAvailable string `json:"updateAvailable,omitempty"`
@@ -232,7 +235,11 @@ func renderStatusline(rep statuslineResult, mode brand.ColorMode) string {
 	if rep.Label != "" {
 		first = []string{head, acct} // "c» dev · work": not one name
 	}
-	parts := append(first, field("5h", rep.FiveHourPct), field("7d", rep.SevenDayPct))
+	parts := first
+	if !rep.NoFiveHour { // R198: no 5-hour window, no 5h part
+		parts = append(parts, field("5h", rep.FiveHourPct))
+	}
+	parts = append(parts, field("7d", rep.SevenDayPct))
 	if rep.ResetsAt != "" {
 		parts = append(parts, "\u21bb "+shortReset(rep.resets, statuslineNow()))
 	}
@@ -471,6 +478,7 @@ func fillUsage(rep *statuslineResult, st store.State, pool string, f status.File
 		return
 	}
 	rep.Limited = a.Limited && (a.LimitedUntil.IsZero() || a.LimitedUntil.After(now))
+	rep.NoFiveHour = a.NoFiveHour
 	if a.Usage == nil || !f.Fresh(rep.Account, now) {
 		return
 	}

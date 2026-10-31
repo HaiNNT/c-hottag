@@ -430,3 +430,33 @@ func TestStatusWindowFollowsRotation(t *testing.T) {
 		t.Logf("output %q stderr %q", out, errb)
 	}
 }
+
+func TestStatusShowsNoneForANoFiveHourAccountAndUnknownOtherwise(t *testing.T) {
+	home := t.TempDir()
+	seedState(t, home, "D", "A")
+	var f status.File
+	f.Observe("D", knownSnapshot(0.5, 0.1, time.Now()), noVerdict())
+	for i := range f.Accounts {
+		if f.Accounts[i].Name == "D" {
+			f.Accounts[i].NoFiveHour = true
+			f.Accounts[i].Usage.FiveHourPct = nil
+		}
+	}
+	saveStatus(t, home, f)
+	_, out, _ := runHome(t, home, "status")
+	var d, a string
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(l), "D"):
+			d = l
+		case strings.HasPrefix(strings.TrimSpace(l), "A"):
+			a = l
+		}
+	}
+	if !strings.Contains(d, "none") || strings.Contains(d, "unknown") && !strings.Contains(d, "none") {
+		t.Fatalf("D row = %q; a noFiveHour account's 5h cell reads none", d)
+	}
+	if strings.Contains(a, "none") || !strings.Contains(a, "unknown") {
+		t.Fatalf("A row = %q; an unmarked unknown 5h still reads unknown", a)
+	}
+}
