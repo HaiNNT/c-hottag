@@ -20,11 +20,11 @@ const needsLogin = "needs-login"
 // order given (registration order), then owners, route-drift, home-login
 // (R183), limits and version-drift. None has a Fix, and none reads a credential (D8).
 func ReportChecks(names []string) []Check {
-	checks := make([]Check, 0, len(names)+6)
+	checks := make([]Check, 0, len(names)+7)
 	for _, n := range names {
 		checks = append(checks, tokenCheck(n))
 	}
-	return append(checks, ownersCheck(), routeDriftCheck(), homeLoginCheck(), limitsCheck(), versionDriftCheck(), planUnknownCheck())
+	return append(checks, ownersCheck(), routeDriftCheck(), homeLoginCheck(), limitsCheck(), versionDriftCheck(), planUnknownCheck(), planEvidenceCheck())
 }
 
 // loadStatus reads cache/status.json. A missing or unparseable cache is an
@@ -169,6 +169,38 @@ func limitsCheck() Check {
 			return Finding{Status: StatusInfo, Detail: "every account is limited; no reset time is known"}
 		}
 		return Finding{Status: StatusInfo, Detail: fmt.Sprintf("every account is limited; the earliest reset is %s (%s)", l.NextReset.Local().Format("Jan 2 15:04"), l.NextResetAccount)}
+	}}
+}
+
+// planEvidenceCheck is the plan-evidence info row (R194): present only while
+// chottag has recorded an account whose responses carry no 5-hour window, or a
+// refusal whose binding limit claim it does not classify. Never a problem, and
+// nothing acts on it.
+func planEvidenceCheck() Check {
+	return Check{ID: "plan-evidence", Detect: func(e *Env) Finding {
+		f := loadStatus(e)
+		var names, claims []string
+		for _, a := range f.Accounts {
+			if a.NoFiveHour {
+				names = append(names, a.Name)
+			}
+		}
+		if f.Daemon != nil {
+			for _, c := range f.Daemon.UnknownLimitClaims {
+				claims = append(claims, fmt.Sprintf("%s (count %d)", c.Claim, c.Count))
+			}
+		}
+		var parts []string
+		if len(names) > 0 {
+			parts = append(parts, strings.Join(names, ", ")+" report no 5-hour window (verified Ultra accounts?)")
+		}
+		if len(claims) > 0 {
+			parts = append(parts, "a refusal named limit "+strings.Join(claims, ", ")+", which chottag does not classify; please report it")
+		}
+		if len(parts) == 0 {
+			return Finding{Status: StatusOK, Omit: true}
+		}
+		return Finding{Status: StatusInfo, Detail: strings.Join(parts, "; ")}
 	}}
 }
 

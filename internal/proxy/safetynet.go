@@ -60,7 +60,9 @@ type safetyNet struct {
 	// does not hold and get 404; Claude Code retries that itself as a
 	// create. A 404 there is that account's genuine answer, so RoundTrip
 	// returns it unchanged: no refresh, retry, Home resend or drift count.
-	// 401/403 are unaffected (R158). onPassed404 marks the trace record.
+	// 401/403 are unaffected (R158). F296: a 404 on POST /api/artifacts/mcp
+	// is the MCP server's own session answer and passes the same way,
+	// whatever the class. onPassed404 marks the trace record.
 	onPassed404 func()
 	// ownerAnswer is F241/R96: true for a request to MCPProxyHost whose
 	// account was chosen from the owner map. A connector id's own owner
@@ -149,7 +151,11 @@ func (s *safetyNet) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	firstRefused := resp.StatusCode
 	s.firstType = errTypeOf(resp)
-	if s.serving && req.Method == http.MethodPost && req.URL.Path == "/v1/messages" && firstRefused == http.StatusNotFound {
+	// F296: a 404 on POST /api/artifacts/mcp (routed remote, so not gated on
+	// s.serving) is the MCP server's own session answer: pass it through
+	// like F270's.
+	if firstRefused == http.StatusNotFound && req.Method == http.MethodPost &&
+		((s.serving && req.URL.Path == "/v1/messages") || req.URL.Path == "/api/artifacts/mcp") {
 		if s.onPassed404 != nil {
 			s.onPassed404()
 		}

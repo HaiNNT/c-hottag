@@ -1001,6 +1001,13 @@ type statusSink struct {
 	// must never call back into the sink. Set once by setOnObserved
 	// before serving; guarded by mu.
 	onObserved func(account string, limited bool, until time.Time)
+
+	// log, when set, gets the R194 evidence lines (the daemon log). Set once
+	// before serving. loggedNoFive and loggedClaims keep each line to one per
+	// account or claim name per daemon life; both are guarded by mu.
+	log          io.Writer
+	loggedNoFive map[string]bool
+	loggedClaims map[string]bool
 }
 
 // newStatusSink loads the existing cache (a missing or corrupt file is
@@ -1155,8 +1162,11 @@ func (c *statusSink) observe(account string, s usagehdr.Snapshot, v usagehdr.Ver
 	wasLimited := c.limitedLocked(account)
 	hadPassthrough := c.passthroughLocked(account)
 	c.file.SetPassthrough(account, "")
+	hadNoFive := c.noFiveHourLocked(account)
+	claimsBefore := c.claimCountLocked()
 	c.file.Observe(account, s, v)
 	nowLimited := c.limitedLocked(account)
+	evidence := c.logEvidenceLocked(account, v.Claim, hadNoFive, claimsBefore)
 	if s.Known && c.onObserved != nil {
 		// Under mu, so two observations of one account reach the poller
 		// in the order the cache applied them (spec §6.4).
@@ -1165,11 +1175,69 @@ func (c *statusSink) observe(account string, s usagehdr.Snapshot, v usagehdr.Ver
 	}
 	c.mu.Unlock()
 
-	if (!wasLimited && nowLimited) || hadPassthrough != "" {
+	if (!wasLimited && nowLimited) || hadPassthrough != "" || evidence {
 		c.flush()
 		return
 	}
 	c.maybeSave()
+}
+
+// noFiveHourLocked and claimCountLocked read R194 evidence state. Callers
+// must hold c.mu.
+func (c *statusSink) noFiveHourLocked(account string) bool {
+	for _, a := range c.file.Accounts {
+		if a.Name == account {
+			return a.NoFiveHour
+		}
+	}
+	return false
+}
+
+func (c *statusSink) claimCountLocked() int {
+	if c.file.Daemon == nil {
+		return 0
+	}
+	return len(c.file.Daemon.UnknownLimitClaims)
+}
+
+// logEvidenceLocked writes the first-sighting daemon.log line for an account
+// with no 5-hour window and for an unclassified limit claim (R194): names
+// only, never a token or a body. It reports whether the document changed in a
+// way worth writing at once (a new mark or a new claim name).
+func (c *statusSink) logEvidenceLocked(account, claim string, hadNoFive bool, claimsBefore int) bool {
+	changed := false
+	if !hadNoFive && c.noFiveHourLocked(account) {
+		changed = true
+		if !c.loggedNoFive[account] {
+			if c.loggedNoFive == nil {
+				c.loggedNoFive = map[string]bool{}
+			}
+			c.loggedNoFive[account] = true
+			c.logLocked(fmt.Sprintf("chottag: account %s reports no 5-hour window (a verified Ultra account?)", account))
+		}
+	}
+	if claim != "" && c.claimCountLocked() > claimsBefore {
+		changed = true
+	}
+	if claim != "" && c.file.Daemon != nil && !c.loggedClaims[claim] {
+		for _, k := range c.file.Daemon.UnknownLimitClaims {
+			if k.Claim == claim {
+				if c.loggedClaims == nil {
+					c.loggedClaims = map[string]bool{}
+				}
+				c.loggedClaims[claim] = true
+				c.logLocked(fmt.Sprintf("chottag: a refusal named limit %s, which chottag does not classify; please report it", claim))
+				break
+			}
+		}
+	}
+	return changed
+}
+
+func (c *statusSink) logLocked(line string) {
+	if c.log != nil {
+		fmt.Fprintln(c.log, line)
+	}
 }
 
 // setPassthrough records why this account's requests are not being swapped

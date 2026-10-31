@@ -760,6 +760,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
       "pools": ["default", "personal"],
       "shared": true,
       "stale": false,
+      "noFiveHour": true,
       "pace": {"ratio": 1.4, "burn5h": 320}
     }
   ],
@@ -777,6 +778,7 @@ unknown or already past, has no `↻`. `--json` already carries the times as
     "heartbeat": "2026-09-28T14:00:30Z",
     "routeDrift": 0,
     "routeDriftUnclassified": 0,
+    "unknownLimitClaims": [{"claim": "seven_day_fable", "count": 2, "lastSeen": "2026-09-28T13:50:00Z"}],
     "homeLoginRefused": "2026-09-28T13:58:12Z",
     "zeroIdExtractions": 0,
     "ownerWriteDrops": 0,
@@ -990,6 +992,21 @@ switches from `state.json`, always present: `check` (the daemon's update check),
 
 The text form adds one line, `update: 0.6.0 available (run: chottag update)`,
 only when the cache says a release newer than this build is available.
+
+`noFiveHour` (per account, absent when false) and `daemon.unknownLimitClaims`
+(absent when empty) are evidence only; nothing acts on them. `noFiveHour` is
+set when an account's responses carry unified rate-limit headers with a 7-day
+window but no 5-hour window (a verified Ultra account may have none), and
+cleared by a response with a 5-hour window. `unknownLimitClaims` lists, for
+at most 8 distinct names (first seen kept), the binding limit claim of a
+rejected refusal that chottag does not classify (anything but the 5-hour and
+7-day windows, such as a separate weekly limit), with `count` and `lastSeen`;
+such a refusal is still not treated as a limit. The daemon log gets one line
+the first time each is seen per account or name. `chottag doctor` shows both
+in its `plan-evidence` row. Both are kept in the status cache across daemon
+restarts, so the row stays until the evidence is gone: `noFiveHour` until a
+5-hour window is seen again, `unknownLimitClaims` until the status cache is
+removed.
 
 `daemon.homeLoginRefused` is when Claude Code's own (Home) login started being
 refused: the first 401 of an open episode, on a request that went out on that
@@ -1247,6 +1264,7 @@ Its checks, in the order they run:
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |
+| `plan-evidence` | present only when chottag has recorded an account whose responses carry no 5-hour window (`status --json` `noFiveHour`) or a refusal whose binding limit claim it does not classify (`daemon.unknownLimitClaims`); always info, never a problem; please report the claim name | none |
 
 With more than one pool, the `roles` row names each pool (`default: serving
 A, remote A; work: serving B, remote B`) and flags a problem as `work serving

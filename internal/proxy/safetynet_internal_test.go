@@ -270,3 +270,86 @@ func TestSafetyNetRefusalAfterWallRetryNamesTheBearerSent(t *testing.T) {
 		t.Fatalf("the chooser was told %v was refused, want [moved-token]", ch.rejected)
 	}
 }
+
+func artifactsReq(method, path string) *http.Request {
+	req, _ := http.NewRequest(method, "https://claude.ai"+path, strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer swapped-token")
+	return req
+}
+
+// F296: a 404 on POST /api/artifacts/mcp is the MCP server's own session
+// answer. It is returned as is, whatever the class (serving or not): one
+// upstream call, no refresh, no drift, onPassed404 fires, the wall-retry
+// bookkeeping completes.
+func TestSafetyNetPassesArtifactsMCP404(t *testing.T) {
+	for _, serving := range []bool{false, true} {
+		tr := &scriptedTransport{steps: []scriptedStep{{resp: statusResp(http.StatusNotFound)}}}
+		var drift atomic.Uint64
+		var passed, walls int
+		var wallStatus int
+		sn := &safetyNet{
+			base: tr, chooser: fakeChooser{refreshTok: "fresh-token", refreshOK: true}, account: "A",
+			original: "Bearer original-token", drift: &drift, serving: serving,
+			onPassed404: func() { passed++ },
+			wallDone:    func(_ string, status int) { walls++; wallStatus = status },
+		}
+		resp, err := sn.RoundTrip(artifactsReq("POST", "/api/artifacts/mcp"))
+		if err != nil || resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("serving=%v: RoundTrip = %v, %v; want the 404", serving, resp, err)
+		}
+		wantAuthSteps(t, tr.auths, []string{"swapped"})
+		if drift.Load() != 0 || passed != 1 || walls != 1 || wallStatus != http.StatusNotFound {
+			t.Fatalf("serving=%v: drift=%d passed=%d walls=%d status=%d, want 0/1/1/404",
+				serving, drift.Load(), passed, walls, wallStatus)
+		}
+	}
+}
+
+// A 403 on the same call still refreshes, retries, resends and counts drift.
+func TestSafetyNetArtifactsMCP403StillRetriesAndDrifts(t *testing.T) {
+	tr := &scriptedTransport{steps: []scriptedStep{
+		{resp: statusResp(http.StatusForbidden)},
+		{resp: statusResp(http.StatusForbidden)},
+		{resp: statusResp(http.StatusOK)},
+	}}
+	var drift atomic.Uint64
+	var passed int
+	sn := &safetyNet{
+		base: tr, chooser: fakeChooser{refreshTok: "fresh-token", refreshOK: true}, account: "A",
+		original: "Bearer original-token", drift: &drift, onPassed404: func() { passed++ },
+	}
+	if _, err := sn.RoundTrip(artifactsReq("POST", "/api/artifacts/mcp")); err != nil {
+		t.Fatal(err)
+	}
+	wantAuthSteps(t, tr.auths, []string{"swapped", "fresh", "original"})
+	if drift.Load() != 1 || passed != 0 {
+		t.Fatalf("drift=%d passed=%d, want 1/0", drift.Load(), passed)
+	}
+}
+
+// Other paths and methods keep today's behaviour for a 404.
+func TestSafetyNetArtifactsMCP404ElsewhereStillRetries(t *testing.T) {
+	for _, c := range []struct{ method, path string }{
+		{"POST", "/api/artifacts/mcp/upload/x"},
+		{"GET", "/api/artifacts/mcp"},
+	} {
+		tr := &scriptedTransport{steps: []scriptedStep{
+			{resp: statusResp(http.StatusNotFound)},
+			{resp: statusResp(http.StatusNotFound)},
+			{resp: statusResp(http.StatusOK)},
+		}}
+		var drift atomic.Uint64
+		var passed int
+		sn := &safetyNet{
+			base: tr, chooser: fakeChooser{refreshTok: "fresh-token", refreshOK: true}, account: "A",
+			original: "Bearer original-token", drift: &drift, onPassed404: func() { passed++ },
+		}
+		if _, err := sn.RoundTrip(artifactsReq(c.method, c.path)); err != nil {
+			t.Fatal(err)
+		}
+		wantAuthSteps(t, tr.auths, []string{"swapped", "fresh", "original"})
+		if passed != 0 {
+			t.Fatalf("%s %s: onPassed404 fired", c.method, c.path)
+		}
+	}
+}

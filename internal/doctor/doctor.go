@@ -52,6 +52,9 @@ type Finding struct {
 	// other row leaves them empty, and Row omits them.
 	Installed  string
 	LastTraced *status.TracedVersion
+	// Omit drops the row from the report: a row that exists only while its
+	// fact does (plan-evidence, R194). Honoured for an ok finding only.
+	Omit bool
 }
 
 // Internal is a Finding that stops the run with err.
@@ -90,6 +93,9 @@ func Run(env *Env, checks []Check, fix bool) ([]Row, error) {
 		if err != nil {
 			return rows, err
 		}
+		if row.ID == "" {
+			continue
+		}
 		rows = append(rows, row)
 		if c.Gate && row.Status == StatusProblem {
 			gate = c.ID
@@ -107,6 +113,9 @@ func runOne(env *Env, c Check, fix bool) (row Row, err error) {
 	f, err := detect(env, c)
 	if err != nil {
 		return Row{}, err
+	}
+	if f.Omit && f.Status == StatusOK {
+		return Row{}, nil
 	}
 	fixable := f.Status == StatusProblem && c.Fix != nil && f.Hint == ""
 	switch {

@@ -290,3 +290,27 @@ func TestClassifyReasonCannotCarryControlCharacters(t *testing.T) {
 		}
 	}
 }
+
+// R194: an unrecognised binding claim is reported, sanitised, and still not a
+// limit; a recognised one reports none.
+func TestClassifyReportsAnUnrecognisedBindingClaim(t *testing.T) {
+	h := limitedHeaders()
+	h.Set("Anthropic-Ratelimit-Unified-Representative-Claim", "seven_day_fable")
+	v := usage.Classify(429, h, now())
+	if v.Limited || v.Claim != "seven_day_fable" {
+		t.Fatalf("verdict %+v, want not Limited with Claim seven_day_fable", v)
+	}
+	h.Set("Anthropic-Ratelimit-Unified-Representative-Claim", "evil\x1b[31m")
+	if got := usage.Classify(429, h, now()).Claim; strings.ContainsRune(got, 0x1b) || got == "" {
+		t.Fatalf("Claim %q not sanitised", got)
+	}
+	for _, c := range []string{"five_hour", "7d", ""} {
+		h.Set("Anthropic-Ratelimit-Unified-Representative-Claim", c)
+		if got := usage.Classify(429, h, now()).Claim; got != "" {
+			t.Errorf("claim %q reported Claim %q, want none", c, got)
+		}
+	}
+	if got := usage.Classify(200, h, now()).Claim; got != "" {
+		t.Errorf("a non-refusal reported Claim %q", got)
+	}
+}

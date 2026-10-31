@@ -184,3 +184,38 @@ func TestRouteDriftDetailMentionsAnUnclassifiedRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		f    status.File
+		want []string // nil: no row
+	}{
+		{"no facts", status.File{Accounts: []status.Account{{Name: "A"}}, Daemon: &status.Daemon{}}, nil},
+		{"accounts", status.File{Accounts: []status.Account{{Name: "A", NoFiveHour: true}, {Name: "B"}, {Name: "C", NoFiveHour: true}}},
+			[]string{"A, C report no 5-hour window"}},
+		{"claim", status.File{Daemon: &status.Daemon{UnknownLimitClaims: []status.ClaimSeen{{Claim: "seven_day_fable", Count: 3}}}},
+			[]string{"a refusal named limit seven_day_fable (count 3)", "does not classify"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ti := newTestInstall(t)
+			writeTestStatus(t, ti.home, tc.f)
+			rows := mustRun(t, ti.env, []Check{planEvidenceCheck()}, true)
+			if tc.want == nil {
+				if len(rows) != 0 {
+					t.Fatalf("rows = %+v, want none", rows)
+				}
+				return
+			}
+			r := rowByID(t, rows, "plan-evidence")
+			if r.Status != StatusInfo {
+				t.Fatalf("status %s, want info", r.Status)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(r.Detail, w) {
+					t.Fatalf("detail %q lacks %q", r.Detail, w)
+				}
+			}
+		})
+	}
+}

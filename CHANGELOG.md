@@ -7,6 +7,16 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.11] - 2026-10-31
+
+### Added
+
+- Evidence for Ultra plans (observation only; nothing about placement, switching or retries changes): `status --json` marks an account `noFiveHour` when its responses carry a 7-day window but no 5-hour window, and lists under `daemon.unknownLimitClaims` the binding limit claims of refusals chottag does not classify (such as a separate weekly limit), with a count and a last-seen time. `chottag doctor` shows both in a new info row, `plan-evidence`, and the daemon log notes the first sighting of each.
+
+### Fixed
+
+- A 404 on `POST /api/artifacts/mcp` (the artifacts MCP server's own session answer) now reaches Claude Code unchanged instead of being refreshed, retried, resent on its own login and counted as route drift. A 401 or 403 there behaves as before.
+
 ## [0.10.10] - 2026-10-29
 
 ### Added
@@ -513,6 +523,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.11]: docs/release-notes/v0.10.11.md
 [0.10.10]: docs/release-notes/v0.10.10.md
 [0.10.9]: docs/release-notes/v0.10.9.md
 [0.10.8]: docs/release-notes/v0.10.8.md

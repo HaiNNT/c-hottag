@@ -988,3 +988,45 @@ func TestTableResetAcrossSpringForward(t *testing.T) {
 		}
 	}
 }
+
+// R194: the evidence lines are logged once per account and claim name, a new
+// mark or claim name is written at once, and a count change is not.
+func TestStatusSinkLogsEvidenceOncePerNameAndFlushesOnlyNewFacts(t *testing.T) {
+	sink, err := newStatusSink(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	waitFor, assertNone := newWriteWatcher(t, sink)
+	var log bytes.Buffer
+	sink.log = &log
+	now := time.Now()
+	both := usagehdr.Snapshot{Known: true, At: now, Overall: "allowed", FiveHour: knownWindow(), SevenDay: knownWindow()}
+	sink.observe("A", both, usagehdr.Verdict{})
+	waitFor() // a fresh sink writes the first observation
+	sink.observe("A", both, usagehdr.Verdict{})
+	assertNone() // within the interval: coalesced
+	ultra := usagehdr.Snapshot{Known: true, At: now, Overall: "allowed", SevenDay: knownWindow()}
+	sink.observe("A", ultra, usagehdr.Verdict{})
+	waitFor() // the new mark is flushed at once, inside the interval
+	sink.observe("A", ultra, usagehdr.Verdict{})
+	assertNone() // an unchanged mark rides the coalesced save
+	claim := usagehdr.Verdict{Refusal: true, Claim: "seven_day_fable"}
+	sink.observe("A", ultra, claim)
+	waitFor()
+	sink.observe("A", ultra, claim)
+	assertNone() // a count change rides the coalesced save
+	for i := 0; i < 10; i++ {
+		sink.observe("A", ultra, usagehdr.Verdict{Refusal: true, Claim: fmt.Sprintf("c%d", i)})
+	}
+	out := log.String()
+	if n := strings.Count(out, "account A reports no 5-hour window"); n != 1 {
+		t.Fatalf("no-5h line written %d times:\n%s", n, out)
+	}
+	if n := strings.Count(out, "limit seven_day_fable"); n != 1 {
+		t.Fatalf("claim line written %d times:\n%s", n, out)
+	}
+	if strings.Contains(out, "c7") || strings.Contains(out, "c8") {
+		t.Fatalf("a claim beyond the bound was logged:\n%s", out)
+	}
+}

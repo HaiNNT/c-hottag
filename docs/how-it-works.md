@@ -80,13 +80,16 @@ uses its new token, never the one that was just refused, and a second retry
 follows if a newer token appeared meanwhile), and if that is
 refused too, it sends the request once on Claude Code's own login (never, with
 more than one pool, or for a remote or owner request). For a request about a
-claude.ai object, to a route the table does not list, or answered 404 (other than on `POST /v1/messages`, below), this
+claude.ai object, to a route the table does not list, or answered 404 (other than on `POST /v1/messages` and `POST /api/artifacts/mcp`, below), this
 counts as route drift (`chottag doctor`'s `route-drift` row and its notice).
 A 404 on `POST /v1/messages` is the exception, since 0.9.3: Claude Code's Message
 Threads continue a thread only the account that created it holds, and Claude Code
 sends the turn again as a create when it gets a 404, so the daemon returns that
 404 unchanged (no refresh, retry, Home resend, drift count or notice) and marks
 the `proxy.jsonl` record `passed404`.
+A 404 on `POST /api/artifacts/mcp` passes the same way, since 0.10.11: it is the
+artifacts MCP server's own answer about its session, not a routing error, so it
+is not retried, resent or counted as drift (a 401 or 403 there still is).
 An object whose owner chottag does not know, routed to the remote account, is
 another exception: a `GET` or `HEAD` it refuses with a 403 or 404 skips the
 refresh and is tried on the pool's other accounts, and no refusal of it is

@@ -146,6 +146,11 @@ type Account struct {
 	// Pace is the account's placement score and measured 5h burn under spread
 	// (R192), for a candidate only. Written by the daemon.
 	Pace *Pace `json:"pace,omitempty"`
+	// NoFiveHour is set when this account's responses carried unified headers
+	// with a 7-day window but no 5-hour window (R194, evidence for verified
+	// Ultra accounts); a later response with a 5-hour window clears it.
+	// Observation only: nothing reads it for placement.
+	NoFiveHour bool `json:"noFiveHour,omitempty"`
 }
 
 // Pace is one spread candidate's pace: the score a new session would see
@@ -238,6 +243,10 @@ type Daemon struct {
 	// route may belong to the remote account. Per daemon generation like
 	// RouteDrift; omitted when zero.
 	RouteDriftUnclassified uint64 `json:"routeDriftUnclassified,omitempty"`
+	// UnknownLimitClaims lists the binding limit claims of rejected refusals
+	// that chottag does not classify (R194), at most MaxUnknownClaims names,
+	// first seen kept. Evidence only; omitted when empty.
+	UnknownLimitClaims []ClaimSeen `json:"unknownLimitClaims,omitempty"`
 	// HomeLoginRefused is when the first request of the open episode in which
 	// Claude Code's own (Home) login was refused 401 arrived (R183), RFC 3339;
 	// omitted when there is no such episode. The daemon clears it on shutdown
@@ -273,6 +282,38 @@ type Daemon struct {
 	// sessions are alive for this home, counted by `status` from the
 	// session registry. Never written by the daemon; 0 when none.
 	LiveSessions int `json:"liveSessions"`
+}
+
+// MaxUnknownClaims bounds Daemon.UnknownLimitClaims.
+const MaxUnknownClaims = 8
+
+// ClaimSeen is one unclassified limit claim: its sanitised name, how often it
+// was seen and when last.
+type ClaimSeen struct {
+	Claim    string    `json:"claim"`
+	Count    int       `json:"count"`
+	LastSeen time.Time `json:"lastSeen"`
+}
+
+// recordUnknownClaim counts a claim, keeping the first MaxUnknownClaims names
+// and dropping later ones. It reports whether the claim is new in the list.
+func (f *File) recordUnknownClaim(claim string, at time.Time) (added bool) {
+	if f.Daemon == nil {
+		f.Daemon = &Daemon{}
+	}
+	d := f.Daemon
+	for i := range d.UnknownLimitClaims {
+		if d.UnknownLimitClaims[i].Claim == claim {
+			d.UnknownLimitClaims[i].Count++
+			d.UnknownLimitClaims[i].LastSeen = at
+			return false
+		}
+	}
+	if len(d.UnknownLimitClaims) >= MaxUnknownClaims {
+		return false
+	}
+	d.UnknownLimitClaims = append(d.UnknownLimitClaims, ClaimSeen{Claim: claim, Count: 1, LastSeen: at})
+	return true
 }
 
 // SetDaemon stamps the daemon's own view into the document. Called on the
@@ -684,6 +725,17 @@ func (f *File) Observe(account string, s usage.Snapshot, v usage.Verdict) {
 			} else {
 				a.Usage.SevenDayPct = nil
 			}
+		}
+		// R194: a response with a 7-day window but no 5-hour window marks the
+		// account; a 5-hour window clears it. A response that says nothing
+		// about either leaves the mark alone.
+		if s.FiveHour.Known {
+			a.NoFiveHour = false
+		} else if s.SevenDay.Known {
+			a.NoFiveHour = true
+		}
+		if v.Claim != "" {
+			f.recordUnknownClaim(v.Claim, s.At)
 		}
 		if v.Limited {
 			// v.Until zero means UNKNOWN, not expired. Store it as zero and

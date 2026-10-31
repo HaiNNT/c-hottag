@@ -72,6 +72,12 @@ type Verdict struct {
 	// a refusal, which is three of Classify's four refusal branches, not
 	// just the one that reached Limited=true.
 	Refusal bool
+	// Claim is the sanitised Representative-Claim of a rejected unified
+	// status whose claim chottag does not recognise (not five_hour/5h/
+	// seven_day/7d), e.g. a separate weekly limit (R194). Evidence only: such a
+	// refusal is still not Limited. Empty otherwise, and when the response
+	// named no claim at all.
+	Claim string
 }
 
 // Parse reads the unified rate-limit headers. A response without them yields
@@ -174,6 +180,9 @@ func Classify(status int, h http.Header, now time.Time) Verdict {
 	}
 	w, name := s.window(s.BindingWindow)
 	if !w.Known || !strings.EqualFold(w.Status, "rejected") {
+		if s.BindingWindow != "" && !knownClaim(s.BindingWindow) {
+			return Verdict{Refusal: true, Claim: name, Reason: "unified status rejected but binding window " + name + " is not rejected"}
+		}
 		// The overall status says rejected but no window owns it. Do not
 		// guess which one: report it so the rule can be improved.
 		return Verdict{Refusal: true, Reason: "unified status rejected but binding window " + sanitize(s.BindingWindow) + " is not rejected"}
@@ -201,6 +210,15 @@ func (s Snapshot) until(w Window, now time.Time) time.Time {
 		return now.Add(s.RetryAfter)
 	}
 	return time.Time{}
+}
+
+// knownClaim reports whether Representative-Claim names one of the two windows.
+func knownClaim(claim string) bool {
+	switch strings.ToLower(claim) {
+	case "five_hour", "5h", "seven_day", "7d":
+		return true
+	}
+	return false
 }
 
 // window resolves Representative-Claim to the window it names.

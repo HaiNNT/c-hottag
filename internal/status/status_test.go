@@ -3,6 +3,7 @@ package status_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1019,5 +1020,99 @@ func TestRecentIsLongerThanFresh(t *testing.T) {
 	}
 	if f.Recent("Nobody", base) {
 		t.Fatal("an unknown account counted as recent")
+	}
+}
+
+func ultraHeaders(fiveHour bool) http.Header {
+	h := http.Header{}
+	h.Set("Anthropic-Ratelimit-Unified-Status", "allowed")
+	h.Set("Anthropic-Ratelimit-Unified-7d-Status", "allowed")
+	h.Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.2")
+	if fiveHour {
+		h.Set("Anthropic-Ratelimit-Unified-5h-Status", "allowed")
+		h.Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.1")
+	}
+	return h
+}
+
+func observeHeaders(f *status.File, account string, code int, h http.Header, at time.Time) {
+	f.Observe(account, usage.Parse(h, at), usage.Classify(code, h, at))
+}
+
+func noFive(f status.File, name string) bool {
+	for _, a := range f.Accounts {
+		if a.Name == name {
+			return a.NoFiveHour
+		}
+	}
+	return false
+}
+
+func TestObserveMarksAnAccountWithNoFiveHourWindowAndClearsIt(t *testing.T) {
+	var f status.File
+	at := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+	observeHeaders(&f, "A", 200, ultraHeaders(true), at)
+	if noFive(f, "A") {
+		t.Fatal("marked with a 5h window present")
+	}
+	observeHeaders(&f, "A", 200, ultraHeaders(false), at)
+	if !noFive(f, "A") {
+		t.Fatal("not marked: 7d window, no 5h window")
+	}
+	// Unified-Status only: says nothing about either window, mark stays.
+	only := http.Header{}
+	only.Set("Anthropic-Ratelimit-Unified-Status", "allowed")
+	observeHeaders(&f, "A", 200, only, at)
+	if !noFive(f, "A") {
+		t.Fatal("a response naming no window cleared the mark")
+	}
+	observeHeaders(&f, "A", 200, ultraHeaders(true), at)
+	if noFive(f, "A") {
+		t.Fatal("mark not cleared when a 5h window reappeared")
+	}
+}
+
+func TestObserveNeverMarksAHeaderlessResponse(t *testing.T) {
+	var f status.File
+	at := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+	observeHeaders(&f, "A", 200, ultraHeaders(true), at)
+	observeHeaders(&f, "A", 502, http.Header{}, at)
+	if noFive(f, "A") {
+		t.Fatal("a response with no unified headers set noFiveHour")
+	}
+	var g status.File
+	observeHeaders(&g, "B", 200, http.Header{}, at)
+	if noFive(g, "B") {
+		t.Fatal("marked from nothing")
+	}
+}
+
+func TestObserveRecordsUnknownClaimsBoundedAndNeverLimits(t *testing.T) {
+	var f status.File
+	at := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+	refusal := func(claim string) http.Header {
+		h := ultraHeaders(true)
+		h.Set("Anthropic-Ratelimit-Unified-Status", "rejected")
+		h.Set("Anthropic-Ratelimit-Unified-Representative-Claim", claim)
+		return h
+	}
+	observeHeaders(&f, "A", 429, ultraHeaders(true), at)
+	observeHeaders(&f, "A", 429, refusal("seven_day_fable"), at)
+	observeHeaders(&f, "A", 429, refusal("seven_day_fable"), at.Add(time.Minute))
+	for _, a := range f.Accounts {
+		if a.Limited {
+			t.Fatal("an unclassified refusal limited the account")
+		}
+	}
+	got := f.Daemon.UnknownLimitClaims
+	if len(got) != 1 || got[0].Claim != "seven_day_fable" || got[0].Count != 2 || !got[0].LastSeen.Equal(at.Add(time.Minute)) {
+		t.Fatalf("claims = %+v", got)
+	}
+	for i := 0; i < 10; i++ {
+		observeHeaders(&f, "A", 429, refusal(fmt.Sprintf("claim_%d", i)), at)
+	}
+	got = f.Daemon.UnknownLimitClaims
+	if len(got) != status.MaxUnknownClaims || got[0].Claim != "seven_day_fable" || got[len(got)-1].Claim != "claim_6" {
+		t.Fatalf("claims not bounded to the first %d: %+v", status.MaxUnknownClaims, got)
 	}
 }

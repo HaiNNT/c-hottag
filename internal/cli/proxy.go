@@ -267,6 +267,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	dn := newDaemonNotify(cache.State, newDaemonNotifier())
 	defer dn.Close()
 	rr.sink, rr.dn = sink, dn
+	sink.log = stderr
 
 	printEvent := newEventPrinter(stderr, timeNow)
 	sel := selector.New(newSelectorConfig(cache.State, tm, own, sink, printEvent, dn))
