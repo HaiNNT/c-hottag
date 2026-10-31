@@ -24,8 +24,22 @@ const (
 // Tiers lists every tier in the order the spec's §3 table shows them.
 func Tiers() []Tier { return []Tier{TierPro, TierMax5x, TierTeam, TierMax20x} }
 
-// ParseTier accepts exactly the four tier names.
+// DisplayName is the tier's name for a person: Anthropic renamed Max 20x to
+// Ultra (R196), so TierMax20x shows as "ultra". The machine value (state.json,
+// --json, settings keys) stays "max20x" so an older daemon reads it the same.
+func (t Tier) DisplayName() string {
+	if t == TierMax20x {
+		return "ultra"
+	}
+	return string(t)
+}
+
+// ParseTier accepts the four tier names, and "ultra" as the new name of
+// max20x.
 func ParseTier(s string) (Tier, bool) {
+	if s == "ultra" {
+		return TierMax20x, true
+	}
 	for _, t := range Tiers() {
 		if s == string(t) {
 			return t, true
@@ -185,6 +199,24 @@ func SettingKeys() []string {
 	return append(keys, "hold5h", "hold7d", "cooldown")
 }
 
+// NormalizeSettingKey maps "5h.ultra" / "7d.ultra" to the stored key
+// ("5h.max20x") and returns every other key unchanged (R196).
+func NormalizeSettingKey(key string) string {
+	if w, t, ok := strings.Cut(key, "."); ok && t == "ultra" {
+		return w + "." + string(TierMax20x)
+	}
+	return key
+}
+
+// DisplaySettingKey is a settings key as a person reads it: the max20x
+// tier shows as "ultra" ("5h.ultra"). The stored key and --json keep max20x.
+func DisplaySettingKey(key string) string {
+	if w, t, ok := strings.Cut(key, "."); ok && t == string(TierMax20x) {
+		return w + ".ultra"
+	}
+	return key
+}
+
 // ValidateSetting checks one `auto set` pair without applying it: a switch
 // point is an integer from 50 to 100, and a duration (Go syntax, e.g.
 // "30m") is from 0 to 24h.
@@ -212,7 +244,11 @@ func (p Params) With(key, value string) (Params, error) {
 		return p, nil
 	}
 	if _, ok := defaultPoints[key]; !ok {
-		return p, fmt.Errorf("unknown setting %q; the settings are %s", key, strings.Join(SettingKeys(), ", "))
+		shown := make([]string, 0, len(SettingKeys()))
+		for _, k := range SettingKeys() {
+			shown = append(shown, DisplaySettingKey(k))
+		}
+		return p, fmt.Errorf("unknown setting %q; the settings are %s", key, strings.Join(shown, ", "))
 	}
 	n, err := strconv.Atoi(value)
 	if err != nil || n < MinSwitchPoint || n > MaxSwitchPoint {

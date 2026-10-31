@@ -9,7 +9,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/store"
 )
 
-const planUsage = "usage: chottag plan NAME pro|max5x|max20x|team [--units N]"
+const planUsage = "usage: chottag plan NAME pro|max5x|team|ultra [--units N]"
 
 // Units bounds for `plan --units` (M4 spec §7).
 const (
@@ -43,7 +43,7 @@ func runPlan(args []string, r *reporter) int {
 	}
 	tier, ok := autoswitch.ParseTier(positional[1])
 	if !ok {
-		return r.Fail(exit.Usage, codeUsage, fmt.Sprintf("plan takes pro, max5x, max20x or team, not %q", positional[1]), nil)
+		return r.Fail(exit.Usage, codeUsage, fmt.Sprintf("plan takes pro, max5x, team or ultra, not %q", positional[1]), nil)
 	}
 	unitsSet := false
 	fs.Visit(func(f *flag.Flag) { unitsSet = unitsSet || f.Name == "units" })
@@ -70,6 +70,6 @@ func runPlan(args []string, r *reporter) int {
 	}); err != nil {
 		return r.FailErr(err)
 	}
-	r.Text("plan %s: %s (%g units)\n", got.Name, got.Plan, unitsOf(got))
+	r.Text("plan %s: %s (%g units)\n", got.Name, tier.DisplayName(), unitsOf(got))
 	return r.OK(planResult{Account: got.Name, Plan: got.Plan, Units: unitsOf(got)})
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/HaiNNT/c-hottag/internal/exit"
@@ -10,7 +11,7 @@ import (
 
 func TestPlanSetsTheTierAndUnits(t *testing.T) {
 	_, s := autoHome(t)
-	if code, out, errs := runChottag(t, "plan", "B", "max20x"); code != exit.OK || out != "plan B: max20x (20 units)\n" {
+	if code, out, errs := runChottag(t, "plan", "B", "max20x"); code != exit.OK || out != "plan B: ultra (20 units)\n" {
 		t.Fatalf("plan = %d %q %q", code, out, errs)
 	}
 	if code, out, _ := runChottag(t, "plan", "b", "team", "--units", "8"); code != exit.OK || out != "plan B: team (8 units)\n" {
@@ -68,4 +69,23 @@ func init() {
 			wantExit: exit.Error, wantCode: codeUnknownAccount,
 		},
 	)
+}
+
+// TestPlanUltraStoresMax20x: ultra is the new name; the stored and JSON
+// value stays max20x so an older daemon reads the same state (R196).
+func TestPlanUltraStoresMax20x(t *testing.T) {
+	_, s := autoHome(t)
+	if code, out, errs := runChottag(t, "plan", "B", "ultra"); code != exit.OK || out != "plan B: ultra (20 units)\n" {
+		t.Fatalf("plan ultra = %d %q %q", code, out, errs)
+	}
+	if st, _ := s.Load(); st.Accounts[1].Plan != "max20x" {
+		t.Fatalf("stored plan = %q, want max20x", st.Accounts[1].Plan)
+	}
+	if code, out, errs := runChottag(t, "plan", "B", "max20x", "--json"); code != exit.OK || !strings.Contains(out, "max20x") || strings.Contains(out, "ultra") {
+		t.Fatalf("plan max20x --json = %d %q %q", code, out, errs)
+	}
+	code, _, errs := runChottag(t, "plan", "B", "bogus")
+	if code != exit.Usage || !strings.Contains(errs, "pro, max5x, team or ultra") {
+		t.Fatalf("bad tier = %d %q", code, errs)
+	}
 }

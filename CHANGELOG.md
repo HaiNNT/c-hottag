@@ -7,6 +7,12 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.12] - 2026-10-31
+
+### Changed
+
+- Anthropic renamed Max 20x to Ultra. chottag now shows that tier as `ultra` (`chottag plan`, `chottag auto`, `chottag status`, `chottag doctor`, the usage text) and accepts `ultra` wherever it takes a tier (`chottag plan NAME ultra`, `chottag auto set 5h.ultra 95`). `max20x` is still accepted, and `state.json` and every `--json` field keep `max20x`, so an older daemon reads the same account the same way.
+
 ## [0.10.11] - 2026-10-31
 
 ### Added
@@ -523,6 +529,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.12]: docs/release-notes/v0.10.12.md
 [0.10.11]: docs/release-notes/v0.10.11.md
 [0.10.10]: docs/release-notes/v0.10.10.md
 [0.10.9]: docs/release-notes/v0.10.9.md

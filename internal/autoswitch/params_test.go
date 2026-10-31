@@ -27,6 +27,15 @@ func TestParseTierAcceptsOnlyTheFourNames(t *testing.T) {
 	}
 }
 
+func TestParseTierAcceptsUltraAsMax20x(t *testing.T) {
+	if got, ok := ParseTier("ultra"); !ok || got != TierMax20x {
+		t.Errorf("ParseTier(ultra) = %q, %v, want max20x", got, ok)
+	}
+	if TierMax20x.DisplayName() != "ultra" || TierPro.DisplayName() != "pro" || TierMax5x.DisplayName() != "max5x" || TierTeam.DisplayName() != "team" {
+		t.Errorf("DisplayName: %q %q %q %q", TierMax20x.DisplayName(), TierPro.DisplayName(), TierMax5x.DisplayName(), TierTeam.DisplayName())
+	}
+}
+
 func TestParseModeAcceptsOnlyTheTwoModes(t *testing.T) {
 	for _, s := range []string{"balanced", "cache-optimize"} {
 		if got, ok := ParseMode(s); !ok || string(got) != s {
@@ -133,5 +142,15 @@ func TestSettingKeysAreEveryKeyWithAccepts(t *testing.T) {
 		if err := ValidateSetting(k, v); err != nil {
 			t.Errorf("%s: %v", k, err)
 		}
+	}
+}
+
+func TestUnknownSettingListsUltraNames(t *testing.T) {
+	err := ValidateSetting("5h.nope", "90")
+	if err == nil {
+		t.Fatal("an unknown setting was accepted")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "5h.ultra") || strings.Contains(msg, "max20x") {
+		t.Fatalf("the error must list the ultra names, not max20x: %s", msg)
 	}
 }

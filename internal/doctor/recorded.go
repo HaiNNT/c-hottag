@@ -209,7 +209,7 @@ func planEvidenceCheck() Check {
 // either a Max account whose size login/adopt could not tell (its plan is
 // "max", F200), or an account with no plan set at all ("", tierOf's other
 // default case). Auto-switch treats both the same way, as max5x, the
-// safer mistake (S2): a max20x left unset switches a little early and is
+// safer mistake (S2): an ultra left unset switches a little early and is
 // weighted a quarter of its capacity. Never a problem: nothing is broken,
 // and only the user knows the real tier.
 func planUnknownCheck() Check {
@@ -230,7 +230,7 @@ func planUnknownCheck() Check {
 		return Finding{
 			Status: StatusInfo,
 			Detail: fmt.Sprintf("account(s) with no known plan, treated as max5x by auto-switch: %s", strings.Join(names, ", ")),
-			Hint:   fmt.Sprintf("chottag plan %s max5x (or max20x)", names[0]),
+			Hint:   fmt.Sprintf("chottag plan %s max5x (or ultra)", names[0]),
 		}
 	}}
 }

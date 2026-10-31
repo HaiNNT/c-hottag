@@ -44,7 +44,7 @@ tier:
 | `7d.max20x` | 99 |
 
 Set an account's tier with `chottag plan <name> <tier>` (`pro`, `max5x`,
-`team` or `max20x`). A Max account counts as `max5x` until you say
+`team` or `ultra`; `max20x` is the old name and still works, and the keys above keep it, though `5h.ultra` is accepted too). A Max account counts as `max5x` until you say
 otherwise.
 
 ## Settings

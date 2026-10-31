@@ -207,7 +207,7 @@ own account, so several sessions at once share the load of several accounts.
   accounts that can take it, the one with the highest pace score, the account
   whose windows the sessions already on it use up the slowest. Burn is counted
   in units per hour: a percentage point of a window times the account's plan
-  units, so a max20x 5-hour window is 2000 units and a pro one 100. The 5h
+  units, so an Ultra 5-hour window is 2000 units and a pro one 100. The 5h
   burn of an account is the larger of its measured account burn and the sum of
   the rates of its live sessions; the 7d burn is the measured account burn
   only. For the 5-hour window chottag asks how long the account's room (up to
@@ -224,7 +224,7 @@ own account, so several sessions at once share the load of several accounts.
   one has been measured. A session that has not shown its burn yet counts as
   the median of the measured live sessions that were active in the last 30
   minutes, and at least 100 units per hour; with none measured it counts as
-  200 units per hour (a tenth of a max20x 5-hour window). An account with no
+  200 units per hour (a tenth of an Ultra 5-hour window). An account with no
   usage reading yet counts as fresh. Ties go to the account whose 5-hour
   window resets soonest, then the one with fewer sessions, then the earlier
   registered one. An account whose 5-hour limit is less than 15 minutes away

@@ -53,11 +53,11 @@ func TestAutoShowsTheDefaultsAndWritesNothing(t *testing.T) {
 	}
 	for _, want := range []string{
 		"auto: on · mode balanced\n",
-		"switch points: 5h pro 88% · max5x 93% · team 93% · max20x 98%\n",
-		"               7d pro 93% · max5x 98% · team 98% · max20x 99%\n",
+		"switch points: 5h pro 88% · max5x 93% · team 93% · ultra 98%\n",
+		"               7d pro 93% · max5x 98% · team 98% · ultra 99%\n",
 		"holds: 5h 30m · 7d 3h · cooldown 15m\n",
-		"  A      max20x   unknown",
-		"  B      -        unknown",
+		"  A      ultra   unknown",
+		"  B      -       unknown",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("auto output lacks %q:\n%s", want, out)
@@ -125,8 +125,8 @@ func TestAutoModeSetsAndValidates(t *testing.T) {
 // writes nothing.
 func TestAutoSetValidatesTheBounds(t *testing.T) {
 	home, s := autoHome(t)
-	if code, out, errs := runChottag(t, "auto", "set", "5h.max20x", "95"); code != exit.OK ||
-		!strings.Contains(out, "max20x 95%") || !strings.Contains(out, "overrides: 5h.max20x (chottag auto reset clears them)") {
+	if code, out, errs := runChottag(t, "auto", "set", "5h.ultra", "95"); code != exit.OK ||
+		!strings.Contains(out, "ultra 95%") || strings.Contains(out, "max20x") || !strings.Contains(out, "overrides: 5h.ultra (chottag auto reset clears them)") {
 		t.Fatalf("auto set = %d %q %q", code, out, errs)
 	}
 	if code, _, _ := runChottag(t, "auto", "set", "hold7d", "24h"); code != exit.OK {
@@ -190,7 +190,7 @@ func TestAutoShowsAccountsDecisionAndLastSwitch(t *testing.T) {
 	code, out, _ := runChottag(t, "auto")
 	reset5 := now.Add(2 * time.Hour).Local().Format("15:04")
 	for _, want := range []string{
-		"  A      max20x   91%", // columns widen to fit B's "unknown"
+		"  A      ultra   91%", // columns widen to fit B's "unknown"
 		" " + reset5 + " ",
 		"40%",
 		"decision: staying on A (5h 91% < 98%)\n",

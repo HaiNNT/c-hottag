@@ -76,7 +76,7 @@ On by default: near a limit, the daemon switches the serving account for you. `b
 ```sh
 chottag auto                       # settings, each account's usage, the last decision
 chottag auto mode cache-optimize
-chottag plan B max20x              # Max accounts count as max5x until you say
+chottag plan B ultra               # Max accounts count as max5x until you say
 chottag auto off
 ```
 

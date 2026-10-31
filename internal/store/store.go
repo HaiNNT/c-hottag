@@ -52,7 +52,7 @@ type Account struct {
 	// explicit `chottag tag`.
 	NoRotate bool `json:"noRotate,omitempty"`
 	// Plan is the account's plan tier for auto-switch (M4 spec §2):
-	// "pro", "max5x", "max20x" or "team", set by `chottag plan`, or "max"
+	// "pro", "max5x", "max20x" (shown as ultra) or "team", set by `chottag plan`, or "max"
 	// when login/adopt saw a Max plan whose size it cannot tell (F200, S2).
 	// Empty until known. store does not validate it; internal/autoswitch
 	// owns the tier names.

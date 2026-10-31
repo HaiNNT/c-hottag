@@ -9,7 +9,7 @@ chottag was installed is the same way — it isn't routed either.
 
 ## Max plan size
 
-chottag can't tell a `max5x` account from a `max20x` account on its own,
+chottag can't tell a `max5x` account from an Ultra (`max20x`) account on its own,
 so a Max account counts as `max5x` (the safer under-estimate for
 auto-switch) until you set its real size with `chottag plan`.
 

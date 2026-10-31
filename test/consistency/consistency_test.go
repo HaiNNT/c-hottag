@@ -177,7 +177,7 @@ func TestREADMECarriesTheSpecSections(t *testing.T) {
 		"./install.sh",
 		"ordinary, individual usage", "cswap-pin", "--purge", "~/.chottag/versions",
 		"600000", "/login", "~/.claude.json",
-		"## Auto-switch", "chottag auto off", "cache-optimize", "chottag plan B max20x",
+		"## Auto-switch", "chottag auto off", "cache-optimize", "chottag plan B ultra",
 	} {
 		if !strings.Contains(readme, want) {
 			t.Errorf("README lacks %q (M3 spec §5)", want)

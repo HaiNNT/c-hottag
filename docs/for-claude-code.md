@@ -97,7 +97,7 @@ can change later through the skill.
    `work` and `personal`)? Is any of them a company Team or Enterprise
    account? If so, it may be added only if that organization allows
    chottag.
-2. **Which plan is each one?** `pro`, `max5x`, `max20x` or `team`.
+2. **Which plan is each one?** `pro`, `max5x`, `ultra` (Max 20x, renamed by Anthropic; `max20x` still works) or `team`.
    Auto-switch and `spread` size each account's capacity by its plan. A
    login tells chottag only "Max", not which Max, so a Max account shows
    as `max?` until it's set. Default: the plan the login reports; ask only
@@ -172,7 +172,7 @@ Then apply the answers, in this order:
 chottag pool add <pool> --json         # question 7, only on yes: each pool, before any login that names it
 chottag login <name> --pool <pool> --json  # question 7: instead of a plain login, an account in that pool only
 chottag pool join <name> <pool> --json # question 7: an account that is also in a second pool (tell the user the down-side first)
-chottag plan <name> max20x --json      # question 2: each account whose plan is not right yet
+chottag plan <name> ultra --json         # question 2: each account whose plan is not right yet
 chottag remote <pinned> --json         # question 3 (add --pool <pool> for an account that is in several pools)
 chottag rotate <pinned> off --json     # question 4, only if it must not pay for prompts
 chottag tag <name> --json              # only if the pinned account is out of rotation: serve from another one

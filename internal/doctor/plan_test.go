@@ -40,7 +40,7 @@ func TestPlanUnknownNamesEveryMaxAccountWithoutASize(t *testing.T) {
 	if !strings.Contains(r.Detail, "treated as max5x") || !strings.HasSuffix(r.Detail, ": A, Big") {
 		t.Fatalf("detail = %q, want both Max accounts named", r.Detail)
 	}
-	if r.Hint != "chottag plan A max5x (or max20x)" {
+	if r.Hint != "chottag plan A max5x (or ultra)" {
 		t.Fatalf("hint = %q", r.Hint)
 	}
 	assertChangedOnly(t, before, ti.snapshot())
@@ -60,7 +60,7 @@ func TestPlanUnknownAlsoNamesAnAccountWithNoPlanAtAll(t *testing.T) {
 	if !strings.Contains(r.Detail, "treated as max5x") || !strings.HasSuffix(r.Detail, ": A") {
 		t.Fatalf("detail = %q, want A named even though its plan was never set to \"max\"", r.Detail)
 	}
-	if r.Hint != "chottag plan A max5x (or max20x)" {
+	if r.Hint != "chottag plan A max5x (or ultra)" {
 		t.Fatalf("hint = %q", r.Hint)
 	}
 	assertChangedOnly(t, before, ti.snapshot())

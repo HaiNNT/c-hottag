@@ -35,7 +35,7 @@ is maintained by one person in their spare time. To suggest something, open a
 
 - A Homebrew tap. The formula is written; there is no tap repository yet.
 - The manual under `docs/` published as a website.
-- Telling a `max5x` account from a `max20x` one on its own, if Claude Code
+- Telling a `max5x` account from an Ultra (`max20x`) one on its own, if Claude Code
   ever reports the plan size.
 
 ## Not planned

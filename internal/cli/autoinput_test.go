@@ -63,7 +63,7 @@ func TestTierOfUnitsAndLabel(t *testing.T) {
 		{store.Account{}, autoswitch.TierMax5x, 5, "-"},
 		{store.Account{Plan: "max"}, autoswitch.TierMax5x, 5, "max?"},
 		{store.Account{Plan: "pro"}, autoswitch.TierPro, 1, "pro"},
-		{store.Account{Plan: "max20x"}, autoswitch.TierMax20x, 20, "max20x"},
+		{store.Account{Plan: "max20x"}, autoswitch.TierMax20x, 20, "ultra"},
 		{store.Account{Plan: "team", Units: 8}, autoswitch.TierTeam, 8, "team"},
 		{store.Account{Plan: "enterprise"}, autoswitch.TierMax5x, 5, "enterprise"},
 	}

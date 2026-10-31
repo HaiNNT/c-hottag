@@ -41,7 +41,7 @@ commands:
   names [on|off]                show or set session names (on by default)
   notify [on|off]               show or set desktop notifications (macOS; on by default)
   auto [VERB]                   show auto-switch (on by default); VERB: on, off, mode M, set KEY VALUE, reset
-  plan NAME TIER [--units N]    set NAME's plan tier for auto-switch: pro, max5x, max20x or team
+  plan NAME TIER [--units N]    set NAME's plan tier for auto-switch: pro, max5x, team or ultra
   status [--json] (alias ls)    print each account's usage and limit state, and the live sessions
   sessions [--all] [--json]     list the sessions lost together at the last crash or cmux quit; --all lists every recorded session
   resume [--pick] [--print]     relaunch the lost sessions in their cmux tabs and directories; --pick chooses, --print only prints the commands

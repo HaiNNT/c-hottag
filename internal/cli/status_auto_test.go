@@ -52,7 +52,7 @@ func TestStatusShowsThePlanColumn(t *testing.T) {
 			fields[f[0]] = f
 		}
 	}
-	for name, want := range map[string]string{"NAME": "PLAN", "A": "max20x", "B": "-", "C": "max?"} {
+	for name, want := range map[string]string{"NAME": "PLAN", "A": "ultra", "B": "-", "C": "max?"} {
 		if f := fields[name]; len(f) < 2 || f[1] != want {
 			t.Errorf("row %s = %q, want PLAN %q:\n%s", name, f, want, out)
 		}

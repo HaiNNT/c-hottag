@@ -73,10 +73,11 @@ func runAuto(args []string, r *reporter) int {
 		}
 		edit = func(st *store.State) error { st.SetAutoMode(string(m)); return nil }
 	case len(args) == 3 && args[0] == "set":
-		if err := autoswitch.ValidateSetting(args[1], args[2]); err != nil {
+		key := autoswitch.NormalizeSettingKey(args[1])
+		if err := autoswitch.ValidateSetting(key, args[2]); err != nil {
 			return r.Fail(exit.Usage, codeUsage, err.Error(), nil)
 		}
-		edit = func(st *store.State) error { return st.SetAutoSetting(args[1], args[2]) }
+		edit = func(st *store.State) error { return st.SetAutoSetting(key, args[2]) }
 	case len(args) == 1 && args[0] == "reset":
 		edit = func(st *store.State) error { st.ResetAutoSettings(); return nil }
 	default:
@@ -175,7 +176,7 @@ func renderAuto(out io.Writer, res autoResult, now time.Time) {
 	for _, w := range []autoswitch.Window{autoswitch.Win5h, autoswitch.Win7d} {
 		parts := make([]string, 0, 4)
 		for _, t := range autoswitch.Tiers() {
-			parts = append(parts, fmt.Sprintf("%s %d%%", t, res.SwitchPoints[autoswitch.PointKey(w, t)]))
+			parts = append(parts, fmt.Sprintf("%s %d%%", t.DisplayName(), res.SwitchPoints[autoswitch.PointKey(w, t)]))
 		}
 		label := "switch points:"
 		if w == autoswitch.Win7d {
@@ -185,20 +186,18 @@ func renderAuto(out io.Writer, res autoResult, now time.Time) {
 	}
 	fmt.Fprintf(out, "holds: 5h %s · 7d %s · cooldown %s\n", res.Hold5h, res.Hold7d, res.Cooldown)
 	if len(res.Overrides) > 0 {
-		fmt.Fprintf(out, "overrides: %s (chottag auto reset clears them)\n", strings.Join(res.Overrides, ", "))
+		shown := make([]string, len(res.Overrides))
+		for i, k := range res.Overrides {
+			shown[i] = autoswitch.DisplaySettingKey(k)
+		}
+		fmt.Fprintf(out, "overrides: %s (chottag auto reset clears them)\n", strings.Join(shown, ", "))
 	}
 	if len(res.Accounts) > 0 {
 		fmt.Fprintln(out)
 		tw := tabwriter.NewWriter(out, 0, 4, 3, ' ', 0)
 		fmt.Fprintln(tw, "  NAME\tPLAN\t5h\tRESETS\t7d\tRESETS")
 		for _, a := range res.Accounts {
-			plan := a.Plan
-			switch plan {
-			case "":
-				plan = "-"
-			case "max":
-				plan = "max?"
-			}
+			plan := planLabel(store.Account{Plan: a.Plan})
 			five, seven := "unknown", "unknown"
 			if !a.Stale {
 				five, seven = pctOrUnknown(a.FiveHourPct), pctOrUnknown(a.SevenDayPct)

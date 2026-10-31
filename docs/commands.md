@@ -440,9 +440,10 @@ which account answers the session follows the slot, not the name.
 chottag plan NAME TIER [--units N]
 ```
 
-Sets `NAME`'s plan tier for auto-switch: `pro`, `max5x`, `max20x` or
-`team`. `--units` overrides the tier's own capacity units per 1%; without
-it the tier's default applies (pro 1, max5x 5, max20x 20, team 5), so
+Sets `NAME`'s plan tier for auto-switch: `pro`, `max5x`, `team` or `ultra`
+(Anthropic renamed Max 20x to Ultra: `max20x` is still accepted, and
+`--json` and `state.json` keep saying `max20x`). `--units` overrides the tier's own capacity units per 1%; without
+it the tier's default applies (pro 1, max5x 5, ultra 20, team 5), so
 re-running `plan` without `--units` also clears an earlier override.
 
 | Flag | Meaning |
@@ -942,7 +943,7 @@ pool in `pools[]`. It is left out under `serial`, and `[]` with no live
 session. An entry also has `chosen`, the number of its sessions placed there
 with `chottag move`, when there is one. Each account that is a candidate
 under spread has `pace`: `ratio` is the score a new session would see (at most
-3) and `burn5h` the account's measured 5-hour burn in units per hour (a whole number: a percentage point of a window times the plan units, so a max20x 5-hour window is 2000).
+3) and `burn5h` the account's measured 5-hour burn in units per hour (a whole number: a percentage point of a window times the plan units, so an Ultra (`max20x`) 5-hour window is 2000).
 `auto.next` (and the `next` of each pool in `auto.pools`) is the account the
 next new session would get, `""` when none could take it, and left out under
 `serial`. `auto.burnRate` is the serial burn (units per active hour) whenever any pool is

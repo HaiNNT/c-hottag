@@ -44,6 +44,9 @@ func planLabel(a store.Account) string {
 	case "max":
 		return "max?"
 	}
+	if t, ok := autoswitch.ParseTier(strings.ToLower(a.Plan)); ok {
+		return t.DisplayName()
+	}
 	return a.Plan
 }
 
