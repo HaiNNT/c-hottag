@@ -178,6 +178,10 @@ var (
 		r("POST", `^/api/frame/track$`, Decision{Class: Remote, Object: KindArtifact, RequestField: "slug"}),
 		r("", `^/api/frame/(deploy|track|types|sync)(/.*)?$`, remote),
 		r("", `^/api/frame/read/([^/]+)$`, Decision{Class: Remote, Object: KindArtifact}),
+		// F297: action routes (/api/frame/comments/<uuid>, versions/<uuid>/restore)
+		// name the artifact in their second segment; the catch-all below would
+		// take the action word as the id and find no owner.
+		r("", `^/api/frame/[a-z_-]+/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(/.*)?$`, Decision{Class: Remote, Object: KindArtifact}),
 		r("", `^/api/frame/([^/]+)(/.*)?$`, Decision{Class: Remote, Object: KindArtifact}),
 
 		// F290: the Artifact tool publishes with frame/deploy/prepare (above,

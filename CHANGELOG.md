@@ -7,6 +7,12 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.14] - 2026-11-02
+
+### Fixed
+
+- Artifact requests that put an action word before the artifact id, such as `GET /api/frame/comments/<id>` or `POST /api/frame/versions/<id>/restore`, now go to the account that owns that artifact. Before, the action word was taken as the artifact, no owner was found, and the request could be refused with a 403.
+
 ## [0.10.13] - 2026-10-31
 
 ### Changed
@@ -535,6 +541,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.14]: docs/release-notes/v0.10.14.md
 [0.10.13]: docs/release-notes/v0.10.13.md
 [0.10.12]: docs/release-notes/v0.10.12.md
 [0.10.11]: docs/release-notes/v0.10.11.md

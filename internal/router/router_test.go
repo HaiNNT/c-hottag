@@ -103,6 +103,15 @@ func TestRoute(t *testing.T) {
 		{"GET", api, "/api/frame/read/abc123", "", obj(R, router.KindArtifact, "abc123")},
 		{"GET", api, "/api/frame/abc123", "bk=1", obj(R, router.KindArtifact, "abc123")},
 		{"PUT", api, "/api/frame/abc/publish", "", obj(R, router.KindArtifact, "abc")},
+		// F297: an action segment before the artifact uuid must not be the object.
+		{"GET", api, "/api/frame/comments/0a1b2c3d-1111-2222-3333-444455556666", "", obj(R, router.KindArtifact, "0a1b2c3d-1111-2222-3333-444455556666")},
+		{"POST", api, "/api/frame/versions/0a1b2c3d-1111-2222-3333-444455556666/restore", "", obj(R, router.KindArtifact, "0a1b2c3d-1111-2222-3333-444455556666")},
+		{"GET", api, "/api/frame/0a1b2c3d-1111-2222-3333-444455556666", "", obj(R, router.KindArtifact, "0a1b2c3d-1111-2222-3333-444455556666")},
+		{"GET", api, "/api/frame/0a1b2c3d-1111-2222-3333-444455556666/x", "", obj(R, router.KindArtifact, "0a1b2c3d-1111-2222-3333-444455556666")},
+		{"GET", api, "/api/frame/comments/0A1B2C3D-AAAA-BBBB-CCCC-DDDDEEEEFFFF", "", obj(R, router.KindArtifact, "0A1B2C3D-AAAA-BBBB-CCCC-DDDDEEEEFFFF")},
+		{"GET", api, "/api/frame/user/me", "", obj(R, router.KindArtifact, "user")},
+		{"GET", api, "/api/frame/contract/latest", "", obj(R, router.KindArtifact, "contract")},
+		{"GET", api, "/api/frame/read/0a1b2c3d-1111-2222-3333-444455556666", "", obj(R, router.KindArtifact, "0a1b2c3d-1111-2222-3333-444455556666")},
 		// F290: the Artifact tool's server publishes after frame/deploy/prepare,
 		// so it must reach the same (remote) org.
 		{"POST", api, "/api/artifacts/mcp", "", d(R)},
