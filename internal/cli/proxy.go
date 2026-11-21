@@ -289,9 +289,11 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 	stickyAccounts := wireStickyValidate(ch, h, stderr)
 	sp.lastAccount = ch.tracker.Account
 
-	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, autoUsageHook(as, newUsageHook(cache.State, sink, dn)), upstreamURL)
+	loginRefusal := newLoginRefusalWatch(stderr, sink, cache.State, timeNow)
+	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, loginRefusedUsageHook(loginRefusal, autoUsageHook(as, newUsageHook(cache.State, sink, dn))), upstreamURL)
 	cfg.WallRetry = as.wallRetry
-	cfg.OnServingRefusal = servingRefusalHook(stderr, dn)
+	cfg.OnServingRefusal = servingRefusalHook(stderr, dn, loginRefusal.refused)
+	cfg.LoginRefused = loginRefusal.isRefused
 	cfg.OnUnclassifiedRefusal = unclassifiedRefusalHook(stderr, dn, time.Now)
 	homeLogin := newHomeLoginWatch(stderr, dn, time.Now)
 	cfg.OnHomeLogin = homeLogin.report
@@ -326,7 +328,10 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			fmt.Fprintf(stderr, "chottag: usage poll %s: no usable login; not polled until it logs in again (run: chottag login %s)\n", account, account)
 			recordNeedsLogin(sink, dn, account)
 		})
-		p.SetOnOK(func(account string) { recordRecovered(sink, dn, account, timeNow()) })
+		p.SetOnOK(func(account string) {
+			recordRecovered(sink, dn, account, timeNow())
+			loginRefusal.accepted(account) // R201: a poll that parsed is the re-test
+		})
 		as.pollNow, as.pollSkip = p.PollNow, p.PollSkip
 		poller = p
 	}
@@ -1026,6 +1031,7 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		if d.Chooser != nil {
 			drops = d.Chooser.OwnerWriteDrops()
 		}
+		srv.SettleRefusals(now) // R201: parked fallback refusals past their wait
 		routeDrift := srv.RouteDrift()
 		unclassified := srv.UnclassifiedDrift()
 		// Notifications ride this tick (M2 spec §4). They run before the

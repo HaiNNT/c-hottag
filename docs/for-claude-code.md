@@ -294,6 +294,14 @@ If every session says `Login expired · Please run /login`, Claude Code's own
 `chottag doctor` (`home-login`) say so. Tell the user to run `/login` in one
 Claude Code session.
 
+## An account shows `login refused`
+
+If `chottag status` shows `login refused (403) since ...` for an account (or
+`status --json` has `loginRefused` on it), Anthropic refused that account's own
+login on serving requests. chottag has taken it out of rotation; it returns by
+itself once the account answers again. Tell the user, and offer `chottag login
+NAME` to clear it at once.
+
 ## Two notices
 
 - "an artifact's (or session's, connector's, environment's) owner is

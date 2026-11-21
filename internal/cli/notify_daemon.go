@@ -255,8 +255,13 @@ func notifyUsageHook(dn *daemonNotify, next func(string, int, http.Header, proxy
 // the templated path (never a token, a body, a query or a proxy setting);
 // the notice is limited to one per account per hour inside notify.Events.
 // dn may be nil (a daemon built without notifications).
-func servingRefusalHook(log io.Writer, dn *daemonNotify) func(account string, status int, errType string, resent bool, method, path string) {
+// onRefused, when set, is told first (R201: it marks the account login-refused
+// so the notice and the planner agree); it may be nil.
+func servingRefusalHook(log io.Writer, dn *daemonNotify, onRefused func(account string, status int)) func(account string, status int, errType string, resent bool, method, path string) {
 	return func(account string, status int, errType string, resent bool, method, path string) {
+		if onRefused != nil {
+			onRefused(account, status)
+		}
 		fate := "sent on Home's own login"
 		if !resent {
 			fate = "not resent"

@@ -10,6 +10,7 @@ import (
 
 	"github.com/HaiNNT/c-hottag/internal/creds"
 	"github.com/HaiNNT/c-hottag/internal/status"
+	"github.com/HaiNNT/c-hottag/internal/store"
 )
 
 func writeTestStatus(t *testing.T, home string, f status.File) {
@@ -217,5 +218,54 @@ func TestPlanEvidence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTokenLoginRefusedIsAProblemWithTheLoginHint(t *testing.T) {
+	ti := newTestInstall(t)
+	at := time.Date(2026, 9, 24, 15, 4, 5, 0, time.Local)
+	writeTestStatus(t, ti.home, status.File{Accounts: []status.Account{{Name: "A", Token: creds.StateOK, LoginRefused: at, LoginRefusedStatus: 403}}})
+	r := rowByID(t, mustRun(t, ti.env, ReportChecks([]string{"A"}), false), "token:A")
+	want := "the daemon recorded this account's login refused (403) on serving requests since 15:04; it is out of rotation"
+	if r.Status != StatusProblem || r.Detail != want || r.Hint != "chottag login A" {
+		t.Fatalf("token:A = %+v", r)
+	}
+}
+
+func TestTokenLoginRefusedClearedByALaterLogin(t *testing.T) {
+	ti := newTestInstall(t)
+	at := testNow.Add(-time.Hour)
+	writeTestStatus(t, ti.home, status.File{Accounts: []status.Account{{Name: "A", Token: creds.StateOK, LoginRefused: at, LoginRefusedStatus: 401}}})
+	ti.update(func(st *store.State) error {
+		a, err := st.Find("A")
+		if err != nil {
+			return err
+		}
+		a.LoggedInAt = at.Add(time.Minute)
+		return nil
+	})
+	r := rowByID(t, mustRun(t, ti.env, ReportChecks([]string{"A"}), false), "token:A")
+	if r.Status != StatusOK {
+		t.Fatalf("token:A = %+v, want ok after a later login", r)
+	}
+}
+
+func TestTokenNeedsLoginWinsOverLoginRefused(t *testing.T) {
+	ti := newTestInstall(t)
+	writeTestStatus(t, ti.home, status.File{Accounts: []status.Account{{Name: "A", Token: creds.StateNeedsLogin, LoginRefused: testNow, LoginRefusedStatus: 403}}})
+	r := rowByID(t, mustRun(t, ti.env, ReportChecks([]string{"A"}), false), "token:A")
+	if r.Status != StatusProblem || r.Detail != "the daemon recorded that this account needs a login" {
+		t.Fatalf("token:A = %+v", r)
+	}
+}
+
+func TestTokenLoginRefusedStillReportedWhenStateJSONIsUnreadable(t *testing.T) {
+	ti := newTestInstall(t)
+	at := testNow.Add(-time.Hour)
+	writeTestStatus(t, ti.home, status.File{Accounts: []status.Account{{Name: "A", Token: creds.StateOK, LoginRefused: at, LoginRefusedStatus: 403}}})
+	must(t, os.WriteFile(filepath.Join(ti.home, "state.json"), []byte("{not json"), 0o600))
+	r := tokenCheck("A").Detect(ti.env)
+	if r.Status != StatusProblem || !strings.Contains(r.Detail, "login refused (403)") {
+		t.Fatalf("token:A = %+v, want the recorded login-refused problem, not an internal error", r)
 	}
 }

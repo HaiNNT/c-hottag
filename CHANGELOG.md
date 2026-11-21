@@ -7,6 +7,16 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.10.15] - 2026-11-21
+
+### Fixed
+
+- A refusal of a whole account's login no longer shows as `chottag: a new route was refused`. A 401 or 403 on a route the table does not list, sent as the serving account, is now settled once chottag knows whether the account works: the route notice and the route-drift count wait (up to 10 minutes) until the account answers a request on a listed serving route (such as `/v1/messages`), and a refused account's are not counted.
+
+### Changed
+
+- An account whose login Anthropic refuses on serving requests (401 or 403, after the refresh and retry) is marked `login refused`. `chottag status` shows `login refused (403) since 15:04`, `status --json` gains `loginRefused` and `loginRefusedStatus` on the account, and `chottag doctor`'s `token:NAME` row reports it. The account is out of rotation (auto-switch, `chottag next`, `chottag move` and spread placement skip it, and auto on moves serving off it, trigger `refused`) until it answers again (a 2xx on its own login or a successful usage poll, about every 30 minutes for an idle account) or you run `chottag login NAME`. `next --force` and `tag` still work.
+
 ## [0.10.14] - 2026-11-02
 
 ### Fixed
@@ -541,6 +551,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.10.15]: docs/release-notes/v0.10.15.md
 [0.10.14]: docs/release-notes/v0.10.14.md
 [0.10.13]: docs/release-notes/v0.10.13.md
 [0.10.12]: docs/release-notes/v0.10.12.md

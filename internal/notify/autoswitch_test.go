@@ -175,3 +175,13 @@ func TestNoCandidateEpisodeSurvivesTheTagChanging(t *testing.T) {
 		t.Fatalf("notices = %q, want one", got)
 	}
 }
+
+// R201: a switch away from an account whose login was refused.
+func TestSwitchedNoticeForARefusedLogin(t *testing.T) {
+	ev, em, _, _ := newTestEvents()
+	ev.Switched(Switch{From: "C", To: "B", Trigger: "refused"})
+	want := [][2]string{{"chottag: switched to B", "C's login was refused. New requests go to B."}}
+	if got := em.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices = %q\nwant %q", got, want)
+	}
+}

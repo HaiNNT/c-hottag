@@ -494,8 +494,8 @@ chottag tag --unpin [--pool POOL]
 Sets the serving account: the one whose login the proxy hands to Claude
 Code. With no `NAME` it moves to the next account in rotation, the same
 choice `chottag next` makes. `--force` switches even past a limit, a
-switch point, or a needs-login state — but never past rotation (a
-rotated-out account is never picked).
+switch point, a needs-login state or a login-refused mark — but never past
+rotation (a rotated-out account is never picked).
 
 Under [`chottag policy spread`](#chottag-policy), `tag NAME` also pins new
 sessions to `NAME` and prints a line saying so (`pin` in `--json`). If
@@ -514,7 +514,7 @@ result outside `default` says `serving: NAME (pool POOL)`.
 
 | Flag | Meaning |
 |---|---|
-| `--force` | switch even past a limit, a switch point or a needs-login state (never past rotation) |
+| `--force` | switch even past a limit, a switch point, a needs-login state or a login-refused mark (never past rotation) |
 | `--unpin` | under spread, clear the pin (no `NAME`) |
 | `--pool POOL` | the pool to act in (default: `NAME`'s pool, or `default`) |
 
@@ -542,7 +542,7 @@ chottag move NAME [--session SID] [--force]
 Under [`chottag policy spread`](#chottag-policy), puts one running session on
 `NAME`. Its next inference request goes out as `NAME`, and it stays there: a
 session you moved is *chosen*, and only a hard trigger (its account is limited,
-has rotation off, needs a login, is gone or left the pool) or a limit-hit
+has rotation off, needs a login, has its login refused, is gone or left the pool) or a limit-hit
 retry moves it off. A switch point or the cold-cache rebalance does not. The
 command only writes a request into `state.json`; the daemon applies it once, at
 the session's next request. A request already in flight finishes on the old
@@ -556,8 +556,8 @@ sid `chottag status --json` lists under `sessions`). `NAME` is resolved like
 `tag NAME`, and must be in the session's pool (`not_in_pool`).
 
 `NAME` is refused (`move_refused`, exit 2, with the reason in the message and
-as `reason` in `--json`) when it is out of rotation, needs a login, or is
-limited, even with `--force`; and when it is above a switch point, unless
+as `reason` in `--json`) when it is out of rotation, needs a login, has its
+login refused, or is limited, even with `--force`; and when it is above a switch point, unless
 `--force`. Under `serial` there is nothing to move (`move_serial`: use
 `chottag policy spread`, or `chottag tag NAME` to move every session). A
 session that is already on `NAME` exits 0 with a line saying so, and becomes
@@ -590,6 +590,7 @@ says to run `chottag daemon restart`.
 `from` is the account the daemon last placed the session on (`""` when
 unknown). `pool` is present only outside `default`. In a `move_refused` error
 `reason` is the autoswitch reason text (`out of rotation`, `needs login`,
+`login refused`,
 `limited`, `above switch point`).
 
 ### `chottag next`
@@ -608,7 +609,7 @@ to one serving account.
 
 | Flag | Meaning |
 |---|---|
-| `--force` | switch even past a limit, a switch point or a needs-login state (never past rotation) |
+| `--force` | switch even past a limit, a switch point, a needs-login state or a login-refused mark (never past rotation) |
 | `--pool POOL` | the pool whose serving account moves (default: `default`) |
 
 ```json
@@ -721,7 +722,22 @@ not change.
 `STATE` is `ok` when the account is not limited, not passing through and its
 reading is within that window, `stale` when the reading is older (its cells
 show the age), and `no reading` when chottag has never read the account's
-usage. `limited ...` and `passthrough: ...` take precedence.
+usage. `limited ...` and `passthrough: ...` take precedence. `login refused
+(403) since 15:04` (or 401) takes precedence over all of them: see below.
+
+`loginRefused` (RFC 3339, left out when none) is when the daemon first saw
+Anthropic refuse this account's own login with a 401 or 403 on serving
+requests, after the token was refreshed and the request retried;
+`loginRefusedStatus` is that status. An account so marked is out of rotation:
+auto-switch, `chottag next`, `chottag move` and the status line's `next` skip it
+(reason `login refused`), spread placement does not pick it, a session on it
+leaves it, and under `serial` a serving account that is marked is switched off
+(trigger `refused`) when auto is on. `chottag next --force` and `chottag tag
+NAME` still work. The mark clears on its own when the account answers again
+(any 2xx on its own login, or the next successful usage poll (about every 30 minutes for an idle account; longer after the poll's own refusals back off)), or when you run `chottag login NAME`, the immediate fix; a
+token renewal does not clear it. It is kept across daemon restarts, and a
+login newer than the mark hides it at read time. `chottag doctor`'s
+`token:NAME` row reports it as a problem.
 
 Each 5h and 7d cell ends with `↻` and the window's next reset when it is
 known and still ahead. Under 5 hours it is the time left (`<1m`, `42m`,
@@ -756,6 +772,8 @@ unknown or already past, has no `↻`. `--json` already carries the times as
       "reason": "",
       "token": "ok",
       "tokenAt": "2026-09-01T00:00:00Z",
+      "loginRefused": "2026-09-28T13:58:12Z",
+      "loginRefusedStatus": 403,
       "rotate": true,
       "passthrough": "",
       "plan": "max5x",
@@ -981,7 +999,7 @@ account `chottag tag NAME` pinned, left out when none is set or the policy is
 `serial`. The text form adds a line after `auto:` only under spread:
 `policy: spread`, or `policy: spread · pin: work`, and `(not a candidate now)`
 after the pin when that account cannot take a session at this moment (rotation
-off, needs a login, limited, or at a switch point). Under `serial` the text
+off, needs a login, has its login refused, limited, or at a switch point). Under `serial` the text
 form has no such line.
 
 `update` is the daemon's release-check cache. It is left out until a check
@@ -1220,7 +1238,7 @@ the status line's `5h` part in the compact form. A 5-hour figure that is merely
 unknown still shows as `-`. `limited` is `true` while the
 session's account is limited. `lastSwitch` is the session's pool's last
 auto-switch: the account it moved to (`account`), the one it left (`from`),
-why (`reason`, `limit` or `threshold`) and when (`at`, RFC 3339).
+why (`reason`, `limit`, `threshold` or `refused`) and when (`at`, RFC 3339).
 `remote` is the pool's remote account (`""` when it has none, left out when not known), and `remoteToken` its token state when
 that is `stale` or `needs-login`. `next` is the account that would serve the
 pool next: the one auto-switch would move to on a limit, or the one
@@ -1265,9 +1283,9 @@ Its checks, in the order they run:
 | `daemon` | a daemon that holds `daemon.lock` also answers on its port | `chottag daemon restart` |
 | `daemon-version` | a running daemon's health version matches this chottag binary | `chottag daemon restart` |
 | `daemon-identity` | a running daemon proved it holds this install's proxy secret | `chottag daemon restart` |
-| `token:NAME` | the daemon's last recorded token state for the account | `chottag login NAME` |
+| `token:NAME` | the daemon's last recorded token state for the account; a problem when the daemon recorded the account's login refused (403) on serving requests (out of rotation until it answers again) | `chottag login NAME` |
 | `owners` | every `owners.json` entry names a registered account | `chottag own <kind> <id> <account>`, or re-run `chottag rename` |
-| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a request for an object whose owner chottag does not know is not counted (it gets its own notice, `chottag: an artifact's owner is unknown`, at most once an hour per account); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted; when some of the count was a route the table does not list refused 403 (or 401 `permission_error`), which may belong to the remote account, the detail says how many (`status --json` `daemon.routeDriftUnclassified`, absent when 0) and the daemon log has one line per method and path an hour | `chottag trace on` |
+| `route-drift` | the running daemon saw a swapped request about a claude.ai object, to a route the table does not list, or answered 404 (except on `POST /v1/messages`), refused after a refresh and retry (resent on Home's login, or, for a remote, owner or pooled request, refused as is); a refused route on a serving account's fallback is settled later, up to 10 minutes: when the account is shown to work (a request on a listed serving route, such as `/v1/messages`, answered 2xx on its own login) it is counted, and when the account is marked login refused it is not (it is the account's login, not the route); a request for an object whose owner chottag does not know is not counted (it gets its own notice, `chottag: an artifact's owner is unknown`, at most once an hour per account); a 401 or 403 on `/v1/messages` or `POST /api/oauth/validate` is not counted; when some of the count was a route the table does not list refused 403 (or 401 `permission_error`), which may belong to the remote account, the detail says how many (`status --json` `daemon.routeDriftUnclassified`, absent when 0) and the daemon log has one line per method and path an hour | `chottag trace on` |
 | `home-login` | Claude Code's own login (Home's) is not being refused: a problem while the running daemon has an open episode, at least 30 seconds old, of requests that went out on that login (not swapped, or resent on it) and were answered 401, since Claude Code then says `Login expired` in every session although chottag's accounts are fine (`status --json` `daemon.homeLoginRefused`, the episode's start, absent when none; a 2xx on that login closes it); info when no daemon has reported | run `/login` in a Claude Code session |
 | `limits` | whether every account is currently limited | wait for a reset |
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
@@ -2310,7 +2328,7 @@ result is not text, the same line is a toast.
 | `resume_busy` | 1 | another `chottag resume` is running (it holds `sessions/resume.lock`) |
 | `resume_failed` | 1 | `chottag resume` could not relaunch one or more sessions (a `cmux` error); `error.sessions` has every row, and a failed one stays in the batch |
 | `spread_next` | 2 | `next` (or a bare `tag`) under `chottag policy spread`: chottag places sessions itself; pin with `chottag tag NAME`, or `chottag policy serial` |
-| `move_refused` | 2 | `move`: the account is out of rotation, needs a login or is limited (always), or is above a switch point and `--force` was not given; `error.reason` says which |
+| `move_refused` | 2 | `move`: the account is out of rotation, needs a login, has its login refused or is limited (always), or is above a switch point and `--force` was not given; `error.reason` says which |
 | `no_session` | 2 | `move` was not run in a chottag session and no live session matches `--session` (or the session has no sid); pass `--session SID` (the `sid` in `chottag status --json`, `sessions[]`) |
 | `session_ambiguous` | 2 | `move --session` matched more than one live session; give more of the sid |
 | `move_serial` | 2 | `move` in a pool under `serial`: there is nothing to place; `chottag policy spread` first, or `chottag tag NAME` to move every session |

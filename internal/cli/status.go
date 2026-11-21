@@ -129,6 +129,7 @@ func runStatus(home string, args []string, r *reporter) int {
 
 	now := time.Now()
 	dropSupersededNeedsLogin(&f, st)
+	dropSupersededLoginRefused(&f, st)
 	// Stale states each account's freshness explicitly (spec §6.3, contract
 	// 5): the human table shows an older reading with its age ("45% (2h
 	// ago)", F268) instead of as if it were live, but --json used to keep
@@ -443,6 +444,11 @@ func renderStatusSpread(out io.Writer, f status.File, now time.Time, counts stri
 		}
 		state := "no reading"
 		switch {
+		case !a.LoginRefused.IsZero():
+			// R201: the account's own login is refused on serving requests;
+			// it is out of rotation. runStatus drops a mark a later login
+			// outlived.
+			state = fmt.Sprintf("login refused (%d) since %s", a.LoginRefusedStatus, a.LoginRefused.Local().Format("15:04"))
 		case a.Passthrough != "":
 			// Requests for this account are actually going out on Home's
 			// login: say why, or the user believes they switched when they
@@ -1388,6 +1394,43 @@ func (c *statusSink) setHomeLoginRefused(since time.Time) {
 	if c.file.SetHomeLoginRefused(since) {
 		c.queueLocked()
 	}
+}
+
+// setLoginRefused marks the account's login refused (R201) and flushes at once
+// when that changed anything; it reports whether it did.
+func (c *statusSink) setLoginRefused(account string, code int, at, loggedInAt time.Time) bool {
+	c.mu.Lock()
+	changed := c.file.SetLoginRefused(account, code, at, loggedInAt)
+	c.mu.Unlock()
+	if changed {
+		c.flush()
+	}
+	return changed
+}
+
+// clearLoginRefused drops the account's mark, flushing at once when there was
+// one; since is when it began.
+func (c *statusSink) clearLoginRefused(account string) (since time.Time, changed bool) {
+	c.mu.Lock()
+	since, changed = c.file.ClearLoginRefused(account)
+	c.mu.Unlock()
+	if changed {
+		c.flush()
+	}
+	return since, changed
+}
+
+// loginRefusedLocked reports whether the account has a mark that a login after
+// loggedInAt has not superseded. (Named for the lock it takes.)
+func (c *statusSink) loginRefusedLocked(account string, loggedInAt time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, a := range c.file.Accounts {
+		if strings.EqualFold(a.Name, account) {
+			return a.LoginRefusedNow(loggedInAt)
+		}
+	}
+	return false
 }
 
 // setRestartPending stamps (or clears, with "") the installed version this

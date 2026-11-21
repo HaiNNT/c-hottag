@@ -48,6 +48,13 @@ type safetyNet struct {
 	serving          bool
 	onRefused        func(status int, errType string)
 	onServingRefusal func(account string, status int, errType string, resent bool)
+	// fallback is true for a plain fallback route (serving class, no object,
+	// a route the table does not list). With onFallbackRefusal set, a 401 or
+	// 403 there that survives the retry is handed to that hook instead of
+	// being counted as drift (R201): the proxy decides whether it is the
+	// account's login or the route.
+	fallback          bool
+	onFallbackRefusal func(account string, status int, errType string, resent bool)
 	// onResent is called when the request is sent again on the client's own
 	// login: the response is then not the account's (usage, owner records).
 	onResent func()
@@ -294,6 +301,11 @@ func (s *safetyNet) countRefusal(status int, resent bool) {
 	}
 	if s.onRefused != nil {
 		s.onRefused(status, s.firstType)
+	}
+	if s.fallback && s.onFallbackRefusal != nil &&
+		(status == http.StatusUnauthorized || status == http.StatusForbidden) {
+		s.onFallbackRefusal(s.account, status, s.firstType, resent)
+		return
 	}
 	if s.serving && (status == http.StatusUnauthorized || status == http.StatusForbidden) {
 		// R177: the account's login was refused, whatever the resend on the

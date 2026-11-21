@@ -16,6 +16,10 @@ type Account struct {
 	Rotates bool    // not excluded by `chottag rotate NAME off` (R29)
 	// NeedsLogin is status.json's token state for the account.
 	NeedsLogin bool
+	// LoginRefused is the daemon's mark that the account's login was refused
+	// (401/403) on serving requests and has not answered since (R201). Like
+	// NeedsLogin it takes the account out of every pick.
+	LoginRefused bool
 	// Limited and LimitedUntil are knownLimit's answer (R54): a known
 	// limit, with its reset when known.
 	Limited      bool
@@ -41,6 +45,10 @@ type Account struct {
 	Pct5h, Pct7d     float64 // 0-100
 	Reset5h, Reset7d time.Time
 }
+
+// LoginBlocked reports that the account's login cannot serve right now:
+// it needs a login, or the server refused it on serving requests (R201).
+func (a Account) LoginBlocked() bool { return a.NeedsLogin || a.LoginRefused }
 
 // units is the account's capacity units, defaulting to its tier's.
 func (a Account) units() float64 {
@@ -84,6 +92,7 @@ func (a Account) effective(w Window, now time.Time) (float64, bool) {
 const (
 	ReasonOutOfRotation = "out of rotation"
 	ReasonNeedsLogin    = "needs login"
+	ReasonLoginRefused  = "login refused"
 	ReasonLimited       = "limited"
 	ReasonAboveSwitch   = "above switch point"
 )
@@ -107,6 +116,8 @@ func Eligible(a Account, p Params, now time.Time) string {
 		return ReasonOutOfRotation
 	case a.NeedsLogin:
 		return ReasonNeedsLogin
+	case a.LoginRefused:
+		return ReasonLoginRefused
 	case a.Limited:
 		return ReasonLimited
 	}
@@ -254,14 +265,20 @@ const (
 const (
 	TriggerLimit     = "limit"
 	TriggerThreshold = "threshold"
+	// TriggerRefused is a serving account whose login was refused (R201).
+	TriggerRefused = "refused"
 )
+
+// HardTrigger reports a trigger that forces the move and may fall back to an
+// account above its switch point: a limit, or a refused login (R201).
+func HardTrigger(t string) bool { return t == TriggerLimit || t == TriggerRefused }
 
 // Decision is one planning result.
 type Decision struct {
 	Action  Action
 	From    string // the serving account the decision is about
 	Target  string // ActionSwitch only
-	Trigger string // TriggerLimit | TriggerThreshold, for a switch or no candidate
+	Trigger string // TriggerLimit | TriggerThreshold | TriggerRefused, for a switch or no candidate
 	Hold    string // HoldCache | HoldCooldown | HoldUser, for ActionHold
 	Window  Window // the window that triggered, or the one reported for a stay
 	Pct     float64
@@ -299,6 +316,10 @@ func Plan(in Input) Decision {
 	if !ok {
 		d.Action, d.Reason = ActionStay, "no serving account"
 		return d
+	}
+	if s.LoginRefused {
+		d.Trigger = TriggerRefused
+		return in.leave(d, s)
 	}
 	if s.Limited {
 		d.Trigger, d.Window = TriggerLimit, s.LimitWindow
@@ -371,13 +392,13 @@ func cacheHold(s Account, p Params, now time.Time) (time.Duration, bool) {
 }
 
 // leave picks a target for a limit or threshold trigger. A LIMIT trigger
-// that finds no candidate below its own switch points falls back to any
+// (or refused-login, R201) trigger that finds no candidate below its own switch points falls back to any
 // account with capacity at all (item 2, review round 2): a THRESHOLD
 // switch never falls back, since there was no wall forcing the move.
 func (in Input) leave(d Decision, s Account) Decision {
 	target, score, gain, ok := in.pickTarget(s)
 	fellBack := false
-	if !ok && d.Trigger == TriggerLimit {
+	if !ok && HardTrigger(d.Trigger) {
 		target, score, gain, ok = in.fallback(s)
 		fellBack = ok
 	}
@@ -433,7 +454,7 @@ func Next(in Input) (string, bool) {
 // point of the fallback): in rotation, not needing a login, not known
 // limited, and below 100% (effective, reset-aware) in every window.
 func FallbackEligible(a Account, now time.Time) bool {
-	if !a.Rotates || a.NeedsLogin || a.Limited {
+	if !a.Rotates || a.LoginBlocked() || a.Limited {
 		return false
 	}
 	for _, w := range []Window{Win5h, Win7d} {
@@ -469,6 +490,9 @@ func Fallback(cands, roster []Account, p Params, burn float64, now time.Time) (s
 }
 
 func triggerText(d Decision) string {
+	if d.Trigger == TriggerRefused {
+		return "login refused"
+	}
 	if d.Trigger == TriggerLimit {
 		if d.Window == "" {
 			return "limit"
@@ -560,7 +584,7 @@ func (in Input) simOrder(first Account) []SimAccount {
 func simOrderFor(first Account, roster []Account, now time.Time) []SimAccount {
 	out := []SimAccount{simAccount(first, now)}
 	for _, a := range roster {
-		if strings.EqualFold(a.Name, first.Name) || !a.Rotates || a.NeedsLogin {
+		if strings.EqualFold(a.Name, first.Name) || !a.Rotates || a.LoginBlocked() {
 			continue
 		}
 		out = append(out, simAccount(a, now))

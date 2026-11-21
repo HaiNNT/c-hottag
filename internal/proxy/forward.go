@@ -196,6 +196,15 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 				s.notifyUsage(account, resp.StatusCode, resp.Header, req)
 			}
 
+			// A 2xx on the account's own login for a CLASSIFIED serving
+			// route says the login works: its parked fallback refusals were
+			// the route's (R201). An unlisted (fallback) route proves
+			// nothing: it can answer 2xx while the login is refused.
+			if success && account != "" && !rec.Drift && !viaHome &&
+				d.Class == router.Serving && d.Object == "" && !d.Fallback && !s.ledger.empty() {
+				s.settleAsRoute(s.ledger.take(account))
+			}
+
 			// A limit fingerprint is observation only (never affects what
 			// reaches the client) and only ever meaningful for a refusal,
 			// so read the body just for status >= 400 JSON; FingerprintLimit
@@ -474,7 +483,11 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 			if s.cfg.OnServingRefusal != nil {
 				s.cfg.OnServingRefusal(acct, status, errType, resent, rec.Method, rec.Path)
 			}
+			// A classified serving refusal says the login is refused: the
+			// account's parked fallback refusals were it too (R201).
+			s.settleAsLogin(s.ledger.take(acct))
 		},
+		fallback:     d.Class == router.Serving && d.Object == "" && d.Fallback,
 		unclassified: unclassified && d.Object == "",
 		onUnclassified: func(acct string, status int) {
 			s.driftUnclassified.Add(1)
@@ -488,6 +501,22 @@ func (s *Server) transportFor(account, originalAuth, originalAPIKey string, d ro
 			rec.Unreplayable = true
 			rec.UnreplayableBytes = n
 		},
+	}
+	if s.cfg.LoginRefused != nil {
+		sn.onFallbackRefusal = func(acct string, status int, errType string, resent bool) {
+			p := parkedRefusal{account: acct, status: status, errType: errType, resent: resent,
+				method: rec.Method, path: rec.Path, at: s.now()}
+			switch {
+			case s.cfg.LoginRefused(acct):
+				s.reportLoginRefusal(p)
+			case !s.ledger.park(p):
+				rec.Drift = true
+				s.reportRouteRefusal(p)
+			case s.cfg.LoginRefused(acct):
+				// Marked between the check and the park: settle now.
+				s.settleAsLogin(s.ledger.take(acct))
+			}
+		}
 	}
 	if g, ok := s.cfg.Choose.(PoolGuard); (ok && g.Guarded()) || neverHome {
 		sn.noOriginal = true

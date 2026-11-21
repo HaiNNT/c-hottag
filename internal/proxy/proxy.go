@@ -182,7 +182,21 @@ type Config struct {
 	// client's own login, and method and path the request's (the path is
 	// templated, never a query or a body). It is not route drift and is not
 	// counted as such. Called on the request goroutine: it must not block.
+	// With Config.LoginRefused set it is also called for a plain fallback
+	// route (a route the table does not list) refused 401/403 from an
+	// account marked login-refused, and for parked fallback refusals once
+	// they settle as login refusals (R201).
 	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)
+
+	// LoginRefused, when set (R201), says whether the daemon has marked
+	// account's login refused. It is called on the request goroutine only
+	// after a fallback-route refusal (and from SettleRefusals), so it must not
+	// block. A refusal on a fallback route from a marked account is the
+	// login's, reported through OnServingRefusal, not route drift; from an
+	// unmarked one it is parked until that account's next serving outcome,
+	// at most ten minutes (see SettleRefusals). nil keeps today's behaviour:
+	// such a refusal is route drift at once.
+	LoginRefused func(account string) bool
 
 	// OnUnclassifiedRefusal, when set, is called when a swapped request on a
 	// route the table does not list (not router.Explicit; the Serving
@@ -190,8 +204,11 @@ type Config struct {
 	// and a permission_error: the route may belong to the remote account
 	// (R186). account is the swapped account, status the first refusal's,
 	// method and path the request's (the path is templated, never a query or a
-	// body). The request is also counted as route drift, as before. Called on
-	// the request goroutine: it must not block.
+	// body). The request is also counted as route drift, as before. With
+	// Config.LoginRefused set this happens when the refusal settles as a
+	// route refusal, which can be up to ten minutes later, and from
+	// SettleRefusals. Called on the request goroutine or from
+	// SettleRefusals: it must not block.
 	OnUnclassifiedRefusal func(account string, status int, method, path string)
 
 	// OnHomeLogin, when set, is called when a request's final response came
@@ -280,6 +297,7 @@ type Server struct {
 	// refused 403 (R186); it is a subset of drift.
 	driftUnclassified atomic.Uint64
 	unowned           *unknownOwners // M12: objects no account here could open
+	ledger            *refusalLedger // R201: parked fallback refusals
 	// inflight counts requests being served; lastStart is the Unix-nano
 	// time the latest one began (construction time before any). Both feed Idle.
 	inflight  atomic.Int64
@@ -301,6 +319,7 @@ type Server struct {
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 	s.unowned = newUnknownOwners(cfg.Now)
+	s.ledger = newRefusalLedger()
 	s.lastStart.Store(time.Now().UnixNano())
 	if cfg.DialContext != nil {
 		s.dial = cfg.DialContext

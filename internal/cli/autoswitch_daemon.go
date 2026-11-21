@@ -616,7 +616,7 @@ type guardWait struct {
 // waits.
 func (a *autoSwitcher) guardTarget(now time.Time, pool string, v store.State, accts []autoswitch.Account, d autoswitch.Decision, plan func([]autoswitch.Account) autoswitch.Decision) autoswitch.Decision {
 	gs := a.gs
-	limit := d.Trigger == autoswitch.TriggerLimit && gs.canWait && pool == gs.want
+	limit := autoswitch.HardTrigger(d.Trigger) && gs.canWait && pool == gs.want
 	excluded := gs.excluded[pool]
 	if excluded == nil {
 		excluded = map[string]func(*autoswitch.Account){}
@@ -664,7 +664,7 @@ func (a *autoSwitcher) guardTarget(now time.Time, pool string, v store.State, ac
 		// the work in the background and takes the next candidate whose
 		// token and data are fine right now; with none, it keeps deferring.
 		tryNext := func(why string) (autoswitch.Decision, bool) {
-			if d.Trigger != autoswitch.TriggerLimit {
+			if !autoswitch.HardTrigger(d.Trigger) {
 				return deferred(why), false
 			}
 			if first == nil {
@@ -951,6 +951,8 @@ func autoSwitchLine(d autoswitch.Decision, p autoswitch.Params) string {
 	why := "limit"
 	if d.Trigger == autoswitch.TriggerThreshold {
 		why = fmt.Sprintf("threshold %s %.0f%% >= %d%%", d.Window, d.Pct, d.Point)
+	} else if d.Trigger == autoswitch.TriggerRefused {
+		why = "login refused"
 	} else if d.Window != "" {
 		why += " " + string(d.Window)
 	}

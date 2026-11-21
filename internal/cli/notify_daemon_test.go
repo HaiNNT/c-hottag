@@ -564,7 +564,7 @@ func TestServingRefusalHookLogsEveryRefusalAndNotifiesOnce(t *testing.T) {
 	dn := newDaemonNotify(notifyTestState("A", "B"), n)
 	defer dn.Close()
 	var log bytes.Buffer
-	hook := servingRefusalHook(&log, dn)
+	hook := servingRefusalHook(&log, dn, nil)
 	hook("B", 401, "authentication_error", true, "POST", "/v1/messages")
 	hook("B", 403, "", true, "POST", "/v1/messages")
 	wantLog := "chottag: B's login was refused (401 authentication_error) on POST /v1/messages; sent on Home's own login\n" +
@@ -585,7 +585,7 @@ func TestServingRefusalHookLineCarriesNoSecretsOrLineBreaks(t *testing.T) {
 	// start echoing the proxy setting.
 	t.Setenv("HTTPS_PROXY", "http://user:proxy-secret@127.0.0.1:1")
 	var log bytes.Buffer
-	servingRefusalHook(&log, nil)("B", 401, "", false, "POST", "/v1/messages\nchottag: forged")
+	servingRefusalHook(&log, nil, nil)("B", 401, "", false, "POST", "/v1/messages\nchottag: forged")
 	out := log.String()
 	for _, secret := range []string{"proxy-secret", "HTTPS_PROXY", "Bearer", "sk-ant"} {
 		if strings.Contains(out, secret) {

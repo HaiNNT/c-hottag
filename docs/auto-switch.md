@@ -98,6 +98,15 @@ Before moving serving onto an account, the daemon checks that account:
   records `needs-login` for it (one notice, `chottag login <name>` to fix) and
   picks the next candidate. A poll or a refresh that finds no login records it
   too, without waiting for a request to fail on it.
+- **A refused login.** An account whose login Anthropic refused (401 or 403)
+  on serving requests is marked `login refused` (shown in `chottag status`,
+  `chottag doctor`'s `token:NAME` row and `status.json`) and is never
+  switched to. If it is the serving account, auto on switches off it at the
+  next check (trigger `refused`, reason `switched C -> B (login refused)`),
+  taking the next candidate the way a limit does, with a notice `C's login was
+  refused. New requests go to B.`; with auto off nothing moves it, but
+  `chottag next` skips it. The mark clears when the account answers again (a
+  2xx on its own login or a successful usage poll) or on `chottag login C`.
 - **A stale token.** The daemon refreshes it first. A threshold switch waits
   for the next check; a switch forced by a limit (a request that was refused)
   waits for the refresh, then takes the next candidate if the token did not
@@ -119,8 +128,9 @@ Before moving serving onto an account, the daemon checks that account:
 
 [`chottag policy spread`](how-it-works.md#spreading-sessions-spread) has no
 such check of its own: it relies on the `needs-login` state recorded by the
-daemon's warm pass, usage polls and refreshes, which keeps that account out of
-new placements.
+daemon's warm pass, usage polls and refreshes, and on the `login refused` mark,
+which keep that account out of new placements; a session on a refused account
+leaves it.
 
 ## Pools
 

@@ -135,6 +135,7 @@ func planAccounts(st *store.State, f *status.File, now time.Time) []autoswitch.A
 				// logged in. LoggedInAt at or before TokenAt means the
 				// needs-login is newer than the last login: still true.
 				pa.NeedsLogin = row.Token == creds.StateNeedsLogin && !a.LoggedInAt.After(row.TokenAt)
+				pa.LoginRefused = row.LoginRefusedNow(a.LoggedInAt)
 				pa.LimitWindow = planWindow(row.Window)
 				if u := row.Usage; u != nil {
 					if u.FiveHourPct != nil {

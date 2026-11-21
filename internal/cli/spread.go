@@ -526,7 +526,7 @@ func (e *spreadEngine) keepOrMove(sid string, p *placement, conv int, v spreadVi
 	// hard: the account can no longer serve anyone (rotation off, needs a
 	// login, limited, or gone). Such a session leaves at once, whatever
 	// the move window says.
-	hard := !found || !cur.Rotates || cur.NeedsLogin || cur.Limited
+	hard := !found || !cur.Rotates || cur.LoginBlocked() || cur.Limited
 	candidate := !hard && autoswitch.Candidate(cur, v.params, now)
 	_, isMarked := e.marked[strings.ToLower(p.Account)]
 	if isMarked && candidate {
@@ -688,7 +688,7 @@ func (e *spreadEngine) mark(account, why string, now time.Time) markOutcome {
 		exclude[a.Name] = true
 		// A chosen session stays at a switch point, but leaves an account that
 		// cannot serve (limited, rotation off, needs a login).
-		hard := a.Limited || !a.Rotates || a.NeedsLogin
+		hard := a.Limited || !a.Rotates || a.LoginBlocked()
 		res.Sessions = e.loadWhere(v, now, !hard)[a.Name]
 	}
 	cands := v.sharing(account)
@@ -1017,7 +1017,7 @@ func (a *autoSwitcher) spreadMarks(now time.Time, st store.State, accts []autosw
 			delete(a.spreadLimitNoticed, strings.ToLower(pa.Name))
 			continue
 		}
-		if !pa.Rotates || pa.NeedsLogin {
+		if !pa.Rotates || pa.LoginBlocked() {
 			continue // never a placement target; its sessions leave at their next request
 		}
 		if pa.Limited {
@@ -1180,7 +1180,7 @@ func (e *spreadEngine) fallbackExcluding(pool string, exclude map[string]bool, n
 		// Claude Code's own login. A limited one at least draws a clean 429.
 		bad := 0.0
 		switch {
-		case a.NeedsLogin:
+		case a.LoginBlocked():
 			bad = 2
 		case a.Limited:
 			bad = 1

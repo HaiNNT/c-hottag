@@ -45,6 +45,8 @@ type Options struct {
 	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)
 	// OnUnclassifiedRefusal is Config.OnUnclassifiedRefusal (R186).
 	OnUnclassifiedRefusal func(account string, status int, method, path string)
+	// LoginRefused is Config.LoginRefused (R201).
+	LoginRefused func(account string) bool
 	// OnHomeLogin is Config.OnHomeLogin (R183).
 	OnHomeLogin func(ok bool)
 	// OnUnknownOwner, OnOwnerFound and Now are Config's (M12/R168).
@@ -167,6 +169,7 @@ func Start(t *testing.T, upstream http.Handler, opts Options) *Harness {
 		OnUnclassifiedRefusal: opts.OnUnclassifiedRefusal,
 		OnOwnerFound:          opts.OnOwnerFound,
 		OnHomeLogin:           opts.OnHomeLogin,
+		LoginRefused:          opts.LoginRefused,
 		Now:                   opts.Now,
 		UpstreamProxy:         opts.UpstreamProxy,
 		Version:               opts.Version,

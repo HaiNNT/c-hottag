@@ -39,6 +39,14 @@ func loadStatus(e *Env) status.File {
 // told apart from a missing login.
 func tokenCheck(name string) Check {
 	return Check{ID: "token:" + name, Detect: func(e *Env) Finding {
+		var loggedInAt time.Time
+		// An unreadable state.json leaves loggedInAt zero: the mark is
+		// reported as recorded rather than turning the row internal.
+		if st, err := e.State(); err == nil {
+			if sa, err := st.Find(name); err == nil {
+				loggedInAt = sa.LoggedInAt
+			}
+		}
 		for _, a := range loadStatus(e).Accounts {
 			if !strings.EqualFold(a.Name, name) {
 				continue
@@ -46,6 +54,8 @@ func tokenCheck(name string) Check {
 			switch {
 			case string(a.Token) == needsLogin:
 				return Finding{Status: StatusProblem, Detail: "the daemon recorded that this account needs a login", Hint: fmt.Sprintf("chottag login %s; allow Keychain access if macOS asks", name)}
+			case a.LoginRefusedNow(loggedInAt):
+				return Finding{Status: StatusProblem, Detail: fmt.Sprintf("the daemon recorded this account's login refused (%d) on serving requests since %s; it is out of rotation", a.LoginRefusedStatus, a.LoginRefused.Local().Format("15:04")), Hint: "chottag login " + name}
 			case a.Token != "":
 				return Finding{Status: StatusOK, Detail: fmt.Sprintf("last recorded token state: %s (doctor never reads credentials)", a.Token)}
 			}

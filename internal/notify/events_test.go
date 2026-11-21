@@ -446,8 +446,8 @@ func TestServingRefusedFiresOncePerAccountPerHour(t *testing.T) {
 	ev.ServingRefused("c", 403, true) // same account, any case and status
 	ev.ServingRefused("D", 401, false)
 	want := [][2]string{
-		{"chottag: C's login was refused (401)", "This request went out on your own (Home) login. If it repeats, run chottag login C."},
-		{"chottag: D's login was refused (401)", "This request was not resent on your own login. If it repeats, run chottag login D."},
+		{"chottag: C's login was refused (401)", "This request went out on your own (Home) login. chottag stops choosing C until it answers again; if it repeats, run chottag login C."},
+		{"chottag: D's login was refused (401)", "This request was not resent on your own login. chottag stops choosing D until it answers again; if it repeats, run chottag login D."},
 	}
 	if got := em.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("notices = %q\nwant %q", got, want)

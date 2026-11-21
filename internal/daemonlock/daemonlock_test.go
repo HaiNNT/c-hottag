@@ -376,6 +376,11 @@ func TestInspectWaitsThroughAChangingRecordThenReturnsTheSettledOne(t *testing.T
 		}
 	}
 	t.Cleanup(func() { betweenStableReads = old })
+	// The hook fires once, so the second attempt always reads the settled
+	// record: the outcome does not depend on time. Keep the production
+	// budget from deciding it on a slow, -race runner (arm64 CI took >250ms
+	// for the two attempts).
+	setDuration(t, &recordWait, time.Minute)
 
 	st, err := Inspect(home)
 	if err != nil {

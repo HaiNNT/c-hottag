@@ -33,6 +33,16 @@ A switch always costs one prompt cache rebuild: the newly serving account
 has never seen the conversation, so its first response after the switch
 rebuilds the cache from scratch.
 
+## A refused login benches an account
+
+An account whose login Anthropic refuses on serving requests (401 or 403) is
+marked `login refused` and taken out of rotation after one refusal, until it
+answers again (a 2xx on its own login, or the next successful usage poll (about every 30 minutes for an idle account; longer after the poll's own refusals back off)) or you run `chottag login NAME`, the immediate fix. One transient refusal
+can therefore bench an account for a while. If usage polls succeed while
+inference stays refused, the mark flaps. A refused `remote` account is not
+handled specially. A route refusal that gets no serving outcome for 10 minutes
+can still be misreported.
+
 ## Routes can drift
 
 chottag's route table is learned from Claude Code's own traffic, not from

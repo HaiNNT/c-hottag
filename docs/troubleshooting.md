@@ -210,7 +210,7 @@ daemon's marks. An older daemon kept it until the account's first request on its
 own login, which for a rotation-off account could be a long time:
 `chottag daemon restart` clears it.
 
-## An account's login was refused (401)
+## An account's login was refused (401 or 403)
 
 A desktop notice `chottag: C's login was refused (401)` (or 403) means a
 request that chottag sent as account C on a conversation route
@@ -225,6 +225,16 @@ login). If it was a one-off (for example C's token was renewed at that moment),
 nothing is needed: since 0.9.1 a request refused while C's refresh is running
 waits for it and retries with the new token (since 0.10.2 never with the token that was just refused). If it repeats, run `chottag login
 C`.
+
+Since 0.10.15 a refusal also marks C `login refused`: `chottag status` shows
+`login refused (403) since 15:04` in its STATE column, `chottag doctor`'s
+`token:C` row is a problem, and C is out of rotation. Auto-switch (with auto
+on) moves serving off C, and `chottag next`, `chottag move` and spread
+placement skip it; `chottag next --force` and `chottag tag C` still work. The
+mark clears by itself when C answers again: a 2xx on its own login, or the next successful usage poll (about every 30 minutes for an idle account; longer after the poll's own refusals back off). Or
+run `chottag login C` to clear it at once. The daemon log says `C's login works
+again (refused since 15:04:05)` when it clears. One transient refusal can bench
+an account for up to that long.
 
 ## An object's owner is unknown
 
@@ -276,7 +286,12 @@ belong to the remote account; please report it`, or the desktop notice
 does not list was sent as the serving account and answered 403 (or 401
 `permission_error`). A new Claude Code route that belongs to the remote
 account's org is refused this way. It also counts as route drift, and
-`chottag doctor`'s `route-drift` row says how many were of this kind. The path
+`chottag doctor`'s `route-drift` row says how many were of this kind. Since
+0.10.15 the notice and the count wait until chottag knows the refusal was about
+the route and not the whole account: they come once the account is shown to work
+(a request on a listed serving route, such as `/v1/messages`, answered 2xx on its own login), up to 10 minutes later. If the account's own login is
+being refused instead (see above), it is marked `login refused` and this notice
+does not fire. The path
 is the templated form (`{id}`), never an id, a query or a body. The line comes
 at most once an hour per method and path. Open an issue with the line
 (it holds no id or token): the route is then classified in the table.

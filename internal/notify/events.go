@@ -295,7 +295,7 @@ func (e *Events) Limits(s LimitState) {
 // Switch describes one auto-switch, for its notice (M4 spec §7).
 type Switch struct {
 	From, To string
-	Trigger  string  // "limit" | "threshold"
+	Trigger  string  // "limit" | "threshold" | "refused"
 	Window   string  // "5h" | "7d"; "" when unknown
 	Pct      float64 // the utilization that triggered a threshold switch
 	// Retried reports that the request that hit the wall was resent on To

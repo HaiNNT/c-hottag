@@ -81,9 +81,9 @@ func unknownOwnerMessage(account, kind string) (title, body string) {
 func servingRefusedMessage(account string, status int, resent bool) (title, body string) {
 	title = fmt.Sprintf("chottag: %s's login was refused (%d)", account, status)
 	if resent {
-		return title, "This request went out on your own (Home) login. If it repeats, run chottag login " + account + "."
+		return title, "This request went out on your own (Home) login. chottag stops choosing " + account + " until it answers again; if it repeats, run chottag login " + account + "."
 	}
-	return title, "This request was not resent on your own login. If it repeats, run chottag login " + account + "."
+	return title, "This request was not resent on your own login. chottag stops choosing " + account + " until it answers again; if it repeats, run chottag login " + account + "."
 }
 
 // switchedMessage is the auto-switch notice (M4 spec §7).
@@ -91,6 +91,8 @@ func switchedMessage(s Switch) (title, body string) {
 	title = poolTitle(s.Pool, "switched to "+s.To)
 	w := windowName(s.Window)
 	switch {
+	case s.Trigger == "refused":
+		body = fmt.Sprintf("%s's login was refused. New requests go to %s.", s.From, s.To)
 	case s.Trigger == "threshold":
 		body = fmt.Sprintf("%s reached %.0f%% of its %s limit.", s.From, s.Pct, w)
 	case s.Retried:

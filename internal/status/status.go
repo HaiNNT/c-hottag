@@ -118,7 +118,16 @@ type Account struct {
 	// has never changed carries no TokenAt, same reasoning as LimitedUntil
 	// above.
 	TokenAt time.Time `json:"tokenAt,omitzero"`
-	Rotate  bool      `json:"rotate"`
+	// LoginRefused is when the open episode began in which this account's own
+	// login was refused (401/403) on serving requests (R201). A later `login`
+	// or `adopt` (store.Account.LoggedInAt after it) supersedes it, read-time,
+	// like needs-login; see LoginRefusedNow. omitzero: never refused carries
+	// no mark.
+	LoginRefused time.Time `json:"loginRefused,omitzero"`
+	// LoginRefusedStatus is the HTTP status of the refusal that began the
+	// episode (401 or 403); zero when LoginRefused is.
+	LoginRefusedStatus int  `json:"loginRefusedStatus,omitempty"`
+	Rotate             bool `json:"rotate"`
 	// Passthrough, when set, is why requests for this account are currently
 	// going out on Home's login instead (F20). A user who cannot see this
 	// believes they switched when they did not.
@@ -850,6 +859,46 @@ func (f *File) SetToken(account string, s creds.TokenState, at time.Time) {
 	}
 	a.Token = s
 	a.TokenAt = at
+}
+
+// SetLoginRefused marks this account's login refused on serving requests
+// (R201). It stamps the episode start (at) and its status when the account has
+// no mark, or when loggedInAt is after the existing mark (a login since then
+// supersedes it); otherwise the first refusal of the episode is kept. It
+// reports whether anything changed. An empty name makes no row.
+func (f *File) SetLoginRefused(account string, status int, at, loggedInAt time.Time) bool {
+	if account == "" {
+		return false
+	}
+	a := f.account(account)
+	if !a.LoginRefused.IsZero() && !loggedInAt.After(a.LoginRefused) {
+		return false
+	}
+	a.LoginRefused = at
+	a.LoginRefusedStatus = status
+	return true
+}
+
+// ClearLoginRefused drops the account's mark and returns when it began;
+// changed is false when there was none (and no row is made).
+func (f *File) ClearLoginRefused(account string) (since time.Time, changed bool) {
+	if !f.has(account) {
+		return time.Time{}, false
+	}
+	a := f.account(account)
+	if a.LoginRefused.IsZero() {
+		return time.Time{}, false
+	}
+	since = a.LoginRefused
+	a.LoginRefused = time.Time{}
+	a.LoginRefusedStatus = 0
+	return since, true
+}
+
+// LoginRefusedNow reports whether the mark still stands: set, and not
+// superseded by a login (loggedInAt, from state.json) after it.
+func (a Account) LoginRefusedNow(loggedInAt time.Time) bool {
+	return !a.LoginRefused.IsZero() && !loggedInAt.After(a.LoginRefused)
 }
 
 // SetPassthrough records why this account's requests are not being swapped.

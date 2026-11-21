@@ -82,6 +82,15 @@ refused too, it sends the request once on Claude Code's own login (never, with
 more than one pool, or for a remote or owner request). For a request about a
 claude.ai object, to a route the table does not list, or answered 404 (other than on `POST /v1/messages` and `POST /api/artifacts/mcp`, below), this
 counts as route drift (`chottag doctor`'s `route-drift` row and its notice).
+Since 0.10.15 a 401 or 403 on a serving account's *fallback* route (one the
+table does not list, sent as the serving account) is not judged at once: an
+account-wide login refusal looks the same as a route refusal. If the account is
+already marked `login refused` it is a login refusal; otherwise the daemon
+holds the report (at most 10 minutes, until that account's next serving
+outcome). A request on a listed serving route (such as `/v1/messages`) answered 2xx on the account's own login then settles it as a route refusal
+(counted as drift, with the `a new route was refused` notice, which can
+therefore come up to 10 minutes late); a refusal on a serving request marks
+the account and settles it as a login refusal, not counted.
 A 404 on `POST /v1/messages` is the exception, since 0.9.3: Claude Code's Message
 Threads continue a thread only the account that created it holds, and Claude Code
 sends the turn again as a create when it gets a 404, so the daemon returns that
@@ -105,6 +114,18 @@ resend on Claude Code's own login is answered with something else (a 404, say).
 the final response's, when it was a 400 or more: only one of `invalid_request_error`,
 `authentication_error`, `permission_error`, `not_found_error`, `request_too_large`,
 `rate_limit_error`, `api_error`, `overloaded_error`, or `other`; never the message.
+
+Since 0.10.15 a login refusal also marks the account: the daemon records
+`loginRefused` (and the status) for it in `status.json`, logs one line
+(`C's login is refused on serving requests (403); out of rotation until it
+answers again or you run: chottag login C`), and takes it out of rotation
+(`Eligible` reason `login refused`: auto-switch, `next`, `move`, spread
+placement). One refusal is enough. The mark clears on any 2xx on the account's
+own login, the next successful usage poll (about every 30 minutes for an idle
+account; longer after the poll's own refusals back off), or
+a `chottag login` newer than the mark; a token renewal does not clear it. If
+usage answers 200 while inference stays refused, the account flaps: the next
+refusal marks it again and that request is resent on Home as before (not when Home's login may not be used, such as a guarded pool).
 
 ## Which account a request uses
 
@@ -251,7 +272,8 @@ own account, so several sessions at once share the load of several accounts.
   `chottag move` is chosen: it stays through a switch point and the cold-cache
   rebalance (at a switch point the spread notice for its account does not
   count it), and leaves only when its account is limited, has rotation off,
-  needs a login, is gone or left the session's pool, or on a limit-hit retry.
+  needs a login, has its login refused, is gone or left the session's pool,
+  or on a limit-hit retry.
   Then it is back under normal balancing. It still counts as load.
 - **Moving a session.** `chottag move` writes a request into `state.json`;
   the daemon applies it once, at the session's next inference request: the
@@ -267,7 +289,7 @@ own account, so several sessions at once share the load of several accounts.
   once in 10 minutes per session, and never straight back to the account the
   session just left. If no other account can take it, the session stays where
   it is. A move off an account that cannot serve anyone at all (it is limited,
-  has rotation off, or needs a login), and the retry after a limit hit,
+  has rotation off, needs a login, or has its login refused), and the retry after a limit hit,
   ignore the 10 minutes. If such a session has nowhere to go, its placement is
   dropped and the request goes out on the fallback account (below), and it is
   placed again at its next request.

@@ -50,7 +50,7 @@ type nextResult struct {
 }
 
 // skipEntry is one passed-over account on the wire: reason is a token
-// (out_of_rotation | needs_login | limited | above_switch_point), and until
+// (out_of_rotation | needs_login | login_refused | limited | above_switch_point), and until
 // is present only for a limited account with a known reset.
 type skipEntry struct {
 	Name   string    `json:"name"`
