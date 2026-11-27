@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -43,6 +44,14 @@ func (l Ledger) appendLines(path string, items []any) error {
 	if err != nil {
 		return err
 	}
+	// Hold an exclusive flock on the file while checking its last byte and
+	// writing: without it, another appender (this process or the daemon) can
+	// have grown the file before its bytes land, and on Linux the check then
+	// reads a zero byte and writes a stray blank line.
+	if err := flock(f); err != nil {
+		f.Close()
+		return err
+	}
 	// A crash can leave a torn last line with no newline; end it first so
 	// the next record is not glued onto it.
 	prefix := ""
@@ -65,6 +74,16 @@ func (l Ledger) appendLines(path string, items []any) error {
 		prefix = ""
 	}
 	return f.Close()
+}
+
+// flock takes an exclusive advisory lock on f; closing f releases it.
+func flock(f *os.File) error {
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if err != syscall.EINTR {
+			return err
+		}
+	}
 }
 
 // AppendEvents appends each event to the month file of its T.

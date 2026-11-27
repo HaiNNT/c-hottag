@@ -7,6 +7,12 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.11.1] - 2026-11-27
+
+### Fixed
+
+- On Linux, two writers appending to the usage ledger at once (the daemon's live recorder and a `chottag stats` import) could leave a blank line in a `usage/` file. Readers skipped it, so no figure was wrong; each append now holds a lock on the file.
+
 ## [0.11.0] - 2026-11-27
 
 ### Added
@@ -560,6 +566,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.11.1]: docs/release-notes/v0.11.1.md
 [0.11.0]: docs/release-notes/v0.11.0.md
 [0.10.15]: docs/release-notes/v0.10.15.md
 [0.10.14]: docs/release-notes/v0.10.14.md
