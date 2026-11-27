@@ -38,6 +38,7 @@ import (
 	"github.com/HaiNNT/c-hottag/internal/store"
 	"github.com/HaiNNT/c-hottag/internal/tokens"
 	"github.com/HaiNNT/c-hottag/internal/tracelog"
+	"github.com/HaiNNT/c-hottag/internal/usagelog"
 	"github.com/HaiNNT/c-hottag/internal/usagepoll"
 )
 
@@ -291,6 +292,22 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 
 	loginRefusal := newLoginRefusalWatch(stderr, sink, cache.State, timeNow)
 	cfg := wireProxyConfig(stderr, authority, secret, lw, ch, loginRefusedUsageHook(loginRefusal, autoUsageHook(as, newUsageHook(cache.State, sink, dn))), upstreamURL)
+	// The usage ledger (R203): live message usage from the proxy and
+	// utilization snapshots from header observations and polls, written by
+	// one goroutine behind a bounded queue. Closed (queue drained) once
+	// runDaemon has returned.
+	urec := newUsageRecorder(usagelog.Open(h), timeNow)
+	urec.onErr = throttle(time.Minute, func(err error) {
+		fmt.Fprintf(stderr, "chottag: usage ledger write failed: %v\n", err)
+	})
+	defer func() {
+		urec.Close()
+		if n := urec.Dropped(); n > 0 {
+			fmt.Fprintf(stderr, "chottag: usage ledger dropped %d message events (queue full)\n", n)
+		}
+	}()
+	sink.snap = snapshotFeed(urec, cache.State)
+	cfg.OnMessageUsage = urec.Message
 	cfg.WallRetry = as.wallRetry
 	cfg.OnServingRefusal = servingRefusalHook(stderr, dn, loginRefusal.refused)
 	cfg.LoginRefused = loginRefusal.isRefused
@@ -375,6 +392,7 @@ func runProxyWithSignal(args []string, stdout, stderr, startupErr io.Writer, sig
 			Restart:    rl,
 			Session:    newSessionWatcher(h, stderr),
 			Journal:    &journalPass{home: h, log: stderr},
+			Usage:      &usageTick{home: h, log: stderr, now: timeNow},
 			Warm: &remoteWarmer{state: cache.State, warm: tm.Warm, probe: tm.LockedOut, sticky: stickyAccounts, log: stderr, now: timeNow,
 				needsLogin: func(account string) { recordNeedsLogin(sink, dn, account) },
 				wakeWarm: func(ctx context.Context, dir string, within time.Duration) (creds.Status, bool) {
@@ -870,6 +888,11 @@ type daemonDeps struct {
 	// Session, if non-nil, ends this daemon once its login session is gone
 	// (R164, F272). It stops the daemon the way a signal does.
 	Session *sessionWatcher
+	// Usage, if non-nil, imports transcript usage into the ledger and
+	// compacts it (R203). It starts once the listener is up and is stopped
+	// and joined with the other watchers, so a long first import never
+	// delays shutdown.
+	Usage *usageTick
 	// Warm, if non-nil, keeps every pool's remote account's token fresh
 	// (R147). The roster tick kicks it; at shutdown runDaemon cancels it
 	// and joins it for a bounded time (warmStopBound) before the owner map
@@ -1155,6 +1178,8 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 	} else {
 		close(sessionDone)
 	}
+	usageDone := make(chan struct{})
+	var usageStarted atomic.Bool
 	closeOwners := func() {
 		// Stop and JOIN the roster watcher before closing the map.
 		// watchRoster calls own.Forget every 5s; a Forget that lands after
@@ -1167,6 +1192,9 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		<-updateDone
 		<-restartDone
 		<-sessionDone
+		if usageStarted.Load() {
+			<-usageDone
+		}
 		d.Owners.Close()
 	}
 
@@ -1350,6 +1378,13 @@ func runDaemon(ctx context.Context, d daemonDeps) int {
 		fmt.Fprintf(d.Stderr, "chottag proxy listening on %s, logging to %s\n", ln.Addr(), d.LogPath)
 	}
 	fmt.Fprint(d.Stdout, envLines(d.Home, ln.Addr().String()))
+	if d.Usage != nil {
+		usageStarted.Store(true)
+		go func() {
+			defer close(usageDone)
+			d.Usage.Run(watchCtx)
+		}()
+	}
 	err = serve(ctx, ln, srv, srv.CloseUpstreams, srv.CloseClientTunnels, closeOwners, d.Sink)
 	// Load-bearing on serve's <-errc branch (a listener error, not a
 	// graceful ctx cancel — see serve's own doc comment): ctx is never

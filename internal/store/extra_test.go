@@ -103,3 +103,16 @@ func TestUnknownKeysIgnoreCaseVariantsOfKnownFields(t *testing.T) {
 		t.Errorf("extra = %v, want only future", extra)
 	}
 }
+
+func TestAccountPriceRoundTrips(t *testing.T) {
+	cs := Store{Dir: t.TempDir()}
+	if _, err := cs.Update(func(st *State) error {
+		return st.Add(Account{Name: "B", Dir: "/slots/B", Price: 180})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := cs.Load()
+	if err != nil || st.Accounts[0].Price != 180 {
+		t.Fatalf("price = %+v, %v", st.Accounts, err)
+	}
+}

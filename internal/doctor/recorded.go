@@ -24,7 +24,7 @@ func ReportChecks(names []string) []Check {
 	for _, n := range names {
 		checks = append(checks, tokenCheck(n))
 	}
-	return append(checks, ownersCheck(), routeDriftCheck(), homeLoginCheck(), limitsCheck(), versionDriftCheck(), planUnknownCheck(), planEvidenceCheck())
+	return append(checks, ownersCheck(), routeDriftCheck(), homeLoginCheck(), limitsCheck(), versionDriftCheck(), planUnknownCheck(), planEvidenceCheck(), usageLedgerCheck())
 }
 
 // loadStatus reads cache/status.json. A missing or unparseable cache is an

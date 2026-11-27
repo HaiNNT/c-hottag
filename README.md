@@ -57,7 +57,7 @@ chottag tag A          # A serves inference
 chottag remote B       # new remote-control sessions, artifacts, routines belong to B
 chottag own artifact <artifact-id> B  # move one object that already exists to B
 claude                 # Claude Code, through chottag (the daemon starts by itself)
-chottag status         # usage and limits per account; `chottag statusline` for a status line
+chottag status         # usage and limits per account; `chottag statusline` for a status line; `chottag stats` for token and API-dollar usage and whether your plans fit (docs/stats.md)
 chottag next           # serving -> the next account that is not limited
 chottag policy spread  # or: spread new sessions over accounts (`chottag tag NAME` pins; `chottag move B` puts a running session on B)
 chottag pool add work  # a separate pool of accounts: `chottag login C --pool work`, `CHOTTAG_POOL=work claude`
@@ -76,7 +76,7 @@ On by default: near a limit, the daemon switches the serving account for you. `b
 ```sh
 chottag auto                       # settings, each account's usage, the last decision
 chottag auto mode cache-optimize
-chottag plan B ultra               # Max accounts count as max5x until you say
+chottag plan B ultra --price 180   # Max counts as max5x until you say; price for stats
 chottag auto off
 ```
 

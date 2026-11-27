@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chottag usage report</title>
+<style>
+:root{--bg:#fff;--fg:#1c1c1e;--mut:#6b6b70;--card:#f4f4f6;--line:#d8d8de;--c0:#4c78a8;--c1:#f58518;--c2:#54a24b;--c3:#b279a2;--c4:#e45756;--c5:#72b7b2}
+@media (prefers-color-scheme:dark){:root{--bg:#161618;--fg:#ececf0;--mut:#9a9aa2;--card:#222226;--line:#3a3a40}}
+body{padding:24px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:960px;margin:auto}
+h1{font-size:20px}h2{font-size:16px;margin-top:28px}
+.tiles{display:flex;gap:12px;flex-wrap:wrap}
+.tile{background:var(--card);border-radius:8px;padding:12px 16px;min-width:140px}
+.tile b{display:block;font-size:20px}.tile span,.mut{color:var(--mut)}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line)}
+td.n,th.n{text-align:right}
+svg{max-width:100%;height:auto}svg text{fill:var(--fg);font-size:11px}svg .ax{stroke:var(--line)}svg .rule{stroke:var(--c4);stroke-dasharray:4 3}
+.legend span{margin-right:12px}.sw{display:inline-block;width:10px;height:10px;margin-right:4px}
+.c0{background:var(--c0)}.c1{background:var(--c1)}.c2{background:var(--c2)}.c3{background:var(--c3)}.c4{background:var(--c4)}.c5{background:var(--c5)}
+</style>
+</head>
+<body>
+<h1>chottag usage report</h1>
+<p class="mut">{{.Period}}</p>
+{{if .Empty}}<p>no usage recorded yet</p>{{else}}
+<div class="tiles">
+<div class="tile"><span>Tokens</span><b>{{.Total.Total}}</b></div>
+<div class="tile"><span>Cost</span><b>{{.Cost}}</b></div>
+<div class="tile"><span>Best value ratio</span><b>{{.Best}}</b></div>
+<div class="tile"><span>Worst value ratio</span><b>{{.Worst}}</b></div>
+</div>
+{{if .Unattr}}<p class="mut">Home and unknown-account usage (not in value or verdicts): {{.Unattr}}</p>{{end}}
+<h2>Cost per {{.By}} by model</h2>
+{{.BarSVG}}
+<div class="legend">{{range .Legend}}<span><i class="sw {{.Class}}"></i>{{.Name}}</span>{{end}}</div>
+<h2>Weekly peak by account</h2>
+{{.LineSVG}}
+<div class="legend">{{range .LineLegend}}<span><i class="sw {{.Class}}"></i>{{.Name}}</span>{{end}}</div>
+<h2>Accounts</h2>
+<table>
+<tr><th>Account</th><th>Tier</th><th class="n">Units</th><th class="n">Price</th><th class="n">Tokens</th><th class="n">Cost</th><th class="n">Value</th><th class="n">Avg peak</th></tr>
+{{range .Rows}}<tr><td>{{.Name}}{{if .From}} <span class="mut">since {{.From}}</span>{{end}}</td><td>{{.Tier}}</td><td class="n">{{.Units}}</td><td class="n">{{.Price}}</td><td class="n">{{.Tokens}}</td><td class="n">{{.Cost}}</td><td class="n">{{.Value}}</td><td class="n">{{.AvgPeak}}</td></tr>
+{{end}}</table>
+<h2>Verdicts</h2>
+{{if .Overall.Text}}<p><b>Overall ({{.Overall.Kind}}):</b> {{.Overall.Text}}</p>{{end}}
+{{if .Overall.Changes}}<ul>{{range .Overall.Changes}}<li>{{.}}</li>{{end}}</ul>{{end}}
+<ul>{{range .Verdicts}}<li><b>{{.Account}}</b> ({{.Kind}}): {{.Text}}</li>{{end}}</ul>
+{{if .Thresholds}}<p class="mut">Thresholds: {{range .Thresholds}}{{.}} {{end}}</p>{{end}}
+{{if .Notes}}<h2>Notes</h2><ul>{{range .Notes}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{end}}
+</body>
+</html>

@@ -60,6 +60,9 @@ type Account struct {
 	// Units overrides the tier's capacity units (`chottag plan … --units
 	// N`). 0 means the tier's own.
 	Units int `json:"units,omitempty"`
+	// Price overrides the plan's list price in USD per month (`chottag plan
+	// NAME --price N`), for the stats value comparison. 0 means the list price.
+	Price float64 `json:"price,omitempty"`
 	// LoggedInAt is when `chottag login` last confirmed this account logged
 	// in, or `chottag adopt` last saw its slot's identity change (a
 	// re-login). An unchanged slot does not advance it (F258).

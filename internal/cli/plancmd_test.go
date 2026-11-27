@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,5 +88,82 @@ func TestPlanUltraStoresMax20x(t *testing.T) {
 	code, _, errs := runChottag(t, "plan", "B", "bogus")
 	if code != exit.Usage || !strings.Contains(errs, "pro, max5x, team or ultra") {
 		t.Fatalf("bad tier = %d %q", code, errs)
+	}
+}
+
+func TestPlanPriceOnly(t *testing.T) {
+	_, s := autoHome(t)
+	runChottag(t, "plan", "B", "team", "--units", "8")
+	if code, out, errs := runChottag(t, "plan", "B", "--price", "180"); code != exit.OK || out != "plan B: team (8 units, $180/month)\n" {
+		t.Fatalf("plan --price = %d %q %q", code, out, errs)
+	}
+	st, _ := s.Load()
+	if b := st.Accounts[1]; b.Plan != "team" || b.Units != 8 || b.Price != 180 {
+		t.Fatalf("B = %+v", b)
+	}
+}
+
+func TestPlanTierKeepsPrice(t *testing.T) {
+	_, s := autoHome(t)
+	runChottag(t, "plan", "B", "team", "--units", "8", "--price", "180")
+	if code, _, errs := runChottag(t, "plan", "B", "ultra"); code != exit.OK {
+		t.Fatalf("plan ultra = %d %q", code, errs)
+	}
+	st, _ := s.Load()
+	if b := st.Accounts[1]; b.Plan != "max20x" || b.Units != 0 || b.Price != 180 {
+		t.Fatalf("B = %+v, want units cleared and price kept", b)
+	}
+}
+
+func TestPlanPriceZeroResets(t *testing.T) {
+	_, s := autoHome(t)
+	runChottag(t, "plan", "B", "ultra", "--price", "180")
+	if code, out, errs := runChottag(t, "plan", "B", "--price", "0"); code != exit.OK || out != "plan B: ultra (20 units)\n" {
+		t.Fatalf("plan --price 0 = %d %q %q", code, out, errs)
+	}
+	if st, _ := s.Load(); st.Accounts[1].Price != 0 || st.Accounts[1].Plan != "max20x" {
+		t.Fatalf("B = %+v", st.Accounts[1])
+	}
+}
+
+func TestPlanPriceInvalid(t *testing.T) {
+	home, _ := autoHome(t)
+	before, _ := os.ReadFile(filepath.Join(home, "state.json"))
+	for _, args := range [][]string{
+		{"plan", "B", "--price", "-1"}, {"plan", "B", "--price", "abc"}, {"plan", "B", "--price", "100001"},
+		{"plan", "B", "ultra", "--price", "NaN"}, {"plan", "B", "--units", "3"}, {"plan", "B"},
+	} {
+		if code, out, errs := runChottag(t, args...); code != exit.Usage || out != "" || errs == "" {
+			t.Errorf("%q = %d %q %q, want exit 2", args, code, out, errs)
+		}
+	}
+	after, _ := os.ReadFile(filepath.Join(home, "state.json"))
+	if string(before) != string(after) {
+		t.Fatal("a refused plan changed state.json")
+	}
+}
+
+func TestPlanJSONPrice(t *testing.T) {
+	autoHome(t)
+	get := func(args ...string) map[string]any {
+		t.Helper()
+		code, out, errs := runChottag(t, append(args, "--json")...)
+		if code != exit.OK {
+			t.Fatalf("%q = %d %q", args, code, errs)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	if d := get("plan", "B", "ultra"); d["price"] != float64(200) || d["priceSource"] != "list" {
+		t.Errorf("ultra = %v", d)
+	}
+	if d := get("plan", "B", "team"); d["price"] != nil || d["priceSource"] != "none" {
+		t.Errorf("team = %v", d)
+	}
+	if d := get("plan", "B", "--price", "150"); d["price"] != float64(150) || d["priceSource"] != "set" {
+		t.Errorf("set = %v", d)
 	}
 }

@@ -80,7 +80,7 @@ Without arguments, work out what the user wants and use "Common tasks".
    (it only reads) and `names` with no mode (`names --json` shows it). Setting
    a names mode (`names on|off`) asks first, as does everything
    else (`login`, `logout`, `doctor --fix`, `update`, `rename`, `uninstall`,
-   `resume`,
+   `resume`, `stats`,
    `policy`, `pool add`, `pool join`, `pool leave`, `pool rm`)
    asks the user first. That is deliberate; don't work around it.
 
@@ -218,7 +218,8 @@ the `pool add`). Once a pool exists the shim also refuses every session,
 | desktop notifications | `chottag notify on --json` / `chottag notify off --json` |
 | automatic switching near a limit (on by default) | `chottag auto --json`; `chottag auto off --json` / `chottag auto on --json` |
 | auto-switch mode | `chottag auto mode balanced --json` or `chottag auto mode cache-optimize --json` |
-| tell chottag an account's plan size (a `max?` plan on `status` means a Max account of unknown size: ask the user 5x or 20x/Ultra) | `chottag plan <name> ultra --json` (tiers: `pro`, `max5x`, `team`, `ultra`; Anthropic renamed Max 20x to Ultra, `max20x` is still accepted and `--json` keeps saying `max20x`; `--units N` overrides the tier's capacity per 1%, and a later `plan` without it clears the override) |
+| tell chottag an account's plan size (a `max?` plan on `status` means a Max account of unknown size: ask the user 5x or 20x/Ultra) | `chottag plan <name> ultra --json` (tiers: `pro`, `max5x`, `team`, `ultra`; Anthropic renamed Max 20x to Ultra, `max20x` is still accepted and `--json` keeps saying `max20x`; `--units N` overrides the tier's capacity per 1%, and a later `plan` without it clears the override; `chottag plan <name> --price N --json` sets the account's real monthly USD price for the usage stats comparison, `0` resets to the list price, and a later `plan` with a tier keeps it) |
+| show what the user used and whether their plans fit (tokens and API-equivalent dollars per model and account, each account's value against its price and 7-day peak, and keep/upgrade/downgrade/cancel verdicts) | `chottag stats --json` (`--by day` or `--by month`, `--since YYYY-MM-DD`, `--until YYYY-MM-DD`, `--account NAME`, `--weeks N`; `--html [--out PATH]` writes a self-contained report and prints its path; `--reimport` re-reads every transcript). It first imports Claude Code's transcripts (read-only) into `usage/` in the chottag home, which keeps numbers and model ids only. An unreadable transcript is skipped with a `usage_import_skipped` warning (a count, no path). Verdicts need N complete weeks of recorded utilization, so they start empty on a fresh install; the units behind them are chottag's estimate. Details: docs/stats.md |
 | check for, or install, a newer chottag release | `chottag update --check --json`, then `chottag update --json` if the user agrees (`--repo OWNER/NAME` names another repo; `--check` reads GitHub directly) |
 
 Accounts are named by name, email, or a unique name prefix.

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/ca"
+	"github.com/HaiNNT/c-hottag/internal/msgusage"
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/redact"
 	"github.com/HaiNNT/c-hottag/internal/router"
@@ -143,6 +144,15 @@ type Config struct {
 	// unidentified) and whether it was an inference request, so the pace
 	// meter (R192) can credit a session's spend. Numbers and ids only.
 	OnUsage func(account string, status int, h http.Header, req UsageRequest)
+
+	// OnMessageUsage, when set, gets the usage of every 2xx POST /v1/messages
+	// response, after the body has been copied to the client (R203). account
+	// is the account that answered (swapped, not drifted, not resent on the
+	// client's own login), else "". Only ids, the model and token counts are
+	// read from the body (msgusage). It runs while the body tee holds its
+	// lock, so it must not block; a panic is reported through OnUsageError
+	// and never reaches the client.
+	OnMessageUsage func(account string, u msgusage.Usage, at time.Time)
 
 	// WallRetry, if set, arms the wall retry (M4 spec §4a) for a swapped
 	// serving-class request that no object owner routes. It is called at

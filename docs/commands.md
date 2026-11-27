@@ -437,7 +437,8 @@ which account answers the session follows the slot, not the name.
 ### `chottag plan`
 
 ```sh
-chottag plan NAME TIER [--units N]
+chottag plan NAME TIER [--units N] [--price N]
+chottag plan NAME --price N
 ```
 
 Sets `NAME`'s plan tier for auto-switch: `pro`, `max5x`, `team` or `ultra`
@@ -446,9 +447,12 @@ Sets `NAME`'s plan tier for auto-switch: `pro`, `max5x`, `team` or `ultra`
 it the tier's default applies (pro 1, max5x 5, ultra 20, team 5), so
 re-running `plan` without `--units` also clears an earlier override.
 
+`--price` sets the monthly price in USD that the usage stats compare the account's usage against; `0` resets it to the plan's list price (pro 20, max5x 100, ultra 200; team has none). `chottag plan NAME --price N` changes only the price and keeps the tier and units, and a later `chottag plan NAME TIER` keeps a price you set.
+
 | Flag | Meaning |
 |---|---|
 | `--units N` | capacity units per 1%, 1-1000 (default: the tier's own) |
+| `--price N` | monthly price in USD, 0-100000; `0` resets to the list price (default: keep what is set) |
 
 ```json
 {
@@ -457,9 +461,13 @@ re-running `plan` without `--units` also clears an earlier override.
   "warnings": [],
   "account": "work",
   "plan": "max5x",
-  "units": 5
+  "units": 5,
+  "price": 100,
+  "priceSource": "list"
 }
 ```
+
+`price` is the effective monthly price: the `--price` override, else the tier's list price, else `null`. `priceSource` says which: `set`, `list` or `none`.
 
 ### `chottag rotate`
 
@@ -1084,6 +1092,92 @@ that is still alive, ordered by `started`. It is left out when none is alive.
   since; it is left out otherwise. The text form's live-sessions line marks
   these: `live sessions: 3 (A 2, B 1 (1 chosen))`.
 
+### `chottag stats`
+
+```sh
+chottag stats [--by day|month] [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+              [--account NAME] [--weeks N] [--json] [--html [--out PATH]] [--reimport]
+```
+
+Prints how much you used Claude Code, from chottag's usage ledger and Claude
+Code's own transcripts: tokens and API-equivalent dollars overall, per model
+and per account; each account's value against its plan price and its 7-day
+peak; and a verdict per account and for the whole set of accounts (keep,
+upgrade, downgrade, cancel). Every figure, threshold and caveat is explained
+in [Usage stats](stats.md).
+
+Before it reads, `stats` imports the transcripts it has not seen (each
+account slot's `projects/` folder, and Home's `~/.claude/projects`, opened
+read-only) into `usage/` in the chottag home, and rolls raw events older than
+90 days into daily totals. The first run imports all history; later runs only
+what is new. The daemon does the same once at start and every 24 hours.
+
+| Flag | Meaning |
+|---|---|
+| `--by day\|month` | the time series: `month` (default) or `day`; without it, a `--since` within 31 days of the end of the period gives `day` |
+| `--since YYYY-MM-DD` | first day of the period (default: the first day of the month five months ago; with `--by day`, 30 days ago) |
+| `--until YYYY-MM-DD` | last day of the period, inclusive (default: today) |
+| `--account NAME` | only this account's row and verdict; NAME is a name, email or unique prefix, or an account that is only in the ledger now; no match is exit 1 `unknown_account` |
+| `--weeks N` | complete 7-day windows behind each verdict, 1-52 (default 4) |
+| `--html` | write a self-contained HTML report to `usage/report.html` in the chottag home and print its path |
+| `--out PATH` | with `--html`: write the report to `PATH` instead |
+| `--reimport` | read every transcript again, ignoring what was imported before |
+
+Dates are in the machine's local time zone. A bad flag value, a `--since` in the future, `--out`
+without `--html`, or an `--until` before `--since` is exit 2.
+
+A transcript file or folder that cannot be read is skipped, counted and tried
+again next time: `stats` reports the rest and warns `usage_import_skipped`
+(on stderr in text mode, in `warnings` with `--json`), with the count and no
+path. If the import fails outright (the ledger cannot be written, say),
+`stats` still reports from the ledger as it stands and exits 0, with a warning
+(`usage_import_failed`) that names the kind of failure, never a path. If another process (the daemon's
+daily import) holds the ledger, `stats` says so on stderr and waits.
+
+With `--json`, stdout is one document: the report's members below, plus
+`html` (the written path) when `--html` was given. `--html` without `--json`
+prints the path only.
+
+```json
+{
+  "version": 1,
+  "ok": true,
+  "warnings": [],
+  "since": "2026-11-01T00:00:00+07:00",
+  "until": "2026-11-26T12:00:00+07:00",
+  "by": "month",
+  "total": {"in": 2200, "out": 420000, "cr": 10200000, "cw5m": 0, "cw1h": 36000, "web": 0, "total": 10658200, "usd": 43.6, "usdUnknown": false, "estimated": false},
+  "byModel": {"claude-opus-5-5": {"in": 2200, "out": 420000, "cr": 10200000, "cw5m": 0, "cw1h": 36000, "web": 0, "total": 10658200, "usd": 43.6, "usdUnknown": false, "estimated": false}},
+  "unattributed": {"in": 100, "out": 10000, "cr": 400000, "cw5m": 0, "cw1h": 0, "web": 0, "total": 410100, "usd": 1.9, "usdUnknown": false, "estimated": false},
+  "periods": [{"key": "2026-11", "tok": {"in": 2200, "out": 420000, "cr": 10200000, "cw5m": 0, "cw1h": 36000, "web": 0, "total": 10658200, "usd": 43.6, "usdUnknown": false, "estimated": false}, "byModel": {"claude-opus-5-5": {"in": 2200, "out": 420000, "cr": 10200000, "cw5m": 0, "cw1h": 36000, "web": 0, "total": 10658200, "usd": 43.6, "usdUnknown": false, "estimated": false}}}],
+  "accounts": [
+    {
+      "name": "B", "tier": "max20x", "units": 20, "price": 200, "priceSource": "list",
+      "tok": {"in": 2100, "out": 410000, "cr": 9800000, "cw5m": 0, "cw1h": 36000, "web": 0, "total": 10248100, "usd": 41.7, "usdUnknown": false, "estimated": false}, "valueRatio": 0.25, "avgPeak": 78, "usdPerPct": 0.54, "usdPerUnitPct": 0.027, "from": "2026-11-01",
+      "weeks": [{"reset": "2026-11-20T09:00:00+07:00", "peakPct": 78, "limited": false, "units": 20, "usd": 42.1, "usdPerPct": 0.54}]
+    }
+  ],
+  "verdicts": [{"account": "B", "kind": "keep", "text": "Keep. Weekly peak averaged 78% over 4 windows, limited in 0; peak demand 15.6 of 20 units.", "basis": {"avgPeak": 78}}],
+  "overall": {"payUSD": 200, "units": 20, "peakDemand": 15.6, "suggest": {"max20x": 1}, "suggestUSD": 200, "changes": [], "kind": "keep", "text": "You pay $200/mo for 20 units; ..."},
+  "thresholds": {"windows": 4, "upgradeAvgPeak": 90, "headroom": 1.15},
+  "notes": ["Units are chottag's capacity model, not Anthropic's published numbers; ..."],
+  "html": "/Users/alice/.chottag/usage/report.html"
+}
+```
+
+`html` appears only with `--html`. `until` is the end of the period: the
+start of the day after `--until`, or now when no `--until` was given;
+`from` (an account's) is the first day its price is pro-rated over, the later
+of `since` and the account's first day in the ledger; `usdPerUnitPct` is
+`usdPerPct` divided by `units` (what 1% of a Pro costs; `null` when
+`usdPerPct` is); `byModel` and `periods[].byModel` are
+keyed by model id, each value shaped like `total`. `tier` is the stored tier name (`max20x` for Ultra). `price` and
+`valueRatio` are `null` when the account has no price (a team plan, or no
+tier); `avgPeak` and `usdPerPct` are `null` without a complete 7-day window
+to average. A verdict's `kind` is `keep`, `upgrade`, `downgrade`, `cancel`,
+`insufficient` or `none`. `usdUnknown` and `estimated` mark a total that
+includes a model with no list price, or one priced as its family's newest.
+
 ### `chottag statusline`
 
 ```sh
@@ -1291,6 +1385,7 @@ Its checks, in the order they run:
 | `version-drift` | the installed Claude Code version has been traced | `chottag trace on` |
 | `plan-unknown` | every account has a known plan tier | `chottag plan NAME TIER` |
 | `plan-evidence` | present only when chottag has recorded an account whose responses carry no 5-hour window (`status --json` `noFiveHour`) or a refusal whose binding limit claim it does not classify (`daemon.unknownLimitClaims`); always info, never a problem; please report the claim name | none |
+| `usage-ledger` | `usage/` in the chottag home is writable and has had a transcript import; info (never a problem) when it is read-only or nothing was imported yet. It reads modes and times only, never a ledger line | `chottag stats` imports the history |
 
 With more than one pool, the `roles` row names each pool (`default: serving
 A, remote A; work: serving B, remote B`) and flags a problem as `work serving
@@ -2364,5 +2459,7 @@ result is not text, the same line is a toast.
 | `shared_account` | `pool join` left an account in more than one pool (or `policy spread` found one in the pool): they share one usage limit, so the pools affect each other |
 | `daemon_predates_pools` | `pool join` found the running daemon older than 0.8.0 (or reporting no version): it cannot read a version-2 `state.json`, so its requests fall back to Home's own login; run `chottag daemon restart` (`pool add` refuses instead: see the error code) |
 | `daemon_predates_spread` | `chottag policy spread` (or `tag NAME` under spread) found the running daemon older than this binary: it ignores the policy and may reset it to serial; run `chottag daemon restart` first |
+| `usage_import_failed` | `stats` could not import some transcripts and reported from the ledger as it stood; the message names the kind of failure, never a path |
+| `usage_import_skipped` | `stats` skipped N transcript files or folders it could not read (a permission error, say) and imported the rest; the next run tries them again; the message is a count, never a path |
 | `daemon_not_running` | `move` found no daemon: the request applies when one starts and the session next makes a request |
 | `daemon_predates_move` | `move` found the running daemon older than 0.10.10 (or reporting no orderable version): it ignores move requests; run `chottag daemon restart` |

@@ -47,6 +47,9 @@ func (c *statusSink) poll(account string, r usagepoll.Result, sent time.Time) us
 	limited, until := c.limitStateLocked(account)
 	c.mu.Unlock()
 
+	if written && c.snap != nil {
+		c.snap(account, r.FiveHour, r.SevenDay, r.At)
+	}
 	if written {
 		if wasLimited != limited {
 			c.flush()

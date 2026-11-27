@@ -1002,6 +1002,12 @@ type statusSink struct {
 	// mu held.
 	loadUpdate func(path string) *status.Update
 
+	// snap, when set, gets each account's windows from a header observation
+	// or a usage poll, for the usage ledger's utilization snapshots (R203).
+	// Set once at daemon start, before any request or poll; called with mu
+	// NOT held and must not block.
+	snap func(account string, five, seven usagehdr.Window, at time.Time)
+
 	// onObserved, when set, is told each account's limit state after an
 	// observation that carried usage headers, so the usage poller can
 	// cancel a no-data poll and move a reset poll (spec §6.4). It is
@@ -1586,7 +1592,11 @@ func newUsageHook(state func() (store.State, error), sink *statusSink, dn *daemo
 	return notifyUsageHook(dn, func(account string, code int, hdr http.Header, _ proxy.UsageRequest) {
 		now := time.Now()
 		seedRosterAtStartup(state, sink)
-		sink.observe(account, usagehdr.Parse(hdr, now), usagehdr.Classify(code, hdr, now))
+		snap := usagehdr.Parse(hdr, now)
+		sink.observe(account, snap, usagehdr.Classify(code, hdr, now))
+		if sink.snap != nil && snap.Known {
+			sink.snap(account, snap.FiveHour, snap.SevenDay, now)
+		}
 	})
 }
 

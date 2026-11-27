@@ -132,6 +132,8 @@ const (
 	warnIdentitySuspect           warnCode = "identity_suspect"
 	warnDaemonNotRunning          warnCode = "daemon_not_running"
 	warnDaemonPredatesMove        warnCode = "daemon_predates_move"
+	warnUsageImport               warnCode = "usage_import_failed"
+	warnUsageSkipped              warnCode = "usage_import_skipped"
 )
 
 var warnCodes = []warnCode{
@@ -144,7 +146,8 @@ var warnCodes = []warnCode{
 	warnAttestationSkipped, warnPreAttestation, warnUpdateCache,
 	warnDaemonPredatesSpread, warnSharedAccount, warnPoolNotChanged,
 	warnDaemonPredatesPools, warnIdentitySuspect,
-	warnDaemonNotRunning, warnDaemonPredatesMove,
+	warnDaemonNotRunning, warnDaemonPredatesMove, warnUsageImport,
+	warnUsageSkipped,
 }
 
 func validErrCode(c errCode) bool   { return slices.Contains(errCodes, c) }

@@ -7,6 +7,15 @@ heading links to its full release notes in `docs/release-notes/`. A version
 reads "Unreleased" until it is dated in the commit that bumps plugin.json
 to it.
 
+## [0.11.0] - 2026-11-27
+
+### Added
+
+- `chottag plan NAME --price N` sets the monthly USD price chottag compares an account's usage against (0 resets to the list price); `plan --json` gains `price` and `priceSource`.
+- `chottag stats` reports your usage: tokens and API-equivalent dollars overall, per model and per account, each account's value against its plan price and its 7-day peak, and keep, upgrade, downgrade or cancel verdicts for each account and for the whole set. It reads the new usage ledger (`usage/` in the chottag home: token counts and model ids only, never prompts, replies or paths) and imports Claude Code's transcripts, read-only. `--html` writes a self-contained report, `--json` prints the figures. The daemon records usage live and imports and compacts the ledger once a day. See `docs/stats.md`.
+- `chottag doctor` gains a `usage-ledger` row (writable, last import); information only.
+- `chottag stats` shows `$ per 1% of a Pro` (`usdPerUnitPct`), a weekly-peak line per account and, for an account newer than the period, the date its price is pro-rated from (`from`); a `--since` within 31 days defaults to `--by day`; an unreadable transcript is skipped with a `usage_import_skipped` warning. `usage/import.json` stores a hash of each transcript's path, not the path.
+
 ## [0.10.15] - 2026-11-21
 
 ### Fixed
@@ -551,6 +560,7 @@ The first release. [0.3.0] was never released, so its changes ship here too.
 - The daemon runs from a fixed working directory, and the plugin skill
   pre-approves only read-only commands and everyday account switches.
 
+[0.11.0]: docs/release-notes/v0.11.0.md
 [0.10.15]: docs/release-notes/v0.10.15.md
 [0.10.14]: docs/release-notes/v0.10.14.md
 [0.10.13]: docs/release-notes/v0.10.13.md

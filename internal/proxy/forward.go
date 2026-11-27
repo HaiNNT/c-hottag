@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HaiNNT/c-hottag/internal/msgusage"
 	"github.com/HaiNNT/c-hottag/internal/owners"
 	"github.com/HaiNNT/c-hottag/internal/router"
 	"github.com/HaiNNT/c-hottag/internal/tracelog"
@@ -99,7 +100,9 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 	// tracelog.FingerprintLimit fails silently and every fingerprint field
 	// stays empty.
 	recordOwners := account != "" && d.Records != ""
-	if recordOwners || traced || s.cfg.LimitFingerprint {
+	// The message-usage tee reads the same decoded bytes (R203).
+	msgUsage := s.cfg.OnMessageUsage != nil && r.Method == http.MethodPost && r.URL.Path == "/v1/messages"
+	if recordOwners || traced || s.cfg.LimitFingerprint || msgUsage {
 		r.Header.Del("Accept-Encoding")
 	}
 	if traced {
@@ -272,6 +275,21 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, form string) {
 				resp.Body = captured
 			}
 
+			// Message usage (R203): tee the body last, after any capture
+			// above, so the bytes the client gets are unchanged. The
+			// account is who actually answered, as for OnUsage.
+			if s.cfg.OnMessageUsage != nil && success && r.Method == http.MethodPost && r.URL.Path == "/v1/messages" {
+				who := account
+				if rec.Drift || viaHome {
+					who = ""
+				}
+				resp.Body = msgusage.Tee(resp.Body, isEventStream(rec.RespType), func(u msgusage.Usage, ok bool) {
+					if ok && u.Model != "" {
+						s.notifyMessageUsage(who, u)
+					}
+				})
+			}
+
 			// A stream's final record is only written when the stream ends
 			// (the deferred finaliser above), so a stream that runs for
 			// minutes, or dies with the daemon, would leave no line while it
@@ -354,6 +372,23 @@ func (s *Server) notifyUsage(account string, status int, h http.Header, req Usag
 		}
 	}()
 	s.cfg.OnUsage(account, status, h.Clone(), req)
+}
+
+// notifyMessageUsage calls OnMessageUsage under recover, like notifyUsage.
+func (s *Server) notifyMessageUsage(account string, u msgusage.Usage) {
+	defer func() {
+		if recover() == nil {
+			return
+		}
+		report := s.cfg.OnUsageError
+		if report == nil {
+			report = s.cfg.OnLogError
+		}
+		if report != nil {
+			report(errors.New("OnMessageUsage callback panicked"))
+		}
+	}()
+	s.cfg.OnMessageUsage(account, u, time.Now())
 }
 
 func isJSON(ct string) bool { return strings.Contains(ct, "json") }

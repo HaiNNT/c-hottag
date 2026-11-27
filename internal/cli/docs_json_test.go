@@ -47,6 +47,7 @@ var docsResultTypes = map[string]any{
 	"pool rm":        poolNameResult{},
 	"auto":           autoResult{},
 	"plan":           planResult{},
+	"stats":          statsResult{},
 	"sessions":       sessionsResult{},
 	"resume":         resumeResult{},
 	"status":         statusDocument{},

@@ -103,6 +103,12 @@ func TestMain(m *testing.M) {
 		os.Setenv("CLAUDE_CONFIG_DIR", d)
 		testClaudeConfigDir = d
 	}
+	// homeProjectsDir (stats.go) is the real ~/.claude/projects; the daemon's
+	// usage tick and `stats` import from it. Default it to an empty directory
+	// so no test reads the real Home. A test that wants transcripts sets its own.
+	if d, err := os.MkdirTemp("", "chottag-test-home-projects"); err == nil {
+		homeProjectsDir = func() string { return d }
+	}
 	// journalAlive (journal_tick.go) probes real pids; a test that reaches
 	// it must stub it.
 	journalAlive = func(int) bool { panic("cli.journalAlive reached: stub it in the test") }

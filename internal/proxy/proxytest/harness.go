@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/HaiNNT/c-hottag/internal/ca"
+	"github.com/HaiNNT/c-hottag/internal/msgusage"
 	"github.com/HaiNNT/c-hottag/internal/proxy"
 	"github.com/HaiNNT/c-hottag/internal/proxyauth"
 	"github.com/HaiNNT/c-hottag/internal/router"
@@ -41,6 +42,8 @@ type Options struct {
 	OnLogError       func(error)
 	OnUsage          func(account string, status int, h http.Header, req proxy.UsageRequest)
 	OnUsageError     func(error)
+	// OnMessageUsage is Config.OnMessageUsage (R203).
+	OnMessageUsage func(account string, u msgusage.Usage, at time.Time)
 	// OnServingRefusal is Config.OnServingRefusal (R158).
 	OnServingRefusal func(account string, status int, errType string, resent bool, method, path string)
 	// OnUnclassifiedRefusal is Config.OnUnclassifiedRefusal (R186).
@@ -163,6 +166,7 @@ func Start(t *testing.T, upstream http.Handler, opts Options) *Harness {
 		OnLogError:            opts.OnLogError,
 		OnUsage:               opts.OnUsage,
 		OnUsageError:          opts.OnUsageError,
+		OnMessageUsage:        opts.OnMessageUsage,
 		WallRetry:             opts.WallRetry,
 		OnServingRefusal:      opts.OnServingRefusal,
 		OnUnknownOwner:        opts.OnUnknownOwner,
